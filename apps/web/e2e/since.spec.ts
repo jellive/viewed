@@ -65,3 +65,36 @@ test('a changed binary file stays body-less and never fetches blobs', async ({ p
   await expect(row.getByTestId('no-patch')).toBeVisible();
   expect(blobRequests).toEqual([]);
 });
+
+test('same blob but a different base diff shows a notice and the full diff, no empty since-diff', async ({ page }) => {
+  await seedSettings(page);
+  const old = { path: 'a.ts', status: 'modified' as const, blobSha: 'a1', patch: '@@ -1 +1 @@\n-x\n+y' };
+  await mockGitHub(page, {
+    head: 'h2',
+    files: [{ filename: 'a.ts', status: 'modified', sha: 'a1', patch: '@@ -1,2 +1,2 @@\n-q\n+y\n+BASECHANGE' }],
+    blobs: { a1: 'y\n' },
+    gistFiles: await seedViewedRecord(old),
+  });
+  await open(page);
+  const row = page.getByTestId('file-row');
+  await expect(row).toHaveAttribute('data-state', 'changed-since-viewed');
+  await expect(row.getByTestId('since-same-content')).toBeVisible();
+  await expect(row.getByTestId('diff')).toContainText('+BASECHANGE');
+  await expect(row.getByTestId('since-diff')).toHaveCount(0);
+});
+
+test('a blob request that fails with 500 shows the error, not the force-push notice', async ({ page }) => {
+  await seedSettings(page);
+  const old = { path: 'a.ts', status: 'modified' as const, blobSha: 'a1', patch: '@@ -1 +1 @@\n-x\n+y' };
+  await mockGitHub(page, {
+    head: 'h2',
+    files: [{ filename: 'a.ts', status: 'modified', sha: 'a2', patch: '@@ -1 +1,2 @@\n-x\n+y\n+NEWLINE' }],
+    blobs: { a1: 'y\n' },
+    gistFiles: await seedViewedRecord(old),
+  });
+  await page.route('**/git/blobs/a2', (route) => route.fulfill({ status: 500, contentType: 'application/json', body: '{"message":"boom"}' }));
+  await open(page);
+  const row = page.getByTestId('file-row');
+  await expect(row.getByTestId('since-error')).toBeVisible();
+  await expect(row.getByTestId('since-unavailable')).toHaveCount(0);
+});

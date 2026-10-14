@@ -57,6 +57,13 @@ describe('GitHub', () => {
     expect(await new GitHub('t', f).blobText('acme', 'widget', 'dead')).toBeNull();
   });
 
+  it('rejects with GitHubError status 500 for a server error, not null', async () => {
+    const { f } = fake({ '/git/blobs/b1': { status: 500, body: { message: 'boom' } } });
+    const p = new GitHub('t', f).blobText('acme', 'widget', 'b1');
+    await expect(p).rejects.toBeInstanceOf(GitHubError);
+    await expect(new GitHub('t', f).blobText('acme', 'widget', 'b1')).rejects.toMatchObject({ status: 500 });
+  });
+
   it('asks for the raw blob media type', async () => {
     const { f, calls } = fake({ '/git/blobs/b1': { body: 'hello\n' } });
     expect(await new GitHub('t', f).blobText('acme', 'widget', 'b1')).toBe('hello\n');
