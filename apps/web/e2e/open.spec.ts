@@ -1,0 +1,46 @@
+import { test, expect } from '@playwright/test';
+import { mockGitHub, seedSettings } from './fixtures';
+
+test('first run shows settings', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByTestId('settings-form')).toBeVisible();
+});
+
+test('opens a branch and lists changed files with 0/N progress', async ({ page }) => {
+  await seedSettings(page);
+  await mockGitHub(page, { files: [
+    { filename: 'a.ts', status: 'modified', sha: 'a1', patch: '@@ -1 +1 @@\n-x\n+y' },
+    { filename: 'b.ts', status: 'added', sha: 'b1', patch: '@@ -0,0 +1 @@\n+z' },
+  ] });
+  await page.goto('/');
+  await page.getByTestId('repo-input').fill('acme/widget');
+  await page.getByTestId('branch-input').fill('feat');
+  await page.getByTestId('open-btn').click();
+  await expect(page.getByTestId('file-row')).toHaveCount(2);
+  await expect(page.getByTestId('progress')).toHaveText('0 / 2');
+});
+
+test('a missing token (e.g. keychain decrypt failed) sends you back to settings', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('viewed.settings', JSON.stringify({
+    accounts: [{ label: 'personal', token: '' }], gistAccount: 'personal', gistId: 'g1', secret: 's3cret', deviceId: 'mac' })));
+  await page.goto('/');
+  await expect(page.getByTestId('settings-form')).toBeVisible();
+  await expect(page.getByLabel('gist id')).toHaveValue('g1');   // 기존 값은 유지
+});
+
+test('settings can be reopened', async ({ page }) => {
+  await seedSettings(page);
+  await page.goto('/');
+  await page.getByTestId('settings-open').click();
+  await expect(page.getByTestId('settings-form')).toBeVisible();
+});
+
+test('a bad token shows an error, not an empty list', async ({ page }) => {
+  await seedSettings(page);
+  await page.route('https://api.github.com/**', (r) => r.fulfill({ status: 401, body: '{"message":"Bad credentials"}' }));
+  await page.goto('/');
+  await page.getByTestId('repo-input').fill('acme/widget');
+  await page.getByTestId('branch-input').fill('feat');
+  await page.getByTestId('open-btn').click();
+  await expect(page.getByTestId('error')).toContainText('401');
+});
