@@ -20,7 +20,11 @@ export function App() {
   // 토큰·비밀이 비어 있으면(첫 실행 또는 keychain 복호화 실패) 설정으로 보낸다 — spec §7 재입력
   const incomplete = !settings || !settings.secret || settings.accounts.length === 0
     || settings.accounts.some((a) => !a.token) || !settings.accounts.some((a) => a.label === settings.gistAccount);
-  if (incomplete || editing) return <Settings initial={settings} notice={loadError} onSaved={(s) => { setSettings(s); setEditing(false); }} />;
+  if (incomplete || editing) return <Settings initial={settings} notice={loadError} onSaved={(s) => {
+    // gist 나 기기가 바뀌면 옛 저장소에 묶인 화면은 버린다 — 다시 열면 새 저장소를 쓴다
+    if (settings && (s.gistId !== settings.gistId || s.deviceId !== settings.deviceId)) { seq.current++; setLoaded(null); }
+    setSettings(s); setEditing(false);
+  }} />;
 
   const token = (label: string) => settings.accounts.find((a) => a.label === label)?.token ?? '';
   async function open() {

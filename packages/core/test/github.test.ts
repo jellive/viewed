@@ -76,3 +76,24 @@ describe('GitHub', () => {
     expect(JSON.parse(String(calls[0].init?.body))).toEqual({ files: { 'device-mac.json': { content: '{}' } } });
   });
 });
+
+describe('request timeout', () => {
+  const hangs: FetchLike = (_u, init) => new Promise((_res, rej) => {
+    init?.signal?.addEventListener('abort', () => rej(init.signal?.reason ?? new Error('aborted')));
+  });
+  it('a request that never answers rejects with GitHubError status 0', async () => {
+    const err = await new GitHub('t', hangs, 'https://api.github.com', 20).updateGistFile('g', 'f.json', '{}').catch((e) => e);
+    expect(err).toBeInstanceOf(GitHubError);
+    expect(err.status).toBe(0);
+  });
+  it('the raw fetch times out the same way', async () => {
+    const err = await new GitHub('t', hangs, 'https://api.github.com', 20).fetchRaw('https://x/raw').catch((e) => e);
+    expect(err).toBeInstanceOf(GitHubError);
+    expect(err.status).toBe(0);
+  });
+  it('a request that answers in time is untouched', async () => {
+    const { f, calls } = fake({ '/repos/acme/widget': { body: { default_branch: 'main' } } });
+    expect(await new GitHub('t', f, 'https://api.github.com', 20).defaultBranch('acme', 'widget')).toBe('main');
+    expect(calls[0].init?.signal).toBeInstanceOf(AbortSignal);
+  });
+});

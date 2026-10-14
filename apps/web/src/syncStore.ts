@@ -15,9 +15,10 @@ export interface SyncStore {
   flush(): Promise<void>;
 }
 
-const pendingKey = (deviceId: string) => `viewed.pending.${deviceId}`;
-function readPending(deviceId: string): DeviceState {
-  try { return JSON.parse(localStorage.getItem(pendingKey(deviceId)) ?? '{}'); } catch { return {}; }
+// gist 마다 따로 둔다 — 다른 gist 의 저장소가 이 기록을 지우지 못하게
+const pendingKey = (gistId: string, deviceId: string) => `viewed.pending.${gistId}.${deviceId}`;
+function readPending(gistId: string, deviceId: string): DeviceState {
+  try { return JSON.parse(localStorage.getItem(pendingKey(gistId, deviceId)) ?? '{}'); } catch { return {}; }
 }
 
 // gist 의 기기 파일과 pending 키는 기기당 하나다 — 그 쓰기도 기기당 하나(이 저장소)만 한다
@@ -33,7 +34,7 @@ export function getSyncStore(gh: GitHub, gistId: string, deviceId: string): Sync
 }
 
 function create(gh0: GitHub, gistId: string, deviceId: string): SyncStore & { gh: GitHub } {
-  let own: DeviceState = readPending(deviceId);           // 만들 때 동기로 읽는다 — 옛 저장이 지운 뒤에 읽는 일이 없게
+  let own: DeviceState = readPending(gistId, deviceId);           // 만들 때 동기로 읽는다 — 옛 저장이 지운 뒤에 읽는 일이 없게
   let version = Object.keys(own).length ? 1 : 0;          // 마지막 변경 번호
   let savedVersion = 0;                                    // 마지막으로 gist 에 저장된 번호
   let inflight = false, failed = false, absorbed = false;
@@ -56,7 +57,7 @@ function create(gh0: GitHub, gistId: string, deviceId: string): SyncStore & { gh
     set(key, rec) {
       own = { ...own, [key]: rec };
       version += 1;
-      try { localStorage.setItem(pendingKey(deviceId), JSON.stringify(own)); } catch { failed = true; }
+      try { localStorage.setItem(pendingKey(gistId, deviceId), JSON.stringify(own)); } catch { failed = true; }
       emit();
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => { void store.flush(); }, 1500);   // spec §6: 1.5초 모아서
@@ -71,7 +72,7 @@ function create(gh0: GitHub, gistId: string, deviceId: string): SyncStore & { gh
         try {
           await saveOwn(store.gh, gistId, deviceId, body);
           savedVersion = v; failed = false;
-          if (v === version) { try { localStorage.removeItem(pendingKey(deviceId)); } catch { /* 다음 저장에서 다시 지운다 */ } }
+          if (v === version) { try { localStorage.removeItem(pendingKey(gistId, deviceId)); } catch { /* 다음 저장에서 다시 지운다 */ } }
         } catch { failed = true; }
         inflight = false; emit();
       });

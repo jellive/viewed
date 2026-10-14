@@ -128,6 +128,7 @@ test('T6: a pending write that throws never shows complete with unsaved data', a
   await expect(page.getByTestId('progress')).toHaveText('1 / 2');
   await check(page, 'b.ts');
   await expect(page.getByTestId('progress')).toHaveText('2 / 2');
+  await expect(page.getByTestId('sync-status')).toHaveText('sync failed');   // 미저장 기록을 못 남겼다는 표시
   await expect(page.getByTestId('complete')).toHaveCount(0);
   await expect.poll(() => g.deviceKeys().length, { timeout: 5000 }).toBe(2);
   await expect(page.getByTestId('complete')).toBeVisible();
@@ -153,6 +154,7 @@ test('T7: a failed save is resent after reload, and a later reload still shows i
   await page.reload();
   await openBranch(page, 'feat');
   await expect(page.getByTestId('progress')).toHaveText('1 / 2');
+  expect(JSON.parse(g.store['device-mac.json'])[ka].viewed).toBe(true);   // gist 에도 그대로 남아 있다
 });
 
 test('T8: complete stays hidden while the save is in flight', async ({ page }) => {
@@ -183,4 +185,37 @@ test('T9: an older save returning does not mark saved while a newer one is pendi
   await expect(page.getByTestId('sync-status')).toHaveText('saving…');
   await expect.poll(() => g.deviceKeys().length, { timeout: 8000 }).toBe(2);
   await expect(page.getByTestId('sync-status')).toHaveText('saved', { timeout: 5000 });
+});
+
+test('R1: changing the gist id in settings drops the review and saves only to the new gist', async ({ page }) => {
+  await seedSettings(page);
+  await mockGitHub(page, { files });
+  const g1 = await statefulGist(page);
+  const g2 = await statefulGist(page, { id: 'g2' });
+  await open(page);
+  await check(page, 'a.ts');
+  await expect(page.getByTestId('sync-status')).toHaveText('saved', { timeout: 5000 });
+  const before = JSON.stringify(g1.store);
+  await page.getByTestId('settings-open').click();
+  await page.getByLabel('gist id').fill('g2');
+  await page.getByTestId('settings-save').click();
+  await expect(page.getByTestId('open-form')).toBeVisible();
+  await expect(page.getByTestId('file-row')).toHaveCount(0);   // 옛 저장소에 묶인 화면은 남기지 않는다
+  await page.getByTestId('open-btn').click();
+  await expect(page.getByTestId('file-row')).toHaveCount(2);
+  await check(page, 'b.ts');
+  await expect.poll(() => g2.patches.length, { timeout: 5000 }).toBe(1);
+  await expect(page.getByTestId('sync-status')).toHaveText('saved', { timeout: 5000 });
+  await page.waitForTimeout(500);
+  expect(g1.patches).toHaveLength(1);                           // 처음 저장 1건뿐
+  expect(JSON.stringify(g1.store)).toBe(before);
+});
+
+test('R4: a request that fails at the network level shows sync failed', async ({ page }) => {
+  await seedSettings(page);
+  await mockGitHub(page, { files });
+  await statefulGist(page, { patch: async () => 'abort' });
+  await open(page);
+  await check(page, 'a.ts');
+  await expect(page.getByTestId('sync-status')).toHaveText('sync failed', { timeout: 5000 });
 });

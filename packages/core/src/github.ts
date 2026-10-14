@@ -11,10 +11,22 @@ export class GitHub {
     private token: string,
     private fetchImpl: FetchLike = (u, i) => fetch(u, i),
     private apiBase = 'https://api.github.com',
+    private timeoutMs = 30_000,
   ) {}
 
+  // 응답이 안 오는 요청이 저장 큐를 영영 막지 않게 한다 — 시간 초과는 status 0 인 GitHubError
+  private async send(url: string, init: RequestInit = {}): Promise<Response> {
+    const own = init.signal ? null : AbortSignal.timeout(this.timeoutMs);
+    try {
+      return await this.fetchImpl(url, own ? { ...init, signal: own } : init);
+    } catch (e) {
+      if (own?.aborted) throw new GitHubError(0, `timeout after ${this.timeoutMs}ms`);
+      throw e;
+    }
+  }
+
   private async req(path: string, init: RequestInit = {}, accept = 'application/vnd.github+json'): Promise<Response> {
-    const res = await this.fetchImpl(this.apiBase + path, {
+    const res = await this.send(this.apiBase + path, {
       ...init,
       headers: {
         authorization: `Bearer ${this.token}`,
@@ -81,7 +93,7 @@ export class GitHub {
   }
 
   async fetchRaw(url: string): Promise<string> {
-    const res = await this.fetchImpl(url);
+    const res = await this.send(url);
     if (!res.ok) throw new GitHubError(res.status, `${res.status} raw`);
     return res.text();
   }

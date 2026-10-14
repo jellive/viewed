@@ -56,9 +56,10 @@ export async function seedSettings(page: Page) {
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 export interface GistHooks {
+  id?: string;                               // gist id (기본 g1)
   initial?: Record<string, string>;
   // 요청 n 번째 PATCH — 기다린 뒤 상태코드를 돌려주면 실패로 응답한다. 성공이면 도착 후에 저장소에 반영
-  patch?: (n: number, body: { files: Record<string, { content: string }> }) => Promise<number | void>;
+  patch?: (n: number, body: { files: Record<string, { content: string }> }) => Promise<number | 'abort' | void>;
   // n 번째 GET — 요청이 도착한 시점의 저장소를 찍어 두고, 기다린 뒤 그 (낡은) 사본을 돌려준다
   get?: (n: number) => Promise<void>;
 }
@@ -68,7 +69,7 @@ export async function statefulGist(page: Page, h: GistHooks = {}) {
   const store: Record<string, string> = { ...(h.initial ?? {}) };
   const patches: { files: Record<string, { content: string }> }[] = [];
   let nPatch = 0, nGet = 0;
-  await page.route('https://api.github.com/gists/g1', async (route) => {
+  await page.route(`https://api.github.com/gists/${h.id ?? 'g1'}`, async (route) => {
     const req = route.request();
     const json = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
     if (req.method() === 'PATCH') {
@@ -76,6 +77,7 @@ export async function statefulGist(page: Page, h: GistHooks = {}) {
       const body = req.postDataJSON();
       patches.push(body);
       const fail = await h.patch?.(n, body);
+      if (fail === 'abort') return route.abort();
       if (typeof fail === 'number') return json({}, fail);
       for (const [name, f] of Object.entries(body.files as Record<string, { content: string }>)) store[name] = f.content;
       return json({});
