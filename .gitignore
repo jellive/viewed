@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+test-results/
+playwright-report/
+__pycache__/
+*.pyc
+.DS_Store
+.env*
+.prepublish-extra

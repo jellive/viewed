@@ -1,0 +1,7 @@
+packages:
+  - packages/*
+  - apps/*
+# pnpm 11 은 strictDepBuilds 기본 true — 목록에 없는 패키지의 설치 스크립트는 에러다(ctx7 /pnpm/pnpm.io 2026-10-15).
+# electron 은 바이너리를 내려받는 postinstall 이 필요하다. 설치 중 다른 패키지가 보고되면 그때 여기 추가한다.
+allowBuilds:
+  electron: true
