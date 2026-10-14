@@ -125,5 +125,6 @@ test('F8: a late response from an earlier open does not overwrite the latest', a
   await expect(page.getByTestId('progress')).toHaveText('0 / 1');
   await page.waitForTimeout(2600);
   await expect(page.getByTestId('progress')).toHaveText('0 / 1');
-  await expect(page.getByTestId('file-row')).toHaveText('f1.ts');
+  await expect(page.getByTestId('file-row')).toHaveCount(1);
+  await expect(page.getByTestId('file-row')).toContainText('f1.ts');   // 행에 상태 표시·diff 가 같이 있다
 });

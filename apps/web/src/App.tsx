@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import { GitHub, GitHubError, loadSnapshot, loadAll, buildReview, type Review, type Snapshot } from '@viewed/core';
+import { GitHub, GitHubError, loadSnapshot, loadAll, mergeStates, type DeviceState, type Snapshot } from '@viewed/core';
 import { loadSettings, type Settings as S } from './settings';
 import { Settings } from './components/Settings';
+import { ReviewView } from './components/ReviewView';
+import { readPending } from './useReview';
 
 export function App() {
   const [settings, setSettings] = useState<S | null | undefined>(undefined);
   const [form, setForm] = useState({ account: '', repo: '', branch: '', base: '' });
-  const [loaded, setLoaded] = useState<{ snap: Snapshot; review: Review } | null>(null);
+  const [loaded, setLoaded] = useState<{ id: number; snap: Snapshot; merged: DeviceState; own: DeviceState; gh: GitHub } | null>(null);
   const [error, setError] = useState('');
   const [editing, setEditing] = useState(false);
   const [loadError, setLoadError] = useState('');
@@ -31,10 +33,14 @@ export function App() {
       const [owner, repo] = repoStr.split('/');
       const gh = new GitHub(token(form.account || settings!.accounts[0].label));
       const snap = await loadSnapshot(gh, owner, repo, form.branch.trim(), form.base || undefined);
-      const { merged } = await loadAll(new GitHub(token(settings!.gistAccount)), settings!.gistId, settings!.deviceId);
-      const review = await buildReview(snap, merged, settings!.secret);
+      const gistGh = new GitHub(token(settings!.gistAccount));
+      const all = await loadAll(gistGh, settings!.gistId, settings!.deviceId);
+      // 저장 못 했던 체크를 합친다 — 실패 뒤 앱을 닫아도 사라지지 않게
+      const pending = readPending(settings!.deviceId);
+      const own = mergeStates([all.own, pending]);
+      const merged = mergeStates([all.merged, pending]);
       if (mine !== seq.current) return;
-      setLoaded({ snap, review });
+      setLoaded({ id: mine, snap, merged, own, gh: gistGh });
     } catch (e) {
       if (mine !== seq.current) return;
       setError(e instanceof GitHubError ? `GitHub ${e.status}: ${e.message}` : String(e));
@@ -53,10 +59,8 @@ export function App() {
       </form>
       {error && <p data-testid="error" role="alert">{error}</p>}
       {loaded && (
-        <section>
-          <p data-testid="progress">{loaded.review.viewedCount} / {loaded.review.total}</p>
-          <ul>{loaded.review.items.map((it) => <li key={it.key} data-testid="file-row">{it.file.path}</li>)}</ul>
-        </section>
+        <ReviewView key={loaded.id} snap={loaded.snap} merged={loaded.merged} own={loaded.own} secret={settings.secret}
+          gh={loaded.gh} gistId={settings.gistId} deviceId={settings.deviceId} />
       )}
     </main>
   );
