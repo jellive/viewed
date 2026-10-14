@@ -8,6 +8,7 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
+      workbox: { skipWaiting: true, clientsClaim: true },
       injectRegister: false, // main.tsx 가 http(s) 일 때만 등록 (Electron file:// 제외)
       manifest: {
         name: 'viewed', short_name: 'viewed', display: 'standalone', start_url: '.',
