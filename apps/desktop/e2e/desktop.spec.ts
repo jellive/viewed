@@ -13,6 +13,13 @@ test('loads the web build and stores secrets encrypted', async () => {
   expect(await win.evaluate(() => (window as any).viewedDesktop!.getSecret('token:personal'))).toBe('plain-token-123');
   const onDisk = readFileSync(join(userData, 'secrets.json'), 'utf8');
   expect(onDisk).not.toContain('plain-token-123');
+  const stored = JSON.parse(onDisk)['token:personal'] as string;
+  expect(Buffer.from(stored, 'base64').toString('utf8')).not.toBe('plain-token-123');
+  const dec = await app.evaluate(async ({ safeStorage }, b64) => {
+    const out: any = await safeStorage.decryptStringAsync(Buffer.from(b64, 'base64'));
+    return typeof out === 'string' ? out : out.result;
+  }, stored);
+  expect(dec).toBe('plain-token-123');
   expect(await win.evaluate(() => (window as any).viewedDesktop!.getSecret('missing'))).toBeNull();
   await app.close();
 });
