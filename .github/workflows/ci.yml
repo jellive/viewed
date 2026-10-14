@@ -1,0 +1,19 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      # CI never launches Electron (desktop E2E is local-only), so skip its ~100MB binary download.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with: { node-version: 26, cache: pnpm }
+      - run: sudo apt-get install -y ripgrep
+      - run: pnpm install --frozen-lockfile
+      - run: bash scripts/prepublish-scan.sh
+      - run: pnpm --filter @viewed/core test
+      - run: pnpm --filter @viewed/web exec playwright install --with-deps chromium
+      - run: pnpm --filter @viewed/web test
