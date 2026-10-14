@@ -1,0 +1,8 @@
+{
+  "name": "@viewed/core",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": { "test": "vitest run" },
+  "devDependencies": { "vitest": "5.0.4", "typescript": "^5" }
+}
