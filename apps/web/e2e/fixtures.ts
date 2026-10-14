@@ -52,3 +52,51 @@ export async function viewedGist(files: MockFile[], at = '2026-10-15T00:00:00Z')
 export async function seedSettings(page: Page) {
   await page.addInitScript((s) => localStorage.setItem('viewed.settings', JSON.stringify(s)), SETTINGS);
 }
+
+export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+export interface GistHooks {
+  initial?: Record<string, string>;
+  // 요청 n 번째 PATCH — 기다린 뒤 상태코드를 돌려주면 실패로 응답한다. 성공이면 도착 후에 저장소에 반영
+  patch?: (n: number, body: { files: Record<string, { content: string }> }) => Promise<number | void>;
+  // n 번째 GET — 요청이 도착한 시점의 저장소를 찍어 두고, 기다린 뒤 그 (낡은) 사본을 돌려준다
+  get?: (n: number) => Promise<void>;
+}
+
+// 상태가 있는 gist 모의: PATCH 는 저장, GET 은 저장된 것을 돌려준다. mockGitHub 다음에 호출해야 이쪽이 우선한다
+export async function statefulGist(page: Page, h: GistHooks = {}) {
+  const store: Record<string, string> = { ...(h.initial ?? {}) };
+  const patches: { files: Record<string, { content: string }> }[] = [];
+  let nPatch = 0, nGet = 0;
+  await page.route('https://api.github.com/gists/g1', async (route) => {
+    const req = route.request();
+    const json = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (req.method() === 'PATCH') {
+      const n = nPatch++;
+      const body = req.postDataJSON();
+      patches.push(body);
+      const fail = await h.patch?.(n, body);
+      if (typeof fail === 'number') return json({}, fail);
+      for (const [name, f] of Object.entries(body.files as Record<string, { content: string }>)) store[name] = f.content;
+      return json({});
+    }
+    const n = nGet++;
+    const snap = { ...store };
+    await h.get?.(n);
+    return json({ files: Object.fromEntries(Object.entries(snap).map(([k, c]) => [k, { content: c, truncated: false, raw_url: '' }])) });
+  });
+  const deviceKeys = () => Object.keys(JSON.parse(store['device-mac.json'] ?? '{}'));
+  return { store, patches, deviceKeys };
+}
+
+// 다른 브랜치 — mockGitHub 다음에 호출
+export async function mockBranch(page: Page, branch: string, head: string, files: MockFile[]) {
+  await page.route('https://api.github.com/repos/acme/widget/**', async (route) => {
+    const p = new URL(route.request().url()).pathname;
+    const json = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+    if (p === `/repos/acme/widget/branches/${branch}`) return json({ commit: { sha: head } });
+    if (p === `/repos/acme/widget/compare/main...${head}`) return json({ files });
+    if (p === `/repos/acme/widget/git/trees/${head}`) return json({ truncated: false, tree: files.map((f) => ({ path: f.filename, type: 'blob', mode: '100644' })) });
+    return route.fallback();
+  });
+}

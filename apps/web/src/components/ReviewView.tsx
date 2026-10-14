@@ -1,9 +1,10 @@
-import type { GitHub, DeviceState, Snapshot } from '@viewed/core';
+import type { DeviceState, Snapshot } from '@viewed/core';
 import { useReview } from '../useReview';
+import type { SyncStore } from '../syncStore';
 import { FileList } from './FileList';
 import { DiffView } from './DiffView';
 
-export function ReviewView(a: { snap: Snapshot; merged: DeviceState; own: DeviceState; secret: string; gh: GitHub; gistId: string; deviceId: string }) {
+export function ReviewView(a: { snap: Snapshot; merged: DeviceState; secret: string; store: SyncStore }) {
   const { review, toggle, sync } = useReview(a);
   if (!review) return null;
   return (
