@@ -10,6 +10,18 @@ describe('mergeStates', () => {
     const m = mergeStates([{ k: rec('2026-10-15T01:00:00Z', true, 'old') }, { k: rec('2026-10-15T02:00:00Z', true, 'new') }]);
     expect(m.k.fp).toBe('new');
   });
+  it('orders by parsed time, not string (fractional seconds)', () => {
+    const m = mergeStates([
+      { k: rec('2026-10-15T00:00:00.500Z', true, 'later') },
+      { k: rec('2026-10-15T00:00:00Z', true, 'earlier') },
+    ]);
+    expect(m.k.fp).toBe('later');
+    const m2 = mergeStates([
+      { k: rec('2026-10-15T00:00:00Z', true, 'earlier') },
+      { k: rec('2026-10-15T00:00:00.500Z', true, 'later') },
+    ]);
+    expect(m2.k.fp).toBe('later');
+  });
   it('on equal time an unchecked record wins', () => {
     const t = '2026-10-15T01:00:00Z';
     expect(mergeStates([{ k: rec(t, true) }, { k: rec(t, false) }]).k.viewed).toBe(false);
@@ -58,6 +70,29 @@ describe('gist io', () => {
 
   it('a corrupt device file throws instead of silently dropping records', async () => {
     const { f } = gistFetch({ 'device-mac.json': { content: '{not json', truncated: false, raw_url: '' } });
+    await expect(loadAll(new GitHub('t', f), 'g1', 'mac')).rejects.toThrow();
+  });
+
+  it('throws when the gist file list is truncated (own file may be missing)', async () => {
+    const { f } = gistFetch({ 'device-phone.json': { content: '{}', truncated: false, raw_url: '' } });
+    const orig = f;
+    const g: FetchLike = async (url, init) => {
+      const r = await orig(url, init);
+      if (!url.endsWith('/gists/g1') || init?.method === 'PATCH') return r;
+      return new Response(JSON.stringify({ ...(await r.json()), truncated: true }));
+    };
+    await expect(loadAll(new GitHub('t', g), 'g1', 'mac')).rejects.toThrow('gist file list truncated');
+  });
+
+  it('rejects shape-invalid records instead of trusting them', async () => {
+    const bad = { a: { ...rec('2026-10-15T01:00:00Z'), viewed: 'false' } };
+    const { f } = gistFetch({ 'device-mac.json': { content: JSON.stringify(bad), truncated: false, raw_url: '' } });
+    await expect(loadAll(new GitHub('t', f), 'g1', 'mac')).rejects.toThrow();
+  });
+
+  it('rejects an unparseable at', async () => {
+    const bad = { a: { ...rec('not-a-date') } };
+    const { f } = gistFetch({ 'device-mac.json': { content: JSON.stringify(bad), truncated: false, raw_url: '' } });
     await expect(loadAll(new GitHub('t', f), 'g1', 'mac')).rejects.toThrow();
   });
 

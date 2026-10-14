@@ -17,6 +17,10 @@ describe('recordKey', () => {
     expect(k).toMatch(/^[0-9a-f]{64}$/);
     expect(await recordKey('other', 'acme', 'widget', 'feat', 'a.ts')).not.toBe(k);
   });
+  it('does not collide when a separator char moves between branch and path', async () => {
+    expect(await recordKey(S, 'acme', 'widget', 'feat|a', 'b.ts'))
+      .not.toBe(await recordKey(S, 'acme', 'widget', 'feat', 'a|b.ts'));
+  });
 });
 
 describe('buildReview', () => {

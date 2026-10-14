@@ -16,9 +16,11 @@ describe('fingerprint', () => {
   it('changes when only the mode changes', async () => {
     expect(await fingerprint({ ...base, mode: '100755' })).not.toBe(await fingerprint(base));
   });
-  it('changes when status or previousPath changes', async () => {
-    const f = await fingerprint(base);
-    expect(await fingerprint({ ...base, status: 'renamed', previousPath: 'old.ts' })).not.toBe(f);
+  it('changes when only the status changes', async () => {
+    expect(await fingerprint({ ...base, status: 'added' })).not.toBe(await fingerprint(base));
+  });
+  it('changes when only the previousPath changes', async () => {
+    expect(await fingerprint({ ...base, previousPath: 'old.ts' })).not.toBe(await fingerprint(base));
   });
   it('falls back to blob sha when there is no patch', async () => {
     const noPatch = { ...base, patch: undefined };

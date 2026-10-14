@@ -73,7 +73,7 @@ export class GitHub {
   }
 
   getGist(id: string) {
-    return this.json<{ files: Record<string, { content: string; truncated: boolean; raw_url: string }> }>(`/gists/${id}`);
+    return this.json<{ truncated?: boolean; files: Record<string, { content: string; truncated: boolean; raw_url: string }> }>(`/gists/${id}`);
   }
 
   async updateGistFile(id: string, name: string, content: string): Promise<void> {
