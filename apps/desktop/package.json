@@ -1,0 +1,7 @@
+{
+  "name": "@viewed/desktop",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": { "start": "electron .", "test": "playwright test" },
+  "devDependencies": { "electron": "44.7.1", "@playwright/test": "^1" }
+}
