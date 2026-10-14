@@ -31,7 +31,9 @@ export function Settings({ initial, onSaved, notice }: { initial: S | null; onSa
       e.preventDefault();
       const problem = validate(s);
       if (problem) { setErr(problem); return; }
-      setErr(''); await saveSettings(s); onSaved(s);
+      setErr('');
+      try { await saveSettings(s); } catch (x) { setErr(`Could not save settings: ${x instanceof Error ? x.message : String(x)}`); return; }
+      onSaved(s);
     }}>
       {err && <p data-testid="settings-error" role="alert">{err}</p>}
       {s.accounts.map((a, i) => (

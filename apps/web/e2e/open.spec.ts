@@ -44,3 +44,15 @@ test('a bad token shows an error, not an empty list', async ({ page }) => {
   await page.getByTestId('open-btn').click();
   await expect(page.getByTestId('error')).toContainText('401');
 });
+
+test('a failing save (e.g. keychain write rejected) shows the error in settings', async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as any).viewedDesktop = { getSecret: async () => null, setSecret: async () => { throw new Error('keychain write failed'); } };
+  });
+  await page.goto('/');
+  await page.getByLabel('token').fill('tok');
+  await page.getByLabel('gist id').fill('g1');
+  await page.getByLabel('shared secret').fill('s3cret');
+  await page.getByTestId('settings-save').click();
+  await expect(page.getByTestId('settings-error')).toContainText('keychain write failed');
+});

@@ -1,5 +1,5 @@
 import { test, expect, _electron as electron } from '@playwright/test';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, statSync, chmodSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -54,17 +54,54 @@ test('B2: concurrent setSecret keeps every key', async () => {
   await app.close();
 });
 
-test('B3: corrupt secrets.json is not overwritten', async () => {
+test('B3: corrupt secrets.json is quarantined on set; get on it still rejects', async () => {
   const dir = tmp();
   const file = join(dir, 'secrets.json');
   writeFileSync(file, '{"token:a":"');
   const app = await launch(dir);
   const win = await app.firstWindow();
   await expect(win.getByTestId('settings-form')).toBeVisible();
-  const r = await win.evaluate(() => (window as any).viewedDesktop.setSecret('token:b', 'B').then(() => 'ok', () => 'rejected'));
-  expect(r).toBe('rejected');
+  const g = await win.evaluate(() => (window as any).viewedDesktop.getSecret('token:a').then(() => 'ok', () => 'rejected'));
+  expect(g).toBe('rejected');
   expect(readFileSync(file, 'utf8')).toBe('{"token:a":"');
+  await win.evaluate(() => (window as any).viewedDesktop.setSecret('token:b', 'B'));
+  const q = readdirSync(dir).filter((n) => n.startsWith('secrets.json.corrupt-'));
+  expect(q.length).toBe(1);
+  expect(readFileSync(join(dir, q[0]), 'utf8')).toBe('{"token:a":"');
+  expect(statSync(join(dir, q[0])).mode & 0o777).toBe(0o600);
+  expect(await win.evaluate(() => (window as any).viewedDesktop.getSecret('token:b'))).toBe('B');
   expect(existsSync(file + '.tmp')).toBe(false);
+  await app.close();
+});
+
+test('B3b: an unreadable secrets.json (EACCES) makes set reject and leaves the file untouched', async () => {
+  const dir = tmp();
+  const file = join(dir, 'secrets.json');
+  writeFileSync(file, '{"token:a":"x"}');
+  chmodSync(file, 0o000);
+  const app = await launch(dir);
+  try {
+    const win = await app.firstWindow();
+    await expect(win.getByTestId('settings-form')).toBeVisible();
+    const r = await win.evaluate(() => (window as any).viewedDesktop.setSecret('token:b', 'B').then(() => 'ok', () => 'rejected'));
+    expect(r).toBe('rejected');
+    expect(readdirSync(dir).filter((n) => n.includes('corrupt'))).toEqual([]);
+  } finally {
+    await app.close();
+    chmodSync(file, 0o600);
+  }
+  expect(readFileSync(file, 'utf8')).toBe('{"token:a":"x"}');
+});
+
+test('N1: a same-document URL change away from the app page makes the bridge forbidden', async () => {
+  const app = await launch(tmp());
+  const win = await app.firstWindow();
+  await expect(win.getByTestId('settings-form')).toBeVisible();
+  const r = await win.evaluate(() => {
+    try { history.pushState({}, '', 'file:///remote-ish.html'); } catch (e) { return 'pushState-threw'; }
+    return (window as any).viewedDesktop.getSecret('x').then(() => 'ok', (e: Error) => String(e.message));
+  });
+  expect(r).toContain('forbidden sender');
   await app.close();
 });
 

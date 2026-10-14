@@ -1,5 +1,5 @@
 const { app, BrowserWindow, ipcMain, safeStorage, shell } = require('electron');
-const { pathToFileURL } = require('node:url');
+const { isAppPage } = require('./app-page.cjs');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
@@ -8,7 +8,6 @@ const ud = process.argv.find((a) => a.startsWith(UD));
 if (ud) app.setPath('userData', path.resolve(ud.slice(UD.length)));
 
 const indexHtml = path.join(__dirname, '..', 'web', 'dist', 'index.html');
-const indexUrl = pathToFileURL(indexHtml).href;
 let win = null;
 
 const secretsFile = () => path.join(app.getPath('userData'), 'secrets.json');
@@ -19,10 +18,12 @@ async function readAll() {
     if (e && e.code === 'ENOENT') return {};
     throw e;
   }
-  const parsed = JSON.parse(text);
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('corrupt secrets.json');
+  let parsed;
+  try { parsed = JSON.parse(text); } catch { throw new CorruptError(); }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new CorruptError();
   return parsed;
 }
+class CorruptError extends Error { constructor() { super('corrupt secrets.json'); } }
 async function decrypt(b64) {
   const out = await safeStorage.decryptStringAsync(Buffer.from(b64, 'base64'));
   return typeof out === 'string' ? out : out.result;   // 44.x: { shouldReEncrypt, result }
@@ -30,7 +31,7 @@ async function decrypt(b64) {
 
 function assertSender(e) {
   const ok = win && !win.isDestroyed() && e.sender === win.webContents &&
-    e.senderFrame === e.sender.mainFrame && e.senderFrame.url === indexUrl;
+    e.senderFrame === e.sender.mainFrame && isAppPage(e.senderFrame.url, indexHtml);
   if (!ok) throw new Error('forbidden sender');
 }
 
@@ -53,7 +54,15 @@ ipcMain.handle('secret:get', (e, name) => {
 ipcMain.handle('secret:set', (e, name, value) => {
   assertSender(e);
   return serialize(async () => {
-    const all = await readAll();
+    let all;
+    try { all = await readAll(); } catch (e) {
+      if (!(e instanceof CorruptError)) throw e;   // EACCES 등은 그대로 거부 — 파일을 건드리지 않는다
+      // 깨진 파일은 지우지 않고 격리한다(원본 바이트 보존). 이후 새 파일로 이어간다.
+      const q = `${secretsFile()}.corrupt-${Date.now()}`;
+      await fs.rename(secretsFile(), q);
+      await fs.chmod(q, 0o600);
+      all = {};
+    }
     all[name] = (await safeStorage.encryptStringAsync(value)).toString('base64');
     const tmp = secretsFile() + '.tmp';
     await fs.writeFile(tmp, JSON.stringify(all), { mode: 0o600 });
