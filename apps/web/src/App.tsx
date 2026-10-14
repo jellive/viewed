@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { GitHub, GitHubError, loadSnapshot, loadAll, buildReview, type Review, type Snapshot } from '@viewed/core';
 import { loadSettings, type Settings as S } from './settings';
 import { Settings } from './components/Settings';
@@ -9,22 +9,34 @@ export function App() {
   const [loaded, setLoaded] = useState<{ snap: Snapshot; review: Review } | null>(null);
   const [error, setError] = useState('');
   const [editing, setEditing] = useState(false);
-  useEffect(() => { loadSettings().then(setSettings); }, []);
+  const [loadError, setLoadError] = useState('');
+  const seq = useRef(0);
+  useEffect(() => {
+    loadSettings().then(setSettings).catch(() => { setLoadError("Stored settings couldn't be read. Please enter them again."); setSettings(null); });
+  }, []);
   if (settings === undefined) return null;
   // 토큰·비밀이 비어 있으면(첫 실행 또는 keychain 복호화 실패) 설정으로 보낸다 — spec §7 재입력
-  const incomplete = !settings || !settings.secret || settings.accounts.some((a) => !a.token);
-  if (incomplete || editing) return <Settings initial={settings} onSaved={(s) => { setSettings(s); setEditing(false); }} />;
+  const incomplete = !settings || !settings.secret || settings.accounts.length === 0
+    || settings.accounts.some((a) => !a.token) || !settings.accounts.some((a) => a.label === settings.gistAccount);
+  if (incomplete || editing) return <Settings initial={settings} notice={loadError} onSaved={(s) => { setSettings(s); setEditing(false); }} />;
 
   const token = (label: string) => settings.accounts.find((a) => a.label === label)?.token ?? '';
   async function open() {
+    const mine = ++seq.current;
     setError(''); setLoaded(null);
+    const repoStr = form.repo.trim();
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repoStr)) { setError('Repository must look like owner/repo.'); return; }
+    if (!form.branch.trim()) { setError('Branch is required.'); return; }
     try {
-      const [owner, repo] = form.repo.split('/');
+      const [owner, repo] = repoStr.split('/');
       const gh = new GitHub(token(form.account || settings!.accounts[0].label));
-      const snap = await loadSnapshot(gh, owner, repo, form.branch, form.base || undefined);
+      const snap = await loadSnapshot(gh, owner, repo, form.branch.trim(), form.base || undefined);
       const { merged } = await loadAll(new GitHub(token(settings!.gistAccount)), settings!.gistId, settings!.deviceId);
-      setLoaded({ snap, review: await buildReview(snap, merged, settings!.secret) });
+      const review = await buildReview(snap, merged, settings!.secret);
+      if (mine !== seq.current) return;
+      setLoaded({ snap, review });
     } catch (e) {
+      if (mine !== seq.current) return;
       setError(e instanceof GitHubError ? `GitHub ${e.status}: ${e.message}` : String(e));
     }
   }

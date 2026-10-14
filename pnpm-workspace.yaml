@@ -5,6 +5,3 @@ packages:
 # electron 은 바이너리를 내려받는 postinstall 이 필요하다. 설치 중 다른 패키지가 보고되면 그때 여기 추가한다.
 allowBuilds:
   electron: true
-minimumReleaseAgeExclude:
-  - react-dom@19.3.1
-  - react@19.3.1
