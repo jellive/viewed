@@ -8,7 +8,7 @@ import { getSyncStore, type SyncStore } from './syncStore';
 export function App() {
   const [settings, setSettings] = useState<S | null | undefined>(undefined);
   const [form, setForm] = useState({ account: '', repo: '', branch: '', base: '' });
-  const [loaded, setLoaded] = useState<{ id: number; snap: Snapshot; merged: DeviceState; store: SyncStore } | null>(null);
+  const [loaded, setLoaded] = useState<{ id: number; snap: Snapshot; merged: DeviceState; store: SyncStore; gh: GitHub } | null>(null);
   const [error, setError] = useState('');
   const [editing, setEditing] = useState(false);
   const [loadError, setLoadError] = useState('');
@@ -44,7 +44,7 @@ export function App() {
       store.absorb(all.own);
       const merged = mergeStates([all.merged, store.own()]);
       if (mine !== seq.current) return;
-      setLoaded({ id: mine, snap, merged, store });
+      setLoaded({ id: mine, snap, merged, store, gh });
     } catch (e) {
       if (mine !== seq.current) return;
       setError(e instanceof GitHubError ? `GitHub ${e.status}: ${e.message}` : String(e));
@@ -63,7 +63,7 @@ export function App() {
       </form>
       {error && <p data-testid="error" role="alert">{error}</p>}
       {loaded && (
-        <ReviewView key={loaded.id} snap={loaded.snap} merged={loaded.merged} secret={settings.secret} store={loaded.store} />
+        <ReviewView key={loaded.id} snap={loaded.snap} merged={loaded.merged} secret={settings.secret} store={loaded.store} gh={loaded.gh} />
       )}
     </main>
   );
