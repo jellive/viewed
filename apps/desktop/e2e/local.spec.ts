@@ -97,3 +97,15 @@ test('a repo whose diff.submodule config would make git run a nested diff still 
   await expect(win.getByTestId('file-row').filter({ hasText: 'a.ts' }).getByTestId('diff')).toContainText('+a2');
   await app.close();
 });
+
+test('a new commit on the open local branch shows up by itself', async () => {
+  const repo = makeRepo();
+  const { app, win } = await launch(repo);
+  await win.getByTestId('local-add').click();
+  await openLocal(win);
+  await expect(win.getByTestId('progress')).toHaveText('0 / 2');
+  writeFileSync(join(repo, 'c.ts'), 'c\n');
+  git(repo, 'add', '-A'); git(repo, 'commit', '-q', '-m', 'live');
+  await expect(win.getByTestId('progress')).toHaveText('0 / 3', { timeout: 10_000 });   // 버튼을 안 눌러도
+  await app.close();
+});

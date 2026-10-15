@@ -104,7 +104,11 @@ button.primary:hover { background: var(--primary-hover); }
 .open-bar input[data-testid="repo-input"] { flex-basis: 200px; }
 .open-bar button[data-testid="settings-open"] { margin-left: auto; }
 
-.sync { margin: 0 0 8px; font-size: 12px; color: var(--fg-muted); text-align: right; }
+.review-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.sync { margin: 0 0 0 auto; font-size: 12px; color: var(--fg-muted); }
+.refresh { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 3px 12px; font-size: 12px; }
+.live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-muted); }
+.live::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
 .sync[data-sync="error"] { color: var(--err); font-weight: 600; }
 
 /* 진행 — GitHub PR 의 "N / M files viewed" */

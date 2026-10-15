@@ -171,3 +171,28 @@ test('device-only check marks do not depend on the shared secret', async ({ page
   await open(page);
   await expect(page.getByTestId('progress')).toHaveText('1 / 2');
 });
+
+test('refresh re-reads the branch in place and keeps the filter', async ({ page }) => {
+  await seedSettings(page);
+  await mockGitHub(page, { files });
+  await open(page);
+  await page.getByTestId('filter-unviewed').check();
+  await mockGitHub(page, { files: [...files, { filename: 'c.ts', status: 'added', sha: 'c1', patch: '@@ -0,0 +1 @@\n+c' }] });   // 새 커밋이 생긴 것처럼
+  await page.getByTestId('refresh-btn').click();
+  await expect(page.getByTestId('progress')).toHaveText('0 / 3');
+  await expect(page.getByTestId('filter-unviewed')).toBeChecked();
+});
+
+test('refresh reads the branch with the token saved now, not the one it was opened with', async ({ page }) => {
+  await seedSettings(page);
+  await mockGitHub(page, { files });
+  const auth: string[] = [];
+  page.on('request', (r) => { if (r.url().includes('/compare/')) auth.push(r.headers()['authorization'] ?? ''); });
+  await open(page);
+  await page.getByTestId('settings-open').click();
+  await page.getByLabel('token').fill('tok-new');
+  await page.getByTestId('settings-save').click();
+  await page.getByTestId('refresh-btn').click();
+  await expect.poll(() => auth.length).toBe(2);
+  expect(auth).toEqual(['Bearer tok', 'Bearer tok-new']);
+});
