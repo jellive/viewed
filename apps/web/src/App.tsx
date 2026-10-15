@@ -55,8 +55,8 @@ export function App() {
       <form data-testid="open-form" onSubmit={(e) => { e.preventDefault(); open(); }}>
         <select data-testid="account-select" value={form.account} onChange={(e) => setForm({ ...form, account: e.target.value })}>
           {settings.accounts.map((a) => <option key={a.label}>{a.label}</option>)}</select>
-        <input data-testid="repo-input" placeholder="owner/repo" value={form.repo} onChange={(e) => setForm({ ...form, repo: e.target.value })} />
-        <input data-testid="branch-input" placeholder="branch" value={form.branch} onChange={(e) => setForm({ ...form, branch: e.target.value })} />
+        <input data-testid="repo-input" placeholder="owner/repo" autoCapitalize="none" autoCorrect="off" spellCheck={false} value={form.repo} onChange={(e) => setForm({ ...form, repo: e.target.value })} />
+        <input data-testid="branch-input" placeholder="branch" autoCapitalize="none" autoCorrect="off" spellCheck={false} value={form.branch} onChange={(e) => setForm({ ...form, branch: e.target.value })} />
         <input data-testid="base-input" placeholder="base (default branch)" value={form.base} onChange={(e) => setForm({ ...form, base: e.target.value })} />
         <button data-testid="open-btn">open</button>
         <button type="button" data-testid="settings-open" onClick={() => setEditing(true)}>settings</button>

@@ -104,3 +104,16 @@ describe('request timeout', () => {
     expect(calls[0].init?.signal).toBeInstanceOf(AbortSignal);
   });
 });
+
+describe('GitHubError messages (F7)', () => {
+  const run = (status: number) => new GitHub('t', async () => new Response('x', { status })).branchHead('acme', 'widget', 'feat').catch((e) => e as GitHubError);
+  it('401 says the token was rejected', async () => {
+    const e = await run(401);
+    expect(e.message).toContain('Token rejected');
+    expect(e.message).toContain('401');
+  });
+  it('403/404 say no access', async () => {
+    expect((await run(403)).message).toContain('No access to this repository');
+    expect((await run(404)).message).toContain('No access to this repository');
+  });
+});

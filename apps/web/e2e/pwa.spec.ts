@@ -28,3 +28,9 @@ test('built service worker takes over immediately on update', async () => {
   expect(sw).toMatch(/skipWaiting\(\)/);
   expect(sw).toMatch(/clientsClaim\(\)/);
 });
+
+test('built index.html has exactly one manifest link', async () => {
+  const { readFileSync } = await import('node:fs');
+  const html = readFileSync(new URL('../dist/index.html', import.meta.url), 'utf8');
+  expect(html.match(/rel="manifest"/g) ?? []).toHaveLength(1);
+});

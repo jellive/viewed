@@ -23,3 +23,21 @@ test('loads the web build and stores secrets encrypted', async () => {
   expect(await win.evaluate(() => (window as any).viewedDesktop!.getSecret('missing'))).toBeNull();
   await app.close();
 });
+
+test('a second instance with the same user-data-dir does not open a second window', async () => {
+  const userData = mkdtempSync(join(tmpdir(), 'viewed-'));
+  const args = ['.', `--user-data-dir=${userData}`];
+  const first = await electron.launch({ args, cwd: join(__dirname, '..') });
+  await first.firstWindow();
+  const second = await electron.launch({ args, cwd: join(__dirname, '..') }).catch(() => null);
+  if (second) {
+    const closed = await Promise.race([
+      new Promise<boolean>((r) => second.process().once('exit', () => r(true))),
+      new Promise<boolean>((r) => setTimeout(() => r(false), 10_000)),
+    ]);
+    if (!closed) await second.close();
+    expect(closed).toBe(true);
+  }
+  expect(first.windows()).toHaveLength(1);
+  await first.close();
+});

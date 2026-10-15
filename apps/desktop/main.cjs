@@ -70,7 +70,14 @@ ipcMain.handle('secret:set', (e, name, value) => {
   });
 });
 
-app.whenReady().then(() => {
+// 같은 userData 로 두 번째 인스턴스를 띄우면 secrets.json 쓰기가 엇갈린다 — 하나만 허용
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) app.quit();
+app.on('second-instance', () => {
+  if (win && !win.isDestroyed()) { if (win.isMinimized()) win.restore(); win.focus(); }
+});
+
+if (gotLock) app.whenReady().then(() => {
   win = new BrowserWindow({
     width: 1200, height: 900, title: 'viewed',
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false },

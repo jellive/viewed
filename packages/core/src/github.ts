@@ -6,6 +6,14 @@ export class GitHubError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
 
+// 사람이 읽을 사유 + 원래 상태코드·경로(spec §8)
+function explain(status: number, detail: string): string {
+  const why = status === 401 ? 'Token rejected (expired or revoked) — update it in settings.'
+    : status === 403 || status === 404 ? "No access to this repository with this token, or it doesn't exist."
+    : status === 0 ? 'Network error or timeout.' : '';
+  return why ? `${why} (${status} ${detail})` : `${status} ${detail}`;
+}
+
 export class GitHub {
   constructor(
     private token: string,
@@ -20,7 +28,7 @@ export class GitHub {
     try {
       return await this.fetchImpl(url, own ? { ...init, signal: own } : init);
     } catch (e) {
-      if (own?.aborted) throw new GitHubError(0, `timeout after ${this.timeoutMs}ms`);
+      if (own?.aborted) throw new GitHubError(0, explain(0, `timeout after ${this.timeoutMs}ms`));
       throw e;
     }
   }
@@ -35,7 +43,7 @@ export class GitHub {
         ...(init.body ? { 'content-type': 'application/json' } : {}),
       },
     });
-    if (!res.ok) throw new GitHubError(res.status, `${res.status} ${path}`);
+    if (!res.ok) throw new GitHubError(res.status, explain(res.status, path));
     return res;
   }
 
@@ -94,7 +102,7 @@ export class GitHub {
 
   async fetchRaw(url: string): Promise<string> {
     const res = await this.send(url);
-    if (!res.ok) throw new GitHubError(res.status, `${res.status} raw`);
+    if (!res.ok) throw new GitHubError(res.status, explain(res.status, 'raw'));
     return res.text();
   }
 }

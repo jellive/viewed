@@ -9,6 +9,7 @@ function validate(s: S): string {
   if (s.accounts.some((a) => !a.token)) return 'Every account needs a token.';
   if (!s.gistId.trim()) return 'Gist id is required.';
   if (!s.secret) return 'Shared secret is required.';
+  if (!/^[A-Za-z0-9_-]{1,32}$/.test(s.deviceId)) return 'Device id must be 1-32 letters, digits, _ or -.';
   return '';
 }
 
@@ -49,6 +50,7 @@ export function Settings({ initial, onSaved, notice }: { initial: S | null; onSa
       <input aria-label="gist id" value={s.gistId} onChange={(e) => setS({ ...s, gistId: e.target.value })} />
       <input aria-label="shared secret" type="password" value={s.secret} onChange={(e) => setS({ ...s, secret: e.target.value })} />
       <input aria-label="device id" value={s.deviceId} onChange={(e) => setS({ ...s, deviceId: e.target.value })} />
+      <small>Must be different on each device.</small>
       <button data-testid="settings-save">save</button>
     </form>
   );
