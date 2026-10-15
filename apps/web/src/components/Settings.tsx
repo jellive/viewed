@@ -1,15 +1,16 @@
 import { cloneElement, useId, useState, type ReactElement, type ReactNode } from 'react';
 import { saveSettings, type Settings as S } from '../settings';
+import { t } from '../i18n';
 
 function validate(s: S): string {
-  if (s.accounts.length === 0) return 'Add at least one account.';
+  if (s.accounts.length === 0) return t.needAccount;
   const labels = s.accounts.map((a) => a.label.trim());
-  if (labels.some((l) => !l)) return 'Account labels must not be empty.';
-  if (new Set(labels).size !== labels.length) return 'Account labels must be unique (duplicate label).';
-  if (s.accounts.some((a) => !a.token)) return 'Every account needs a token.';
-  if (!s.gistId.trim()) return 'Gist id is required.';
-  if (!s.secret) return 'Shared secret is required.';
-  if (!/^[A-Za-z0-9_-]{1,32}$/.test(s.deviceId)) return 'Device id must be 1-32 letters, digits, _ or -.';
+  if (labels.some((l) => !l)) return t.emptyLabel;
+  if (new Set(labels).size !== labels.length) return t.duplicateLabel;
+  if (s.accounts.some((a) => !a.token)) return t.needToken;
+  if (!s.gistId.trim()) return t.needGist;
+  if (!s.secret) return t.needSecret;
+  if (!/^[A-Za-z0-9_-]{1,32}$/.test(s.deviceId)) return t.badDeviceId;
   return '';
 }
 
@@ -46,38 +47,38 @@ export function Settings({ initial, onSaved, notice }: { initial: S | null; onSa
       const problem = validate(s);
       if (problem) { setErr(problem); return; }
       setErr('');
-      try { await saveSettings(s); } catch (x) { setErr(`Could not save settings: ${x instanceof Error ? x.message : String(x)}`); return; }
+      try { await saveSettings(s); } catch (x) { setErr(t.saveFailed(x instanceof Error ? x.message : String(x))); return; }
       onSaved(s);
     }}>
-      <h1>Settings</h1>
+      <h1>{t.settingsTitle}</h1>
       {err && <p data-testid="settings-error" role="alert" className="flash err">{err}</p>}
       {s.accounts.map((a, i) => (
         <fieldset key={i} className="account">
-          <Field name="Account name" hint="Any name, like personal or work. Add another account for repositories that need a different token.">
-            <input aria-label="account label" value={a.label} onChange={(e) => setAcc(i, 'label', e.target.value)} />
+          <Field name={t.accountName} hint={t.accountNameHint}>
+            <input aria-label={t.aria.accountLabel} value={a.label} onChange={(e) => setAcc(i, 'label', e.target.value)} />
           </Field>
-          <Field name="GitHub token" hint={<>Fine-grained token with read access to Contents and Metadata on the repositories you review. The token of the account that owns the gist also needs Gists read and write. <a href="https://github.com/settings/personal-access-tokens/new" {...ext}>Create a token</a></>}>
-            <input aria-label="token" type="password" value={a.token} onChange={(e) => setAcc(i, 'token', e.target.value)} />
+          <Field name={t.token} hint={<>{t.tokenHint} <a href="https://github.com/settings/personal-access-tokens/new" {...ext}>{t.createToken}</a></>}>
+            <input aria-label={t.aria.token} type="password" value={a.token} onChange={(e) => setAcc(i, 'token', e.target.value)} />
           </Field>
-          <button type="button" onClick={() => removeAcc(i)}>remove</button>
+          <button type="button" onClick={() => removeAcc(i)}>{t.remove}</button>
         </fieldset>
       ))}
-      <button type="button" onClick={() => setS({ ...s, accounts: [...s.accounts, { label: '', token: '' }] })}>add account</button>
-      <p className="lead">Your check marks are saved to a secret gist, so every device sees the same files as viewed. Code never goes there — only hashed file names and diff fingerprints.</p>
-      <Field name="Account that owns the gist" hint="Its token reads and writes your check marks.">
+      <button type="button" onClick={() => setS({ ...s, accounts: [...s.accounts, { label: '', token: '' }] })}>{t.addAccount}</button>
+      <p className="lead">{t.lead}</p>
+      <Field name={t.gistAccount} hint={t.gistAccountHint}>
         <select value={s.gistAccount} onChange={(e) => setS({ ...s, gistAccount: e.target.value })}>
           {s.accounts.map((a) => <option key={a.label}>{a.label}</option>)}</select>
       </Field>
-      <Field name="Gist id" hint={<>Create a secret gist with any one file at <a href="https://gist.github.com/" {...ext}>gist.github.com</a>, then paste the id from its address: gist.github.com/you/<b>id</b>. Use the same gist on every device.</>}>
-        <input aria-label="gist id" autoCapitalize="none" autoCorrect="off" spellCheck={false} value={s.gistId} onChange={(e) => setS({ ...s, gistId: e.target.value })} />
+      <Field name={t.gistId} hint={<>{t.gistIdHintBefore && `${t.gistIdHintBefore} `}<a href="https://gist.github.com/" {...ext}>gist.github.com</a>{t.gistIdHintAfter}<b>id</b>{t.gistIdHintEnd}</>}>
+        <input aria-label={t.aria.gistId} autoCapitalize="none" autoCorrect="off" spellCheck={false} value={s.gistId} onChange={(e) => setS({ ...s, gistId: e.target.value })} />
       </Field>
-      <Field name="Shared secret" hint="A passphrase you choose. File names are stored as hashes made with it. Use the same one on every device.">
-        <input aria-label="shared secret" type="password" value={s.secret} onChange={(e) => setS({ ...s, secret: e.target.value })} />
+      <Field name={t.secret} hint={t.secretHint}>
+        <input aria-label={t.aria.secret} type="password" value={s.secret} onChange={(e) => setS({ ...s, secret: e.target.value })} />
       </Field>
-      <Field name="Device id" hint="Made for this device. Leave it as it is, and don't copy it from another device.">
-        <input aria-label="device id" autoCapitalize="none" autoCorrect="off" spellCheck={false} value={s.deviceId} onChange={(e) => setS({ ...s, deviceId: e.target.value })} />
+      <Field name={t.deviceId} hint={t.deviceIdHint}>
+        <input aria-label={t.aria.deviceId} autoCapitalize="none" autoCorrect="off" spellCheck={false} value={s.deviceId} onChange={(e) => setS({ ...s, deviceId: e.target.value })} />
       </Field>
-      <button data-testid="settings-save" className="primary">save</button>
+      <button data-testid="settings-save" className="primary">{t.save}</button>
     </form>
   );
 }

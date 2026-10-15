@@ -76,6 +76,11 @@ describe('GitHub', () => {
     await expect(new GitHub('t', f).defaultBranch('acme', 'widget')).rejects.toBeInstanceOf(GitHubError);
   });
 
+  it('keeps the failing request path in detail so the UI can say which call failed', async () => {
+    const { f } = fake({ '/repos/acme/widget': { status: 404, body: {} } });
+    await expect(new GitHub('t', f).defaultBranch('acme', 'widget')).rejects.toMatchObject({ status: 404, detail: '/repos/acme/widget' });
+  });
+
   it('patches one gist file', async () => {
     const { f, calls } = fake({ '/gists/g1': { body: {} } });
     await new GitHub('t', f).updateGistFile('g1', 'device-mac.json', '{}');

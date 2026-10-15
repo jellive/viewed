@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { GitHub, GitHubError, loadSnapshot, loadAll, mergeStates, type DeviceState, type Snapshot } from '@viewed/core';
+import { GitHub, loadSnapshot, loadAll, mergeStates, type DeviceState, type Snapshot } from '@viewed/core';
 import { loadSettings, type Settings as S } from './settings';
 import { Settings } from './components/Settings';
 import { ReviewView } from './components/ReviewView';
 import { getSyncStore, type SyncStore } from './syncStore';
+import { errorText, t } from './i18n';
 
 export function App() {
   const [settings, setSettings] = useState<S | null | undefined>(undefined);
@@ -14,7 +15,7 @@ export function App() {
   const [loadError, setLoadError] = useState('');
   const seq = useRef(0);
   useEffect(() => {
-    loadSettings().then(setSettings).catch(() => { setLoadError("Stored settings couldn't be read. Please enter them again."); setSettings(null); });
+    loadSettings().then(setSettings).catch(() => { setLoadError(t.storedUnreadable); setSettings(null); });
   }, []);
   if (settings === undefined) return null;
   // 토큰·비밀이 비어 있으면(첫 실행 또는 keychain 복호화 실패) 설정으로 보낸다 — spec §7 재입력
@@ -31,8 +32,8 @@ export function App() {
     const mine = ++seq.current;
     setError(''); setLoaded(null);
     const repoStr = form.repo.trim();
-    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repoStr)) { setError('Repository must look like owner/repo.'); return; }
-    if (!form.branch.trim()) { setError('Branch is required.'); return; }
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repoStr)) { setError(t.repoShape); return; }
+    if (!form.branch.trim()) { setError(t.branchRequired); return; }
     try {
       const [owner, repo] = repoStr.split('/');
       const gh = new GitHub(token(form.account || settings!.accounts[0].label));
@@ -47,7 +48,7 @@ export function App() {
       setLoaded({ id: mine, snap, merged, store, gh });
     } catch (e) {
       if (mine !== seq.current) return;
-      setError(e instanceof GitHubError ? `GitHub ${e.status}: ${e.message}` : String(e));
+      setError(errorText(e));
     }
   }
   return (
@@ -55,11 +56,11 @@ export function App() {
       <form data-testid="open-form" className="open-bar" onSubmit={(e) => { e.preventDefault(); open(); }}>
         <select data-testid="account-select" value={form.account} onChange={(e) => setForm({ ...form, account: e.target.value })}>
           {settings.accounts.map((a) => <option key={a.label}>{a.label}</option>)}</select>
-        <input data-testid="repo-input" placeholder="owner/repo" autoCapitalize="none" autoCorrect="off" spellCheck={false} value={form.repo} onChange={(e) => setForm({ ...form, repo: e.target.value })} />
-        <input data-testid="branch-input" placeholder="branch" autoCapitalize="none" autoCorrect="off" spellCheck={false} value={form.branch} onChange={(e) => setForm({ ...form, branch: e.target.value })} />
-        <input data-testid="base-input" placeholder="base (default branch)" value={form.base} onChange={(e) => setForm({ ...form, base: e.target.value })} />
-        <button data-testid="open-btn" className="primary">open</button>
-        <button type="button" data-testid="settings-open" onClick={() => setEditing(true)}>settings</button>
+        <input data-testid="repo-input" placeholder={t.repoPlaceholder} autoCapitalize="none" autoCorrect="off" spellCheck={false} value={form.repo} onChange={(e) => setForm({ ...form, repo: e.target.value })} />
+        <input data-testid="branch-input" placeholder={t.branchPlaceholder} autoCapitalize="none" autoCorrect="off" spellCheck={false} value={form.branch} onChange={(e) => setForm({ ...form, branch: e.target.value })} />
+        <input data-testid="base-input" placeholder={t.basePlaceholder} value={form.base} onChange={(e) => setForm({ ...form, base: e.target.value })} />
+        <button data-testid="open-btn" className="primary">{t.open}</button>
+        <button type="button" data-testid="settings-open" onClick={() => setEditing(true)}>{t.settings}</button>
       </form>
       {error && <p data-testid="error" role="alert" className="flash err">{error}</p>}
       {loaded && (

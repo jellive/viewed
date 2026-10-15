@@ -197,3 +197,4 @@ button.primary:hover { background: var(--primary-hover); }
 }
 @media (pointer: coarse) { input, select { font-size: 16px; } }
 @media (prefers-reduced-motion: reduce) { .meter > span { transition: none; } }
+.file-body > .note:last-child { border-bottom: 0; }

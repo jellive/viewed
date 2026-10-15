@@ -1,0 +1,133 @@
+import { GitHubError } from '@viewed/core';
+
+// 화면 문구 사전. 브라우저(Electron 은 OS) 언어가 한국어면 ko, 아니면 en
+const en = {
+  storedUnreadable: "Stored settings couldn't be read. Please enter them again.",
+  repoShape: 'Repository must look like owner/repo.',
+  branchRequired: 'Branch is required.',
+  repoPlaceholder: 'owner/repo',
+  branchPlaceholder: 'branch',
+  basePlaceholder: 'base (default branch)',
+  open: 'open',
+  settings: 'settings',
+  // core 의 GitHubError 와 같은 분류(401 / 403·404 / 0)
+  ghWhy: (status: number): string => status === 401 ? 'Token rejected (expired or revoked) — update it in settings.'
+    : status === 403 || status === 404 ? "No access to this repository with this token, or it doesn't exist."
+    : status === 0 ? 'Network error or timeout.' : 'GitHub request failed.',
+  filesViewed: 'files viewed',
+  incomplete: "GitHub returned 300 files — the list may be cut off. This branch can't be marked complete here.",
+  allViewed: 'All files viewed.',
+  changedSinceViewed: 'Changed since viewed',
+  viewed: 'Viewed',
+  viewedFile: (path: string) => `Viewed ${path}`,
+  syncFailed: 'sync failed',
+  saving: 'saving…',
+  saved: 'saved',
+  noPatch: 'No text diff (binary or too large). You can still mark it viewed.',
+  sinceUnavailable: 'The version you viewed is no longer on GitHub (force-push?). Showing the full diff.',
+  sinceSame: 'File content is unchanged since you viewed it; the diff against the base changed.',
+  sinceTab: 'since viewed',
+  fullTab: 'full diff',
+  loading: 'loading…',
+  needAccount: 'Add at least one account.',
+  emptyLabel: 'Account labels must not be empty.',
+  duplicateLabel: 'Account labels must be unique (duplicate label).',
+  needToken: 'Every account needs a token.',
+  needGist: 'Gist id is required.',
+  needSecret: 'Shared secret is required.',
+  badDeviceId: 'Device id must be 1-32 letters, digits, _ or -.',
+  saveFailed: (why: string) => `Could not save settings: ${why}`,
+  settingsTitle: 'Settings',
+  accountName: 'Account name',
+  accountNameHint: 'Any name, like personal or work. Add another account for repositories that need a different token.',
+  token: 'GitHub token',
+  tokenHint: 'Fine-grained token with read access to Contents and Metadata on the repositories you review. The token of the account that owns the gist also needs Gists read and write.',
+  createToken: 'Create a token',
+  remove: 'remove',
+  addAccount: 'add account',
+  lead: 'Your check marks are saved to a secret gist, so every device sees the same files as viewed. Code never goes there — only hashed file names and diff fingerprints.',
+  gistAccount: 'Account that owns the gist',
+  gistAccountHint: 'Its token reads and writes your check marks.',
+  gistId: 'Gist id',
+  gistIdHintBefore: 'Create a secret gist with any one file at',
+  gistIdHintAfter: ', then paste the id from its address: gist.github.com/you/',
+  gistIdHintEnd: '. Use the same gist on every device.',
+  secret: 'Shared secret',
+  secretHint: 'A passphrase you choose. File names are stored as hashes made with it. Use the same one on every device.',
+  deviceId: 'Device id',
+  deviceIdHint: "Made for this device. Leave it as it is, and don't copy it from another device.",
+  save: 'save',
+  aria: { accountLabel: 'account label', token: 'token', gistId: 'gist id', secret: 'shared secret', deviceId: 'device id' },
+};
+
+export type Messages = typeof en;
+
+// 키가 하나라도 빠지면 타입 오류가 난다
+const ko: Messages = {
+  storedUnreadable: '저장된 설정을 읽지 못했습니다. 다시 입력해 주세요.',
+  repoShape: '레포는 owner/repo 형식이어야 합니다.',
+  branchRequired: '브랜치를 입력해 주세요.',
+  repoPlaceholder: 'owner/repo',
+  branchPlaceholder: '브랜치',
+  basePlaceholder: '비교 기준 (기본 브랜치)',
+  open: '열기',
+  settings: '설정',
+  ghWhy: (status) => status === 401 ? '토큰이 거부됐습니다(만료 또는 폐기). 설정에서 바꿔 주세요.'
+    : status === 403 || status === 404 ? '이 토큰으로 접근할 수 없는 레포이거나, 레포가 없습니다.'
+    : status === 0 ? '네트워크 오류 또는 시간 초과입니다.' : 'GitHub 요청이 실패했습니다.',
+  filesViewed: '파일 확인함',
+  incomplete: 'GitHub 가 파일 300개를 돌려줬습니다. 목록이 잘렸을 수 있어서 이 브랜치는 여기서 완료로 표시할 수 없습니다.',
+  allViewed: '모든 파일을 확인했습니다.',
+  changedSinceViewed: '확인 후 바뀜',
+  viewed: '확인함',
+  viewedFile: (path) => `확인함 ${path}`,
+  syncFailed: '동기화 실패',
+  saving: '저장 중…',
+  saved: '저장됨',
+  noPatch: '텍스트 diff 가 없습니다(바이너리이거나 너무 큼). 확인 표시는 할 수 있습니다.',
+  sinceUnavailable: '확인했던 버전이 GitHub 에 더 이상 없습니다(force-push?). 전체 diff 를 보여 줍니다.',
+  sinceSame: '확인한 뒤로 파일 내용은 그대로이고, 비교 기준과의 diff 만 바뀌었습니다.',
+  sinceTab: '확인 후 변경',
+  fullTab: '전체 diff',
+  loading: '불러오는 중…',
+  needAccount: '계정을 하나 이상 추가해 주세요.',
+  emptyLabel: '계정 이름을 비워 둘 수 없습니다.',
+  duplicateLabel: '계정 이름이 겹칩니다. 서로 다르게 지어 주세요.',
+  needToken: '모든 계정에 토큰이 필요합니다.',
+  needGist: 'Gist id 를 입력해 주세요.',
+  needSecret: '공유 비밀을 입력해 주세요.',
+  badDeviceId: '기기 id 는 영문·숫자·_·- 로 1~32자여야 합니다.',
+  saveFailed: (why) => `설정을 저장하지 못했습니다: ${why}`,
+  settingsTitle: '설정',
+  accountName: '계정 이름',
+  accountNameHint: 'personal, work 처럼 아무 이름이나 됩니다. 다른 토큰이 필요한 레포가 있으면 계정을 하나 더 추가하세요.',
+  token: 'GitHub 토큰',
+  tokenHint: '검토할 레포에 Contents·Metadata 읽기 권한이 있는 fine-grained 토큰입니다. gist 를 가진 계정의 토큰에는 Gists 읽기·쓰기 권한도 필요합니다.',
+  createToken: '토큰 만들기',
+  remove: '삭제',
+  addAccount: '계정 추가',
+  lead: '확인 표시는 비밀 gist 에 저장돼서 모든 기기에서 같게 보입니다. 코드는 올라가지 않고, 해시한 파일 이름과 diff 지문만 저장됩니다.',
+  gistAccount: 'gist 를 가진 계정',
+  gistAccountHint: '이 계정의 토큰으로 확인 표시를 읽고 씁니다.',
+  gistId: 'Gist id',
+  gistIdHintBefore: '',
+  gistIdHintAfter: ' 에서 아무 파일 하나로 비밀 gist 를 만든 뒤, 주소 gist.github.com/you/',
+  gistIdHintEnd: ' 부분의 id 를 붙여 넣으세요. 모든 기기에 같은 gist 를 씁니다.',
+  secret: '공유 비밀',
+  secretHint: '직접 정하는 비밀번호입니다. 파일 이름을 이 값으로 해시해서 저장합니다. 모든 기기에 같은 값을 넣으세요.',
+  deviceId: '기기 id',
+  deviceIdHint: '이 기기용으로 만들어진 값입니다. 그대로 두고, 다른 기기에서 복사해 오지 마세요.',
+  save: '저장',
+  aria: { accountLabel: '계정 이름', token: 'GitHub 토큰', gistId: 'Gist id', secret: '공유 비밀', deviceId: '기기 id' },
+};
+
+const lang = typeof navigator !== 'undefined' && navigator.language.toLowerCase().startsWith('ko') ? 'ko' : 'en';
+if (typeof document !== 'undefined') document.documentElement.lang = lang;
+
+export const t: Messages = lang === 'ko' ? ko : en;
+
+// GitHub 오류는 사유를 이 언어로, 상태코드와 실패한 요청은 원문 그대로 보인다
+export function errorText(e: unknown): string {
+  if (e instanceof GitHubError) return `${t.ghWhy(e.status)} (GitHub ${e.status}${e.detail ? ` ${e.detail}` : ''})`;
+  return String(e);
+}
