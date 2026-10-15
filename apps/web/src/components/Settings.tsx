@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { cloneElement, useId, useState, type ReactElement, type ReactNode } from 'react';
 import { saveSettings, type Settings as S } from '../settings';
 
 function validate(s: S): string {
@@ -12,6 +12,19 @@ function validate(s: S): string {
   if (!/^[A-Za-z0-9_-]{1,32}$/.test(s.deviceId)) return 'Device id must be 1-32 letters, digits, _ or -.';
   return '';
 }
+
+// 도움말은 label 밖에 둔다 — label 텍스트에 섞이면 getByLabel 이 엉뚱한 칸까지 잡는다. 칸과는 aria-describedby 로 잇는다
+function Field({ name, hint, children }: { name: string; hint: ReactNode; children: ReactElement<{ 'aria-describedby'?: string }> }) {
+  const id = useId();
+  return (
+    <div className="field">
+      <label><span>{name}</span>{cloneElement(children, { 'aria-describedby': id })}</label>
+      <small id={id}>{hint}</small>
+    </div>
+  );
+}
+
+const ext = { target: '_blank', rel: 'noreferrer' } as const;
 
 export function Settings({ initial, onSaved, notice }: { initial: S | null; onSaved: (s: S) => void; notice?: string }) {
   const [s, setS] = useState<S>(initial ?? { accounts: [{ label: 'personal', token: '' }], gistAccount: 'personal', gistId: '', secret: '', deviceId: crypto.randomUUID().slice(0, 8) });
@@ -40,17 +53,30 @@ export function Settings({ initial, onSaved, notice }: { initial: S | null; onSa
       {err && <p data-testid="settings-error" role="alert" className="flash err">{err}</p>}
       {s.accounts.map((a, i) => (
         <fieldset key={i} className="account">
-          <label className="field"><span>Account name</span><input aria-label="account label" value={a.label} onChange={(e) => setAcc(i, 'label', e.target.value)} /></label>
-          <label className="field"><span>GitHub token</span><input aria-label="token" type="password" value={a.token} onChange={(e) => setAcc(i, 'token', e.target.value)} /></label>
+          <Field name="Account name" hint="Any name, like personal or work. Add another account for repositories that need a different token.">
+            <input aria-label="account label" value={a.label} onChange={(e) => setAcc(i, 'label', e.target.value)} />
+          </Field>
+          <Field name="GitHub token" hint={<>Fine-grained token with read access to Contents and Metadata on the repositories you review. The token of the account that owns the gist also needs Gists read and write. <a href="https://github.com/settings/personal-access-tokens/new" {...ext}>Create a token</a></>}>
+            <input aria-label="token" type="password" value={a.token} onChange={(e) => setAcc(i, 'token', e.target.value)} />
+          </Field>
           <button type="button" onClick={() => removeAcc(i)}>remove</button>
         </fieldset>
       ))}
       <button type="button" onClick={() => setS({ ...s, accounts: [...s.accounts, { label: '', token: '' }] })}>add account</button>
-      <label className="field"><span>Account that owns the gist</span><select value={s.gistAccount} onChange={(e) => setS({ ...s, gistAccount: e.target.value })}>
-        {s.accounts.map((a) => <option key={a.label}>{a.label}</option>)}</select></label>
-      <label className="field"><span>Gist id</span><input aria-label="gist id" value={s.gistId} onChange={(e) => setS({ ...s, gistId: e.target.value })} /></label>
-      <label className="field"><span>Shared secret</span><input aria-label="shared secret" type="password" value={s.secret} onChange={(e) => setS({ ...s, secret: e.target.value })} /><small>Same on every device.</small></label>
-      <label className="field"><span>Device id</span><input aria-label="device id" value={s.deviceId} onChange={(e) => setS({ ...s, deviceId: e.target.value })} /><small>Must be different on each device.</small></label>
+      <p className="lead">Your check marks are saved to a secret gist, so every device sees the same files as viewed. Code never goes there — only hashed file names and diff fingerprints.</p>
+      <Field name="Account that owns the gist" hint="Its token reads and writes your check marks.">
+        <select value={s.gistAccount} onChange={(e) => setS({ ...s, gistAccount: e.target.value })}>
+          {s.accounts.map((a) => <option key={a.label}>{a.label}</option>)}</select>
+      </Field>
+      <Field name="Gist id" hint={<>Create a secret gist with any one file at <a href="https://gist.github.com/" {...ext}>gist.github.com</a>, then paste the id from its address: gist.github.com/you/<b>id</b>. Use the same gist on every device.</>}>
+        <input aria-label="gist id" autoCapitalize="none" autoCorrect="off" spellCheck={false} value={s.gistId} onChange={(e) => setS({ ...s, gistId: e.target.value })} />
+      </Field>
+      <Field name="Shared secret" hint="A passphrase you choose. File names are stored as hashes made with it. Use the same one on every device.">
+        <input aria-label="shared secret" type="password" value={s.secret} onChange={(e) => setS({ ...s, secret: e.target.value })} />
+      </Field>
+      <Field name="Device id" hint="Made for this device. Leave it as it is, and don't copy it from another device.">
+        <input aria-label="device id" autoCapitalize="none" autoCorrect="off" spellCheck={false} value={s.deviceId} onChange={(e) => setS({ ...s, deviceId: e.target.value })} />
+      </Field>
       <button data-testid="settings-save" className="primary">save</button>
     </form>
   );

@@ -84,3 +84,13 @@ test('device id must be 1-32 of letters, digits, _ or -', async ({ page }) => {
     await expect(page.getByTestId('settings-error')).toContainText(/device id/i);
   }
 });
+
+test('settings explain each field and link to where the values come from', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByLabel('gist id')).toHaveAccessibleDescription(/secret gist/i);
+  await expect(page.getByLabel('shared secret')).toHaveAccessibleDescription(/same one on every device/i);
+  await expect(page.getByLabel('device id')).toHaveAccessibleDescription(/don't copy/i);
+  await expect(page.getByLabel('token')).toHaveAccessibleDescription(/Contents/);
+  await expect(page.getByRole('link', { name: 'gist.github.com' })).toHaveAttribute('href', 'https://gist.github.com/');
+  await expect(page.getByRole('link', { name: 'Create a token' })).toHaveAttribute('href', /github\.com\/settings\/personal-access-tokens\/new/);
+});
