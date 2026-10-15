@@ -1,8 +1,15 @@
 export interface AccountCfg { label: string; token: string }
-export interface Settings { accounts: AccountCfg[]; gistAccount: string; gistId: string; secret: string; deviceId: string }
+// storage: 'gist' = 비밀 gist 로 기기 간 동기화(기본, 옛 설정 포함) / 'device' = 이 기기에만, 토큰 없이도 된다
+export interface Settings { accounts: AccountCfg[]; gistAccount: string; gistId: string; secret: string; deviceId: string; storage?: 'gist' | 'device' }
 
 declare global {
-  interface Window { viewedDesktop?: { getSecret(name: string): Promise<string | null>; setSecret(name: string, value: string): Promise<void> } }
+  interface DesktopGit {
+    pick(): Promise<string | null>;
+    list(): Promise<string[]>;
+    info(repo: string): Promise<{ refs: string[]; defaultBase: string | null; current: string | null; remote: string | null }>;
+    run(repo: string, op: 'resolve' | 'mergeBase' | 'rawDiff' | 'patchDiff' | 'blob', a: string, b?: string): Promise<string | null>;
+  }
+  interface Window { viewedDesktop?: { getSecret(name: string): Promise<string | null>; setSecret(name: string, value: string): Promise<void>; git?: DesktopGit } }
 }
 
 const KEY = 'viewed.settings';

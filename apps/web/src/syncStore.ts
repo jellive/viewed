@@ -87,3 +87,28 @@ function create(gh0: GitHub, gistId: string, deviceId: string): SyncStore & { gh
   }
   return store;
 }
+
+// 동기화 없이 이 기기에만 둔다(settings.storage === 'device'). 아무것도 기기 밖으로 안 나간다
+const deviceStores = new Map<string, SyncStore>();
+export function getDeviceStore(deviceId: string): SyncStore {
+  const found = deviceStores.get(deviceId);
+  if (found) return found;
+  const key = `viewed.device.${deviceId}`;
+  let own: DeviceState = (() => { try { return JSON.parse(localStorage.getItem(key) ?? '{}'); } catch { return {}; } })();
+  let st: SyncStatus = 'idle';
+  const subs = new Set<() => void>();
+  const store: SyncStore = {
+    own: () => own,
+    status: () => st,
+    subscribe: (fn) => { subs.add(fn); return () => { subs.delete(fn); }; },
+    absorb: () => {},
+    set: (k, rec) => {
+      own = { ...own, [k]: rec };
+      try { localStorage.setItem(key, JSON.stringify(own)); st = 'idle'; } catch { st = 'error'; }
+      subs.forEach((f) => f());
+    },
+    flush: async () => {},
+  };
+  deviceStores.set(deviceId, store);
+  return store;
+}

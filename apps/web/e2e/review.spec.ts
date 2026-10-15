@@ -111,3 +111,63 @@ test('a patch ending in a newline gets no phantom line, and each check is named 
   await expect(page.getByTestId('diff').locator('.ln')).toHaveCount(3);
   await expect(page.getByRole('checkbox', { name: 'Viewed a.ts' })).toBeVisible();
 });
+
+test('the filter hides viewed files and says so when nothing is left', async ({ page }) => {
+  await seedSettings(page);
+  await mockGitHub(page, { files });
+  await open(page);
+  await page.getByTestId('file-row').filter({ hasText: 'a.ts' }).getByTestId('file-check').check();
+  await page.getByTestId('filter-unviewed').check();
+  await expect(page.getByTestId('file-row')).toHaveCount(1);
+  await expect(page.getByTestId('file-row')).toContainText('logo.png');
+  await page.getByTestId('file-row').getByTestId('file-check').click();   // 체크하면 바로 목록에서 빠진다
+  await expect(page.getByTestId('file-row')).toHaveCount(0);
+  await expect(page.getByTestId('filter-empty')).toBeVisible();
+  await page.getByTestId('filter-unviewed').uncheck();
+  await expect(page.getByTestId('file-row')).toHaveCount(2);
+});
+
+test('device-only storage keeps check marks across reloads and never calls the gist', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('viewed.settings', JSON.stringify({
+    accounts: [{ label: 'personal', token: 'tok' }], gistAccount: 'personal', gistId: '', secret: 'k', deviceId: 'mac', storage: 'device' })));
+  const { gistPatches } = await mockGitHub(page, { files });
+  const gistCalls: string[] = [];
+  page.on('request', (r) => { if (r.url().includes('/gists')) gistCalls.push(r.url()); });
+  await open(page);
+  await page.getByTestId('file-row').filter({ hasText: 'a.ts' }).getByTestId('file-check').check();
+  await expect(page.getByTestId('progress')).toHaveText('1 / 2');
+  await page.reload();
+  await open(page);
+  await expect(page.getByTestId('progress')).toHaveText('1 / 2');
+  expect(gistCalls).toEqual([]);
+  expect(gistPatches).toEqual([]);
+});
+
+test('switching storage to this device drops the open review, and later checks never reach the gist', async ({ page }) => {
+  await seedSettings(page);
+  const { gistPatches } = await mockGitHub(page, { files });
+  await open(page);
+  await expect(page.getByTestId('file-row')).toHaveCount(2);
+  await page.getByTestId('settings-open').click();
+  await page.getByTestId('storage-device').check();
+  await page.getByTestId('settings-save').click();
+  await expect(page.getByTestId('file-row')).toHaveCount(0);   // 옛 저장소에 묶인 화면은 버린다
+  await page.getByTestId('open-btn').click();   // goto 하면 seedSettings 가 gist 설정을 다시 심는다 — 같은 페이지에서 다시 연다
+  await page.getByTestId('file-row').filter({ hasText: 'a.ts' }).getByTestId('file-check').check();
+  await expect(page.getByTestId('progress')).toHaveText('1 / 2');
+  await page.waitForTimeout(2500);   // gist 저장 예약(1.5초)이 있었다면 지났다
+  expect(gistPatches).toEqual([]);
+});
+
+test('device-only check marks do not depend on the shared secret', async ({ page }) => {
+  const settings = (secret: string) => JSON.stringify({ accounts: [{ label: 'personal', token: 'tok' }], gistAccount: 'personal', gistId: '', secret, deviceId: 'mac', storage: 'device' });
+  await page.addInitScript((s) => { if (!sessionStorage.getItem('seeded')) { localStorage.setItem('viewed.settings', s); sessionStorage.setItem('seeded', '1'); } }, settings('first'));
+  await mockGitHub(page, { files });
+  await open(page);
+  await page.getByTestId('file-row').filter({ hasText: 'a.ts' }).getByTestId('file-check').check();
+  await expect(page.getByTestId('progress')).toHaveText('1 / 2');
+  await page.evaluate((s) => localStorage.setItem('viewed.settings', s), settings('second'));   // gist 모드를 다녀오며 비밀이 바뀐 상황
+  await page.reload();
+  await open(page);
+  await expect(page.getByTestId('progress')).toHaveText('1 / 2');
+});

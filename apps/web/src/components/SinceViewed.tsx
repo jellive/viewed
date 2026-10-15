@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
 import { structuredPatch } from 'diff';
-import type { GitHub, ReviewItem } from '@viewed/core';
+import type { ReviewItem } from '@viewed/core';
 import { DiffView } from './DiffView';
 import { errorText, t } from '../i18n';
 
 type S = { kind: 'loading' } | { kind: 'ok'; patch: string } | { kind: 'unavailable' } | { kind: 'same' } | { kind: 'error'; msg: string };
 
-export function SinceViewed({ gh, owner, repo, item }: { gh: GitHub; owner: string; repo: string; item: ReviewItem }) {
+export function SinceViewed({ readBlob, item }: { readBlob: (sha: string) => Promise<string | null>; item: ReviewItem }) {
   const [tab, setTab] = useState<'since' | 'full'>('since');
   const [s, setS] = useState<S>({ kind: 'loading' });
   const oldSha = item.record?.blob, newSha = item.file.blobSha, path = item.file.path;
@@ -15,7 +15,7 @@ export function SinceViewed({ gh, owner, repo, item }: { gh: GitHub; owner: stri
     setS({ kind: 'loading' });
     if (!oldSha || !newSha) { setS({ kind: 'unavailable' }); return; }
     if (oldSha === newSha) { setS({ kind: 'same' }); return; }
-    Promise.all([gh.blobText(owner, repo, oldSha), gh.blobText(owner, repo, newSha)])
+    Promise.all([readBlob(oldSha), readBlob(newSha)])
       .then(([a, b]) => {
         if (!live) return;
         if (a === null || b === null) return setS({ kind: 'unavailable' });
@@ -25,7 +25,7 @@ export function SinceViewed({ gh, owner, repo, item }: { gh: GitHub; owner: stri
       })
       .catch((e) => { if (live) setS({ kind: 'error', msg: errorText(e) }); });
     return () => { live = false; };
-  }, [gh, owner, repo, oldSha, newSha, path]);
+  }, [readBlob, oldSha, newSha, path]);
 
   if (s.kind === 'unavailable')
     return <div><p data-testid="since-unavailable" className="note">{t.sinceUnavailable}</p><DiffView patch={item.file.patch} /></div>;

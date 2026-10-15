@@ -198,3 +198,18 @@ button.primary:hover { background: var(--primary-hover); }
 @media (pointer: coarse) { input, select { font-size: 16px; } }
 @media (prefers-reduced-motion: reduce) { .meter > span { transition: none; } }
 .file-body > .note:last-child { border-bottom: 0; }
+.filter { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; }
+.filter input { min-height: 0; margin: 0; padding: 0; accent-color: var(--accent); }
+.source { display: inline-flex; margin-bottom: 12px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.source button { min-height: 28px; padding: 3px 12px; font-size: 12px; border: 0; border-radius: 0; background: var(--canvas); color: var(--fg-muted); }
+.source button + button { border-left: 1px solid var(--border); }
+.source button[aria-pressed="true"] { background: var(--canvas-subtle); color: var(--fg); font-weight: 600; }
+.ref { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-muted); font-size: 12px; }
+.ref select { color: var(--fg); font-size: 14px; }
+.hint { margin: -8px 0 16px; font-size: 12px; color: var(--fg-muted); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.storage { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 16px; border: 1px solid var(--border); border-radius: 6px; }
+.storage legend { padding: 0 4px; font-weight: 600; }
+.storage label { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.storage input { min-height: 0; margin: 0; padding: 0; accent-color: var(--accent); }
+.storage small { font-size: 12px; color: var(--fg-muted); }

@@ -1,5 +1,6 @@
-const { app, BrowserWindow, ipcMain, safeStorage, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } = require('electron');
 const { isAppPage } = require('./app-page.cjs');
+const { createRepos, info, ops } = require('./local-git.cjs');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
@@ -68,6 +69,22 @@ ipcMain.handle('secret:set', (e, name, value) => {
     await fs.writeFile(tmp, JSON.stringify(all), { mode: 0o600 });
     await fs.rename(tmp, secretsFile());
   });
+});
+
+// 로컬 git 모드 — 대화상자로 고른 레포만, 정해진 읽기 명령만
+const repos = createRepos(() => app.getPath('userData'));
+ipcMain.handle('repo:pick', async (e) => {
+  assertSender(e);
+  const r = await dialog.showOpenDialog(win, { properties: ['openDirectory'] });
+  if (r.canceled || !r.filePaths[0]) return null;
+  return repos.add(r.filePaths[0]);
+});
+ipcMain.handle('repo:list', (e) => { assertSender(e); return repos.list(); });
+ipcMain.handle('repo:info', async (e, repo) => { assertSender(e); return info(await repos.allowed(repo)); });
+ipcMain.handle('repo:git', async (e, repo, op, a, b) => {
+  assertSender(e);
+  if (!Object.hasOwn(ops, op)) throw new Error('unknown git op');
+  return ops[op](await repos.allowed(repo), a, b);
 });
 
 // 같은 userData 로 두 번째 인스턴스를 띄우면 secrets.json 쓰기가 엇갈린다 — 하나만 허용
