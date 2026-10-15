@@ -8,3 +8,5 @@ __pycache__/
 .DS_Store
 .env*
 .prepublish-extra
+apps/desktop/web-dist/
+apps/desktop/out/

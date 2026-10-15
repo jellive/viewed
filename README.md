@@ -21,10 +21,11 @@ Check marks are kept either **on this device only** (no token, nothing leaves th
 
 - Web: `pnpm --filter @viewed/web dev`, or `pnpm --filter @viewed/web build` then `pnpm --filter @viewed/web preview`.
 - Desktop: `pnpm --filter @viewed/web build`, then `pnpm --filter @viewed/desktop start` (the window is blank without the web build).
+- Desktop app bundle (macOS, Apple silicon): `pnpm --filter @viewed/desktop package` writes `apps/desktop/out/viewed-darwin-arm64/viewed.app`. Copy it to `/Applications`. It is ad-hoc signed and not notarized, so it runs on the Mac that built it; a copy downloaded elsewhere is blocked by Gatekeeper.
 
 ## Known limits
 
-- The desktop app is not packaged or code-signed.
+- The desktop app is not code-signed with a Developer ID or notarized.
 - The gist grows with every reviewed branch; there is no cleanup yet.
 - A secret gist is unlisted, not encrypted. File names are HMAC'd, but commit/blob SHAs and timestamps are stored in plain.
 - The PWA keeps tokens in localStorage; use short-lived, read-only tokens.

@@ -8,7 +8,10 @@ const UD = '--user-data-dir=';
 const ud = process.argv.find((a) => a.startsWith(UD));
 if (ud) app.setPath('userData', path.resolve(ud.slice(UD.length)));
 
-const indexHtml = path.join(__dirname, '..', 'web', 'dist', 'index.html');
+// 패키징된 앱은 안에 복사해 둔 웹 빌드를, 개발 중에는 apps/web/dist 를 연다
+const indexHtml = app.isPackaged
+  ? path.join(__dirname, 'web-dist', 'index.html')
+  : path.join(__dirname, '..', 'web', 'dist', 'index.html');
 let win = null;
 
 const secretsFile = () => path.join(app.getPath('userData'), 'secrets.json');

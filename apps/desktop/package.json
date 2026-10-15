@@ -1,7 +1,17 @@
 {
   "name": "@viewed/desktop",
+  "productName": "viewed",
+  "version": "0.1.0",
   "private": true,
   "main": "main.cjs",
-  "scripts": { "start": "electron .", "test": "playwright test" },
-  "devDependencies": { "electron": "44.7.1", "@playwright/test": "^1" }
+  "scripts": {
+    "start": "electron .",
+    "test": "playwright test",
+    "package": "pnpm --filter @viewed/web build && rm -rf web-dist && cp -R ../web/dist web-dist && electron-packager . viewed --overwrite --asar --out=out --no-prune --ignore='^/(node_modules|e2e|test-results|out)(/|$)' --ignore='^/playwright\\.config\\.ts$' --ignore='^/\\.'"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "@playwright/test": "^1",
+    "electron": "44.7.1"
+  }
 }
