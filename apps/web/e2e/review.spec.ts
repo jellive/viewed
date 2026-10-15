@@ -103,3 +103,11 @@ test('a slow first save cannot overwrite a later one', async ({ page }) => {
   const last = gistPatches[1] as { files: Record<string, { content: string }> };
   expect(Object.keys(JSON.parse(last.files['device-mac.json'].content))).toHaveLength(2);
 });
+
+test('a patch ending in a newline gets no phantom line, and each check is named by its file', async ({ page }) => {
+  await seedSettings(page);
+  await mockGitHub(page, { files: [{ filename: 'a.ts', status: 'modified', sha: 'a1', patch: '@@ -1 +1 @@\n-x\n+y\n' }] });
+  await open(page);
+  await expect(page.getByTestId('diff').locator('.ln')).toHaveCount(3);
+  await expect(page.getByRole('checkbox', { name: 'Viewed a.ts' })).toBeVisible();
+});

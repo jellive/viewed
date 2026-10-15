@@ -1,23 +1,31 @@
 import type { ReactNode } from 'react';
 import type { Review, ReviewItem } from '@viewed/core';
 
-const MARK = { viewed: '✓', unread: '•', 'changed-since-viewed': 'changed' } as const;
+const MARK = { viewed: '', unread: '', 'changed-since-viewed': 'Changed since viewed' } as const;
 
 // 완료는 목록이 온전하고(review.complete) 기록이 gist 에 저장됐을 때만(syncOk) — spec §8
 export function FileList({ review, syncOk, onToggle, renderDiff }: { review: Review; syncOk: boolean; onToggle: (i: ReviewItem, v: boolean) => void; renderDiff: (i: ReviewItem) => ReactNode }) {
+  const pct = review.total ? (review.viewedCount / review.total) * 100 : 0;
   return (
-    <section>
-      <p data-testid="progress">{review.viewedCount} / {review.total}</p>
-      {review.incomplete && <p data-testid="banner-incomplete" role="alert">GitHub returned 300 files — the list may be cut off. This branch can't be marked complete here.</p>}
-      {review.complete && syncOk && <p data-testid="complete">All files viewed.</p>}
-      <ul>
+    <section className="review">
+      <div className="progress">
+        <span><b data-testid="progress">{review.viewedCount} / {review.total}</b> files viewed</span>
+        <span className="meter" aria-hidden="true"><span style={{ width: `${pct}%` }} /></span>
+      </div>
+      {review.incomplete && <p data-testid="banner-incomplete" role="alert" className="flash warn">GitHub returned 300 files — the list may be cut off. This branch can't be marked complete here.</p>}
+      {review.complete && syncOk && <p data-testid="complete" className="flash ok">All files viewed.</p>}
+      <ul className="files">
         {review.items.map((it) => (
-          <li key={it.key} data-testid="file-row" data-state={it.state}>
-            <label>
-              <input type="checkbox" data-testid="file-check" checked={it.state === 'viewed'} onChange={(e) => onToggle(it, e.target.checked)} />
-              <span data-testid="file-state">{MARK[it.state]}</span> {it.file.path}
-            </label>
-            {it.state !== 'viewed' && renderDiff(it)}
+          <li key={it.key} data-testid="file-row" data-state={it.state} className="file">
+            <div className="file-head">
+              <span className="path">{it.file.path}</span>
+              <span data-testid="file-state" className="badge">{MARK[it.state]}</span>
+              <label className="viewed-toggle">
+                <input type="checkbox" data-testid="file-check" aria-label={`Viewed ${it.file.path}`} checked={it.state === 'viewed'} onChange={(e) => onToggle(it, e.target.checked)} />
+                Viewed
+              </label>
+            </div>
+            {it.state !== 'viewed' && <div className="file-body">{renderDiff(it)}</div>}
           </li>
         ))}
       </ul>

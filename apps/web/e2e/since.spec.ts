@@ -33,6 +33,10 @@ test('after a new push only the changed lines since viewing are shown', async ({
   await expect(row).toHaveAttribute('data-state', 'changed-since-viewed');
   await expect(row.getByTestId('since-diff')).toContainText('+NEWLINE');
   await expect(row.getByTestId('since-diff')).not.toContainText('-x');   // base 대비 변경은 안 보인다
+
+  // 방향키 탭 패턴을 구현하지 않으므로 tab 역할 대신 눌림 상태로 알린다
+  await expect(row.getByRole('tab')).toHaveCount(0);
+  await expect(row.getByTestId('since-tab')).toHaveAttribute('aria-pressed', 'true');
 });
 
 test('a force-pushed-away blob falls back to the full diff with a notice', async ({ page }) => {

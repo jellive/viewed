@@ -51,17 +51,17 @@ export function App() {
     }
   }
   return (
-    <main>
-      <form data-testid="open-form" onSubmit={(e) => { e.preventDefault(); open(); }}>
+    <main className="app">
+      <form data-testid="open-form" className="open-bar" onSubmit={(e) => { e.preventDefault(); open(); }}>
         <select data-testid="account-select" value={form.account} onChange={(e) => setForm({ ...form, account: e.target.value })}>
           {settings.accounts.map((a) => <option key={a.label}>{a.label}</option>)}</select>
         <input data-testid="repo-input" placeholder="owner/repo" autoCapitalize="none" autoCorrect="off" spellCheck={false} value={form.repo} onChange={(e) => setForm({ ...form, repo: e.target.value })} />
         <input data-testid="branch-input" placeholder="branch" autoCapitalize="none" autoCorrect="off" spellCheck={false} value={form.branch} onChange={(e) => setForm({ ...form, branch: e.target.value })} />
         <input data-testid="base-input" placeholder="base (default branch)" value={form.base} onChange={(e) => setForm({ ...form, base: e.target.value })} />
-        <button data-testid="open-btn">open</button>
+        <button data-testid="open-btn" className="primary">open</button>
         <button type="button" data-testid="settings-open" onClick={() => setEditing(true)}>settings</button>
       </form>
-      {error && <p data-testid="error" role="alert">{error}</p>}
+      {error && <p data-testid="error" role="alert" className="flash err">{error}</p>}
       {loaded && (
         <ReviewView key={loaded.id} snap={loaded.snap} merged={loaded.merged} secret={settings.secret} store={loaded.store} gh={loaded.gh} />
       )}

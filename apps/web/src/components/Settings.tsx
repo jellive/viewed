@@ -28,7 +28,7 @@ export function Settings({ initial, onSaved, notice }: { initial: S | null; onSa
     setS({ ...s, accounts, gistAccount: gone ? (accounts[0]?.label ?? '') : s.gistAccount });
   };
   return (
-    <form data-testid="settings-form" onSubmit={async (e) => {
+    <form data-testid="settings-form" className="settings" onSubmit={async (e) => {
       e.preventDefault();
       const problem = validate(s);
       if (problem) { setErr(problem); return; }
@@ -36,22 +36,22 @@ export function Settings({ initial, onSaved, notice }: { initial: S | null; onSa
       try { await saveSettings(s); } catch (x) { setErr(`Could not save settings: ${x instanceof Error ? x.message : String(x)}`); return; }
       onSaved(s);
     }}>
-      {err && <p data-testid="settings-error" role="alert">{err}</p>}
+      <h1>Settings</h1>
+      {err && <p data-testid="settings-error" role="alert" className="flash err">{err}</p>}
       {s.accounts.map((a, i) => (
-        <fieldset key={i}>
-          <input aria-label="account label" value={a.label} onChange={(e) => setAcc(i, 'label', e.target.value)} />
-          <input aria-label="token" type="password" value={a.token} onChange={(e) => setAcc(i, 'token', e.target.value)} />
+        <fieldset key={i} className="account">
+          <label className="field"><span>Account name</span><input aria-label="account label" value={a.label} onChange={(e) => setAcc(i, 'label', e.target.value)} /></label>
+          <label className="field"><span>GitHub token</span><input aria-label="token" type="password" value={a.token} onChange={(e) => setAcc(i, 'token', e.target.value)} /></label>
           <button type="button" onClick={() => removeAcc(i)}>remove</button>
         </fieldset>
       ))}
       <button type="button" onClick={() => setS({ ...s, accounts: [...s.accounts, { label: '', token: '' }] })}>add account</button>
-      <label>gist account <select value={s.gistAccount} onChange={(e) => setS({ ...s, gistAccount: e.target.value })}>
+      <label className="field"><span>Account that owns the gist</span><select value={s.gistAccount} onChange={(e) => setS({ ...s, gistAccount: e.target.value })}>
         {s.accounts.map((a) => <option key={a.label}>{a.label}</option>)}</select></label>
-      <input aria-label="gist id" value={s.gistId} onChange={(e) => setS({ ...s, gistId: e.target.value })} />
-      <input aria-label="shared secret" type="password" value={s.secret} onChange={(e) => setS({ ...s, secret: e.target.value })} />
-      <input aria-label="device id" value={s.deviceId} onChange={(e) => setS({ ...s, deviceId: e.target.value })} />
-      <small>Must be different on each device.</small>
-      <button data-testid="settings-save">save</button>
+      <label className="field"><span>Gist id</span><input aria-label="gist id" value={s.gistId} onChange={(e) => setS({ ...s, gistId: e.target.value })} /></label>
+      <label className="field"><span>Shared secret</span><input aria-label="shared secret" type="password" value={s.secret} onChange={(e) => setS({ ...s, secret: e.target.value })} /><small>Same on every device.</small></label>
+      <label className="field"><span>Device id</span><input aria-label="device id" value={s.deviceId} onChange={(e) => setS({ ...s, deviceId: e.target.value })} /><small>Must be different on each device.</small></label>
+      <button data-testid="settings-save" className="primary">save</button>
     </form>
   );
 }

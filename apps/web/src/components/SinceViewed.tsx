@@ -27,16 +27,18 @@ export function SinceViewed({ gh, owner, repo, item }: { gh: GitHub; owner: stri
   }, [gh, owner, repo, oldSha, newSha, path]);
 
   if (s.kind === 'unavailable')
-    return <div><p data-testid="since-unavailable">The version you viewed is no longer on GitHub (force-push?). Showing the full diff.</p><DiffView patch={item.file.patch} /></div>;
+    return <div><p data-testid="since-unavailable" className="note">The version you viewed is no longer on GitHub (force-push?). Showing the full diff.</p><DiffView patch={item.file.patch} /></div>;
   if (s.kind === 'same')
-    return <div><p data-testid="since-same-content">File content is unchanged since you viewed it; the diff against the base changed.</p><DiffView patch={item.file.patch} /></div>;
-  if (s.kind === 'error') return <div><p data-testid="since-error" role="alert">{s.msg}</p><DiffView patch={item.file.patch} /></div>;
+    return <div><p data-testid="since-same-content" className="note">File content is unchanged since you viewed it; the diff against the base changed.</p><DiffView patch={item.file.patch} /></div>;
+  if (s.kind === 'error') return <div><p data-testid="since-error" role="alert" className="flash err">{s.msg}</p><DiffView patch={item.file.patch} /></div>;
   return (
     <div>
-      <button data-testid="since-tab" onClick={() => setTab('since')}>since viewed</button>
-      <button data-testid="full-tab" onClick={() => setTab('full')}>full diff</button>
+      <div className="tabs">
+        <button data-testid="since-tab" aria-pressed={tab === 'since'} onClick={() => setTab('since')}>since viewed</button>
+        <button data-testid="full-tab" aria-pressed={tab === 'full'} onClick={() => setTab('full')}>full diff</button>
+      </div>
       {tab === 'full' ? <DiffView patch={item.file.patch} />
-        : s.kind === 'loading' ? <p>loading…</p>
+        : s.kind === 'loading' ? <p className="note">loading…</p>
         : <div data-testid="since-diff"><DiffView patch={s.patch} /></div>}
     </div>
   );
