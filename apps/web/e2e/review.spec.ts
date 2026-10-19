@@ -248,9 +248,12 @@ test('a file folded by hand stays folded on refresh, and opens again when a new 
   await row.getByTestId('file-expand').click();   // 안 본 파일도 접을 수 있다
   await expect(row.getByTestId('diff')).toBeHidden();
   await expect(row).toHaveAttribute('data-state', 'unread');
+  // 새 커밋이 다른 파일만 더했다 — a.ts 지문은 그대로. 진행률 '0 / 3' 이 이 다시 읽기가 화면에 올라왔다는 표식이다
+  await mockGitHub(page, { head: 'h2', files: [...files, { filename: 'c.ts', status: 'added', sha: 'c1', patch: '@@ -0,0 +1 @@\n+c' }] });
   await page.getByTestId('refresh-btn').click();   // 내용이 같으면 접은 채로
-  await expect(page.getByTestId('progress')).toHaveText('0 / 2');
+  await expect(page.getByTestId('progress')).toHaveText('0 / 3');
   await expect(row.getByTestId('file-expand')).toHaveAttribute('aria-expanded', 'false');
+  await expect(row.getByTestId('diff')).toBeHidden();
   await mockGitHub(page, { files: [{ filename: 'a.ts', status: 'modified', sha: 'a2', patch: '@@ -1 +1,2 @@\n-x\n+y\n+z' }, files[1]] });
   await page.getByTestId('refresh-btn').click();   // 새 커밋이 이 파일을 바꿨다 — 바뀐 줄이 숨지 않게 다시 펼친다
   await expect(row.getByTestId('diff')).toContainText('+z');

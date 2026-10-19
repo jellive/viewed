@@ -11,8 +11,8 @@ test('the GitHub fields come back as last opened, and nothing opens by itself', 
   await page.addInitScript((s) => localStorage.setItem('viewed.settings', JSON.stringify(s)),
     { ...SETTINGS, accounts: [{ label: 'personal', token: 'tok' }, { label: 'work', token: 'tok2' }] });
   await mockGitHub(page, { files });
-  const compares: string[] = [];
-  page.on('request', (r) => { if (r.url().includes('/compare/')) compares.push(r.url()); });
+  const compares: string[] = [], auth: string[] = [];
+  page.on('request', (r) => { if (r.url().includes('/compare/')) { compares.push(r.url()); auth.push(r.headers()['authorization'] ?? ''); } });
   await page.goto('/');
   await page.getByTestId('account-select').selectOption('work');
   await page.getByTestId('repo-input').fill('acme/widget');
@@ -28,6 +28,9 @@ test('the GitHub fields come back as last opened, and nothing opens by itself', 
   await page.waitForTimeout(500);
   await expect(page.getByTestId('file-row')).toHaveCount(0);
   expect(compares).toHaveLength(1);
+  await page.getByTestId('open-btn').click();   // 칸만이 아니라 요청도 기억한 계정(work)의 토큰으로
+  await expect(page.getByTestId('progress')).toHaveText('0 / 2');
+  expect(auth).toEqual(['Bearer tok2', 'Bearer tok2']);
 });
 
 test('a remembered GitHub account that is gone opens with the first account', async ({ page }) => {
@@ -115,4 +118,62 @@ test('a record written before the last local repo was kept still starts from the
   await page.goto('/');
   await expect(page.getByTestId('local-repo-select')).toHaveValue('/r/b');
   await expect(page.getByTestId('progress')).toHaveText('0 / 0');
+});
+
+// 늦게 끝난 앞선 열기는 화면에도 기록에도 안 오른다 — 마지막에 연 것이 남는다
+test('an earlier slower open that finishes last is not the one remembered', async ({ page }) => {
+  await seedSettings(page);
+  let gistGets = 0;
+  await page.route('https://api.github.com/**', async (route) => {
+    const p = new URL(route.request().url()).pathname;
+    const json = (b: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(b) });
+    const m = p.match(/^\/repos\/acme\/widget\/branches\/(slow|fast)$/);
+    if (p === '/repos/acme/widget') return json({ default_branch: 'main' });
+    if (m) { if (m[1] === 'slow') await new Promise((r) => setTimeout(r, 1500)); return json({ commit: { sha: m[1] } }); }
+    const c = p.match(/^\/repos\/acme\/widget\/compare\/main\.\.\.(slow|fast)$/);
+    if (c) return json({ files: [{ filename: `${c[1]}.ts`, status: 'added', sha: c[1], patch: '@@ -0,0 +1 @@\n+a' }] });
+    const t = p.match(/^\/repos\/acme\/widget\/git\/trees\/(slow|fast)$/);
+    if (t) return json({ truncated: false, tree: [{ path: `${t[1]}.ts`, type: 'blob', mode: '100644' }] });
+    if (p === '/gists/g1') { gistGets++; return json({ files: {} }); }
+    return route.fulfill({ status: 500, body: '{}' });
+  });
+  await page.goto('/');
+  for (const branch of ['slow', 'fast']) {
+    await page.getByTestId('repo-input').fill('acme/widget');
+    await page.getByTestId('branch-input').fill(branch);
+    await page.getByTestId('open-btn').click();
+  }
+  await expect(page.getByTestId('file-row')).toContainText('fast.ts');
+  await expect.poll(() => gistGets, { timeout: 5000 }).toBe(2);   // slow 도 끝까지 왔다
+  await page.waitForTimeout(300);
+  await expect(page.getByTestId('file-row')).toContainText('fast.ts');
+  const recent = await page.evaluate(() => JSON.parse(localStorage.getItem('viewed.recent') ?? '{}'));
+  expect(recent.last).toMatchObject({ source: 'github', branch: 'fast' });
+});
+
+// 다시 읽기는 같은 리뷰를 새로 볼 뿐 — 마지막으로 연 것을 다시 쓰지 않는다
+test('a manual refresh never writes the remembered review', async ({ page }) => {
+  await seedSettings(page);
+  await page.addInitScript(() => {
+    const w = window as unknown as { recentWrites: number };
+    w.recentWrites = 0;
+    const orig = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (k: string, v: string) {
+      if (k === 'viewed.recent') w.recentWrites++;
+      return orig.call(this, k, v);
+    };
+  });
+  await mockGitHub(page, { files });
+  const writes = () => page.evaluate(() => (window as unknown as { recentWrites: number }).recentWrites);
+  await page.goto('/');
+  await page.getByTestId('repo-input').fill('acme/widget');
+  await page.getByTestId('branch-input').fill('feat');
+  await page.getByTestId('open-btn').click();
+  await expect(page.getByTestId('progress')).toHaveText('0 / 2');
+  expect(await writes()).toBe(1);   // 연 것은 한 번 기록
+  // 기록은 화면에 올릴 때 같이 일어난다 — '0 / 3' 이 보이면 이 다시 읽기가 기록했을 자리는 이미 지났다
+  await mockGitHub(page, { head: 'h2', files: [...files, { filename: 'c.ts', status: 'added', sha: 'c1', patch: '@@ -0,0 +1 @@\n+c' }] });
+  await page.getByTestId('refresh-btn').click();
+  await expect(page.getByTestId('progress')).toHaveText('0 / 3');
+  expect(await writes()).toBe(1);
 });
