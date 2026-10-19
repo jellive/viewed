@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractBlocks, blockSigs, metaSig, unmatchedBlocks, hunksWithBlocks } from '../src/blocks';
+import { extractBlocks, blockSigs, metaSig, unmatchedBlocks, hunksWithBlocks, markedHunks } from '../src/blocks';
 import { hmacHex, recordKey } from '../src/keys';
 
 const P = [
@@ -124,5 +124,27 @@ describe('hunksWithBlocks', () => {
     expect(hunksWithBlocks(P, [])).toBe('');
     // '\' 줄을 사이에 둔 -last/+last 는 한 블록 — 블록은 3개뿐이라 3번은 없다
     expect(hunksWithBlocks(P, [3])).toBe('');
+  });
+});
+
+describe('markedHunks', () => {
+  it('same patch as hunksWithBlocks, plus the line numbers of blocks not asked for', () => {
+    // want=[1] 은 첫 덩어리를 남긴다 — 같은 덩어리의 블록 0(-b/+B)은 이미 확인한 것
+    expect(markedHunks(P, [1])).toEqual({ patch: hunksWithBlocks(P, [1]), seen: [2, 3] });
+    expect(markedHunks(P, [0]).seen).toEqual([6, 7, 8]);
+    expect(markedHunks(P, [0, 1]).seen).toEqual([]);
+    expect(markedHunks(P, [])).toEqual({ patch: '', seen: [] });
+  });
+  it('numbers lines in the returned patch, not the input', () => {
+    // 둘째 덩어리만 남는다 — 번호가 입력 기준이면 6·7 이 나온다
+    const Q = ['@@ -1,2 +1,2 @@', '-q', '+Q', ' r', '@@ -10,5 +10,5 @@', ' s', '-t', '+T', ' u', '-v', '+V'].join('\n');
+    expect(markedHunks(Q, [2])).toEqual({ patch: Q.split('\n').slice(4).join('\n'), seen: [2, 3] });
+    // 둘 다 남으면 둘째 덩어리의 번호는 앞 덩어리 길이만큼 밀린다
+    expect(markedHunks(Q, [0, 2])).toEqual({ patch: Q, seen: [6, 7] });
+  });
+  it('a \\ line inside a seen block is seen too', () => {
+    const R = ['@@ -1,3 +1,3 @@', '-a', '+A', ' mid', '-last', '\\ No newline at end of file', '+last2', '\\ No newline at end of file'].join('\n');
+    expect(markedHunks(R, [0]).seen).toEqual([4, 5, 6, 7]);
+    expect(markedHunks(R, [1]).seen).toEqual([1, 2]);
   });
 });
