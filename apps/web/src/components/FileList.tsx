@@ -11,7 +11,8 @@ export function FileList({ review, syncOk, onToggle, renderDiff }: { review: Rev
   // 머리를 눌러 펼치고 접은 것. 그때의 지문이 지금과 같을 때만 따른다 — 새 커밋이 바꾼 파일은 기본값(펼침)으로 돌아가 바뀐 줄이 숨지 않는다
   const [picked, setPicked] = useState<Record<string, { open: boolean; fp: string }>>({});
   const isOpen = (it: ReviewItem) => (picked[it.key]?.fp === it.fp ? picked[it.key].open : it.state !== 'viewed');
-  const shown = onlyUnviewed ? review.items.filter((it) => it.state !== 'viewed') : review.items;
+  // 확인한 블록이 빠진 파일(shrunk)은 확인함이지만 경고가 붙은 것 — 숨기면 그 경고를 볼 곳이 없다
+  const shown = onlyUnviewed ? review.items.filter((it) => it.state !== 'viewed' || it.carried === 'shrunk') : review.items;
   return (
     <section className="review">
       <div className="progress">
@@ -27,10 +28,11 @@ export function FileList({ review, syncOk, onToggle, renderDiff }: { review: Rev
           const flip = () => setPicked((p) => ({ ...p, [it.key]: { open: !open, fp: it.fp } }));
           return (
             <li key={it.key} data-testid="file-row" data-state={it.state} className="file">
-              {/* 머리 빈 곳·경로를 눌러도 꺾쇠처럼 펼친다. 체크 라벨·버튼·링크는 각자 일하고(겹치면 두 번 바뀐다), 경로를 드래그로 고르는 중이면 그대로.
+              {/* 머리 빈 곳을 눌러도 꺾쇠처럼 펼친다. 체크 라벨·버튼·링크는 각자 일하고(겹치면 두 번 바뀐다), 경로 글자는 고르는 데만 쓴다
+                  (더블클릭으로 파일 이름을 복사하면 첫 클릭에 펼침이 바뀐다). 머리 어디서든 드래그로 고르는 중이면 그대로.
                   키보드는 꺾쇠 버튼이 맡는다 — 머리에 role·tabindex 를 달면 탭 정지가 겹친다 */}
               <div className="file-head" onClick={(e) => {
-                if ((e.target as Element).closest('label, input, button, a')) return;
+                if ((e.target as Element).closest('label, input, button, a, .path')) return;
                 if (window.getSelection()?.toString()) return;
                 flip();
               }}>

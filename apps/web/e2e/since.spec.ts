@@ -112,6 +112,9 @@ const P3_APART = L([
   '@@ -5,7 +5,7 @@', ' line 5', ' line 6 DEV', ' line 7', '-line 8', '+line 8 FEAT', ' line 9', ' line 10', ' line 11',
   '@@ -17,7 +17,7 @@', ' line 17', ' line 18', ' line 19', '-line 20', '+line 20 FEAT2', ' line 21', ' line 22', ' line 23',
 ]);
+// 확인한 블록 2개(TWO) 중 1개만 남음(ONE)
+const TWO = L(['@@ -1,3 +1,3 @@', ' l1', '-l2', '+l2 A', ' l3', '@@ -9,3 +9,3 @@', ' l9', '-l10', '+l10 B', ' l11']);
+const ONE = L(['@@ -9,3 +9,3 @@', ' l9', '-l10', '+l10 B', ' l11']);
 const recordAt = (patch: string, base: string) =>
   viewedGist([{ filename: 'a.ts', status: 'modified', sha: 'a1', patch }], undefined, { base });
 
@@ -126,8 +129,6 @@ test('after a rebase, a file whose own blocks did not change stays viewed', asyn
 
 test('after a rebase, a file that lost one of its viewed blocks stays viewed with a warning badge', async ({ page }) => {
   // S2 — 확인한 블록 2개 중 1개가 base 에 들어갔거나 유실됨. 서명으로는 못 가르므로 확인함 + 경고
-  const TWO = L(['@@ -1,3 +1,3 @@', ' l1', '-l2', '+l2 A', ' l3', '@@ -9,3 +9,3 @@', ' l9', '-l10', '+l10 B', ' l11']);
-  const ONE = L(['@@ -9,3 +9,3 @@', ' l9', '-l10', '+l10 B', ' l11']);
   await seedSettings(page);
   await mockGitHub(page, { head: 'h2', mergeBase: MB2, files: [{ filename: 'a.ts', status: 'modified', sha: 'a2', patch: ONE }], gistFiles: await recordAt(TWO, MB1) });
   await open(page);
@@ -135,6 +136,27 @@ test('after a rebase, a file that lost one of its viewed blocks stays viewed wit
   await expect(row.getByTestId('file-state')).toHaveText('1 reviewed change dropped');
   await expect(row).toHaveAttribute('data-state', 'viewed');
   await expect(row.getByTestId('file-state')).not.toHaveClass(/muted/);   // 중립이 아닌 경고색
+});
+
+// 확인한 블록이 빠진 파일은 확인함이지만 경고가 붙은 것이라 '확인한 파일 숨기기'에도 남는다. 확인한 블록이 그대로인 파일은 숨는다
+test('the hide-viewed filter keeps a file that lost viewed blocks and hides one whose blocks are unchanged', async ({ page }) => {
+  await seedSettings(page);
+  await mockGitHub(page, {
+    head: 'h2', mergeBase: MB2,
+    files: [{ filename: 'a.ts', status: 'modified', sha: 'a2', patch: ONE }, { filename: 'b.ts', status: 'modified', sha: 'b2', patch: P1_REBASED }],
+    gistFiles: await viewedGist([{ filename: 'a.ts', status: 'modified', sha: 'a1', patch: TWO }, { filename: 'b.ts', status: 'modified', sha: 'b1', patch: P1 }], undefined, { base: MB1 }),
+  });
+  await open(page);
+  await expect(page.getByTestId('progress')).toHaveText('2 / 2');
+  await expect(page.getByTestId('file-row').filter({ hasText: 'b.ts' }).getByTestId('file-state')).toHaveText('Reviewed changes unchanged');
+  await page.getByTestId('filter-unviewed').check();
+  const rows = page.getByTestId('file-row');
+  await expect(rows).toHaveCount(1);
+  await expect(rows).toContainText('a.ts');
+  await expect(rows).toHaveAttribute('data-state', 'viewed');
+  await expect(rows.getByTestId('file-state')).toHaveText('1 reviewed change dropped');
+  await expect(page.getByTestId('filter-empty')).toHaveCount(0);   // 남은 행이 있으니 '남은 게 없다' 문구는 없다
+  await expect(page.getByTestId('progress')).toHaveText('2 / 2');   // 진행률은 그대로 — 상태는 확인함
 });
 
 test('after a merge, only the hunk with my new block is shown and no blob is fetched', async ({ page }) => {
