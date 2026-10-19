@@ -17,8 +17,9 @@ export interface ViewRecord { fp: string; blob: string | null; head: string; at:
 export type DeviceState = Record<string, ViewRecord>;   // 키 = HMAC hex
 export type FileState = 'viewed' | 'unread' | 'changed-since-viewed';
 // newBlocks: 확인한 블록과 안 맞는 지금 블록 번호 / carried: 지문은 바뀌었지만 블록이 전부 확인한 것이라 확인함
+// ('same' = 확인한 블록이 전부 남음, 'shrunk' = 일부가 diff 에서 사라짐 — dropped 는 그 개수)
 export interface ReviewItem {
   file: ChangedFile; key: string; fp: string; meta: string; blocks?: string[]; base?: string;
-  state: FileState; record?: ViewRecord; newBlocks?: number[]; carried?: boolean;
+  state: FileState; record?: ViewRecord; newBlocks?: number[]; carried?: 'same' | 'shrunk'; dropped?: number;
 }
 export interface Review { items: ReviewItem[]; viewedCount: number; total: number; incomplete: boolean; complete: boolean }

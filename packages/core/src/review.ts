@@ -25,18 +25,24 @@ export async function buildReview(snap: Snapshot, state: DeviceState, secret: st
     const blocks = file.patch !== undefined ? await sigsFor(secret, fp, file.patch) : undefined;
     const record = state[key];
     let st: FileState;
-    let newBlocks: number[] | undefined, carried = false;
+    let newBlocks: number[] | undefined, carried: ReviewItem['carried'], dropped: number | undefined;
     if (!record || !record.viewed) st = 'unread';
     else if (record.fp === fp) st = 'viewed';
     // 옛 기록·patch 없는 파일·상태/mode 변경은 블록으로 판정하지 않는다(spec §5)
     else if (!record.blocks || !blocks || record.meta !== meta) st = 'changed-since-viewed';
+    // base 가 그대로면 지문 변화는 전부 내 변경이다 — 블록으로 거를 소음이 없다(같은 블록을 다른 곳에 옮겨도 숨지 않게)
+    else if (!record.base || !snap.mergeBase || record.base === snap.mergeBase) st = 'changed-since-viewed';
     else {
       const miss = unmatchedBlocks(record.blocks, blocks);
-      if (miss.length === 0) { st = 'viewed'; carried = true; }
+      if (miss.length === 0) {
+        // 지금 블록이 전부 맞으면 사라진 확인 블록 수 = 확인 블록 수 - 지금 블록 수
+        const gone = record.blocks.length - blocks.length;
+        st = 'viewed'; carried = gone > 0 ? 'shrunk' : 'same'; if (gone > 0) dropped = gone;
+      }
       else { st = 'changed-since-viewed'; newBlocks = miss; }
     }
     items.push({ file, key, fp, meta, ...(blocks ? { blocks } : {}), ...(snap.mergeBase ? { base: snap.mergeBase } : {}),
-      state: st, record, ...(newBlocks ? { newBlocks } : {}), ...(carried ? { carried } : {}) });
+      state: st, record, ...(newBlocks ? { newBlocks } : {}), ...(carried ? { carried } : {}), ...(dropped ? { dropped } : {}) });
   }
   const viewedCount = items.filter((i) => i.state === 'viewed').length;
   return { items, viewedCount, total: items.length, incomplete: snap.truncated,

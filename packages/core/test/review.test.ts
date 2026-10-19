@@ -43,7 +43,7 @@ describe('buildReview', () => {
     const first = await buildReview(snap([fa, fb]), {}, S);
     const state: DeviceState = {};
     for (const it of first.items) state[it.key] = markRecord(it, 'h1', true);
-    // 블록 판정이 생겨서 바뀐 patch 에 실제 변경 줄이 있어야 한다 — 변경 줄 없는 'pa'→'pa2' 는 블록 0개끼리라 확인함으로 남는다
+    // merge base 없는 스냅샷이라 블록 판정 없이 지문 변화가 곧 확인 후 바뀜이다
     const r = await buildReview(snap([{ ...fa, patch: '@@ -1 +1 @@\n-a\n+pa2', blobSha: 'a2' }, fb]), state, S);
     expect(r.items.map((i) => i.state)).toEqual(['changed-since-viewed', 'viewed']);
     expect(r.items[0].record?.blob).toBe('a1');
@@ -116,14 +116,45 @@ describe('buildReview — block judgment after a rebase or merge (spec §5)', ()
     const st = await viewedAt(snapAt(p1, 'mb1'));
     const it = (await buildReview(snapAt(p1rebased, 'mb2'), st, S)).items[0];
     expect(it.state).toBe('viewed');
-    expect(it.carried).toBe(true);
+    expect(it.carried).toBe('same');
+    expect(it.dropped).toBeUndefined();
   });
 
-  it('S2 my blocks shrank to a subset: viewed', async () => {
-    const two = ctx(['@@ -1,3 +1,3 @@', ' l1', '-l2', '+l2 A', ' l3', '@@ -9,3 +9,3 @@', ' l9', '-l10', '+l10 B', ' l11']);
-    const one = ctx(['@@ -9,3 +9,3 @@', ' l9', '-l10', '+l10 B', ' l11']);
+  const two = ctx(['@@ -1,3 +1,3 @@', ' l1', '-l2', '+l2 A', ' l3', '@@ -9,3 +9,3 @@', ' l9', '-l10', '+l10 B', ' l11']);
+  const one = ctx(['@@ -9,3 +9,3 @@', ' l9', '-l10', '+l10 B', ' l11']);
+
+  it('S2 my blocks shrank to a subset after the base moved: viewed, marked shrunk with the dropped count', async () => {
     const st = await viewedAt(snapAt(two, 'mb1'));
-    expect((await buildReview(snapAt(one, 'mb2'), st, S)).items[0].state).toBe('viewed');
+    const it = (await buildReview(snapAt(one, 'mb2'), st, S)).items[0];
+    expect(it.state).toBe('viewed');
+    expect(it.carried).toBe('shrunk');
+    expect(it.dropped).toBe(1);
+  });
+
+  it('base unchanged and one of my blocks removed: changed-since-viewed (no block judgment)', async () => {
+    // base 가 그대로면 블록이 사라진 것도 내 변경이다 — 확인함으로 숨기지 않는다
+    const st = await viewedAt(snapAt(two, 'mb1'));
+    const it = (await buildReview(snapAt(one, 'mb1'), st, S)).items[0];
+    expect(it.state).toBe('changed-since-viewed');
+    expect(it.newBlocks).toBeUndefined();
+    expect(it.carried).toBeUndefined();
+  });
+
+  it('base moved and the same -/+ block now sits between different lines: changed-since-viewed', async () => {
+    // codex P1 — 같은 블록을 다른 자리에 넣은 것이 확인한 블록과 맞춰져 숨던 경우
+    const st = await viewedAt(snapAt(ctx(['@@ -5,3 +5,3 @@', ' f1', '-old', '+new', ' f1end']), 'mb1'));
+    const it = (await buildReview(snapAt(ctx(['@@ -40,3 +40,3 @@', ' g1', '-old', '+new', ' g1end']), 'mb2'), st, S)).items[0];
+    expect(it.state).toBe('changed-since-viewed');
+    expect(it.newBlocks).toEqual([0]);
+  });
+
+  it('no merge base on the record or on the snapshot: changed-since-viewed', async () => {
+    const st = await viewedAt(snapAt(p1, 'mb1'));
+    const k = Object.keys(st)[0];
+    const { base: _ba, ...noBase } = st[k];
+    expect((await buildReview(snapAt(p1rebased, 'mb2'), { [k]: noBase }, S)).items[0].state).toBe('changed-since-viewed');
+    const { mergeBase: _mb, ...noMergeBase } = snapAt(p1rebased, 'mb2');
+    expect((await buildReview(noMergeBase, st, S)).items[0].state).toBe('changed-since-viewed');
   });
 
   it('S3 a new block: changed-since-viewed with its index', async () => {
@@ -132,6 +163,7 @@ describe('buildReview — block judgment after a rebase or merge (spec §5)', ()
     expect(it.state).toBe('changed-since-viewed');
     expect(it.newBlocks).toEqual([1]);
     expect(it.carried).toBeUndefined();
+    expect(it.dropped).toBeUndefined();
   });
 
   it('overlap: same + line but the base - line changed is a new block', async () => {

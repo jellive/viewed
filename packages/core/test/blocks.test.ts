@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { extractBlocks, blockSigs, metaSig, unmatchedBlocks, hunksWithBlocks } from '../src/blocks';
-import { recordKey } from '../src/keys';
+import { hmacHex, recordKey } from '../src/keys';
 
 const P = [
   '@@ -1,7 +1,7 @@',
@@ -45,9 +45,28 @@ describe('blockSigs / metaSig', () => {
     expect(await blockSigs('other', P)).not.toEqual(a);
     expect((await blockSigs('s', '@@ -1 +1 @@\n-x\n+y\r'))[0]).not.toBe((await blockSigs('s', '@@ -1 +1 @@\n-x\n+y'))[0]);
   });
-  it('the same block gets the same signature wherever it sits', async () => {
-    const one = await blockSigs('s', '@@ -1 +1 @@\n-b\n+B');
-    expect((await blockSigs('s', P))[0]).toBe(one[0]);
+  it('the same block with the same neighbors gets the same signature at any hunk position', async () => {
+    const at1 = await blockSigs('s', '@@ -1,3 +1,3 @@\n a\n-b\n+B\n c');
+    expect(await blockSigs('s', '@@ -40,3 +40,3 @@\n a\n-b\n+B\n c')).toEqual(at1);
+  });
+  it('a different line before the block gives a different signature', async () => {
+    const a = await blockSigs('s', '@@ -1,3 +1,3 @@\n a\n-b\n+B\n c');
+    expect((await blockSigs('s', '@@ -1,3 +1,3 @@\n z\n-b\n+B\n c'))[0]).not.toBe(a[0]);
+  });
+  it('a block at the start of a hunk differs from the same block after context', async () => {
+    const a = await blockSigs('s', '@@ -1,2 +1,2 @@\n-b\n+B\n c');
+    expect((await blockSigs('s', '@@ -1,3 +1,3 @@\n a\n-b\n+B\n c'))[0]).not.toBe(a[0]);
+  });
+  it('one signature per extractBlocks block, in the same order, over [before, ...block, after]', async () => {
+    const sigs = await blockSigs('s', P);
+    expect(sigs).toHaveLength(extractBlocks(P).length);
+    // 경계 규칙이 extractBlocks 와 같아야 hunksWithBlocks 의 번호와 맞는다 — 서명 입력 모양을 그대로 고정한다
+    const want = [
+      [' a', '-b', '+B', ' c'],
+      [' d', '-e', '+E', '+E2', ''],
+      [' x', '-last', '\\ No newline at end of file', '+last', '\\ No newline at end of file', ''],
+    ];
+    expect(sigs).toEqual(await Promise.all(want.map(async (b) => (await hmacHex('s', JSON.stringify(b))).slice(0, 16))));
   });
   it('meta changes with status, previous path and mode', async () => {
     const base = { path: 'a', status: 'modified' as const, blobSha: 'x' };
@@ -85,9 +104,16 @@ describe('unmatchedBlocks', () => {
   it('swapped order: one of the two is unmatched', () => {
     expect(unmatchedBlocks(['a', 'b'], ['b', 'a'])).toHaveLength(1);
   });
-  it('over the size cap everything is unmatched (conservative)', () => {
+  it('a long identical list matches fully — the cap only applies to the differing middle', () => {
     const big = Array.from({ length: 1001 }, (_, i) => `s${i}`);
-    expect(unmatchedBlocks(big, big)).toHaveLength(1001);
+    expect(unmatchedBlocks(big, big)).toEqual([]);
+  });
+  it('a middle over the size cap is all unmatched (conservative), shared ends stay matched', () => {
+    const mid = (p: string) => Array.from({ length: 1000 }, (_, i) => `${p}${i}`);
+    expect(unmatchedBlocks(['x', ...mid('p'), 'y'], ['x', ...mid('c'), 'y'])).toEqual(Array.from({ length: 1000 }, (_, i) => i + 1));
+  });
+  it('one block inserted between shared ends: only it is unmatched, numbered in cur', () => {
+    expect(unmatchedBlocks(['a', 'b', 'c'], ['a', 'x', 'b', 'c'])).toEqual([1]);
   });
 });
 

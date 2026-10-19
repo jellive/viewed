@@ -19,9 +19,31 @@ export function extractBlocks(patch: string): string[][] {
   return blocks;
 }
 
+// 서명용: [앞 문맥, ...블록, 뒤 문맥]. 문맥은 바로 앞·뒤 줄이 문맥 줄(' ')일 때만, 아니면 ''. 경계는 extractBlocks 와 같다
+// 같은 -/+ 블록이 다른 위치에 나타난 것과 구분한다. 1줄인 이유: dev 가 2줄 떨어진 곳을 고친 S1 은 계속 맞아야 한다
+function anchoredBlocks(patch: string): string[][] {
+  const lines = patch.split('\n');
+  const out: string[][] = [];
+  let cur: string[] | null = null;
+  for (let k = 0; k < lines.length; k++) {
+    const line = lines[k], c = line[0];
+    if (c === '-' || c === '+') {
+      if (!cur) { const prev = lines[k - 1]; cur = [prev !== undefined && prev[0] === ' ' ? prev : '']; out.push(cur); }
+      cur.push(line);
+    } else if (c === '\\') {
+      if (cur) cur.push(line);
+    } else {
+      if (cur) cur.push(c === ' ' ? line : '');
+      cur = null;
+    }
+  }
+  if (cur) cur.push('');
+  return out;
+}
+
 // 짧은 줄(+})의 해시가 사전으로 풀리지 않게 기록 키와 같은 비밀로 HMAC 한다
 export function blockSigs(secret: string, patch: string): Promise<string[]> {
-  return Promise.all(extractBlocks(patch).map(async (b) => (await hmacHex(secret, JSON.stringify(b))).slice(0, 16)));
+  return Promise.all(anchoredBlocks(patch).map(async (b) => (await hmacHex(secret, JSON.stringify(b))).slice(0, 16)));
 }
 
 // 내용 밖의 축 — 상태·이전 경로·mode 가 바뀌면 블록이 같아도 확인함으로 두지 않는다
@@ -31,20 +53,26 @@ export async function metaSig(file: ChangedFile): Promise<string> {
 
 const MAX_CELLS = 1_000_000;
 
-// cur 중 prev 와 순서를 지켜 맞출 수 없는 블록 번호(최장 공통 부분열 밖). 표가 너무 크면 전부 안 맞음으로 본다
+// cur 중 prev 와 순서를 지켜 맞출 수 없는 블록 번호(최장 공통 부분열 밖). 가운데 표가 너무 크면 가운데를 전부 안 맞음으로 본다
 export function unmatchedBlocks(prev: string[], cur: string[]): number[] {
-  const n = prev.length, m = cur.length;
-  if ((n + 1) * (m + 1) > MAX_CELLS) return cur.map((_, j) => j);
+  // 앞뒤로 같은 블록은 맞은 것 — 가운데만 표로 계산한다(블록 많은 파일에서 같은 배열이 상한에 걸려 전부 안 맞음이 되지 않게)
+  let s = 0;
+  while (s < prev.length && s < cur.length && prev[s] === cur[s]) s++;
+  let e = 0;
+  while (e < prev.length - s && e < cur.length - s && prev[prev.length - 1 - e] === cur[cur.length - 1 - e]) e++;
+  const p = prev.slice(s, prev.length - e), c = cur.slice(s, cur.length - e);
+  const n = p.length, m = c.length;
+  if ((n + 1) * (m + 1) > MAX_CELLS) return c.map((_, j) => s + j);
   const L = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
   for (let i = n - 1; i >= 0; i--)
     for (let j = m - 1; j >= 0; j--)
-      L[i][j] = prev[i] === cur[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+      L[i][j] = p[i] === c[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
   const out: number[] = [];
   let i = 0, j = 0;
   while (j < m) {
-    if (i < n && prev[i] === cur[j]) { i++; j++; }
+    if (i < n && p[i] === c[j]) { i++; j++; }
     else if (i < n && L[i + 1][j] >= L[i][j + 1]) i++;
-    else { out.push(j); j++; }
+    else { out.push(s + j); j++; }
   }
   return out;
 }
