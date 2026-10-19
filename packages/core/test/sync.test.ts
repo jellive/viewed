@@ -96,15 +96,21 @@ describe('gist io', () => {
     expect(Object.keys((await loadAll(new GitHub('t', f), 'g1', 'mac')).merged).sort()).toEqual(['a', 'b']);
   });
 
+  // 나중 버전이 선택 필드의 형식을 바꿔도 기기 파일 전체를 거부하지 않는다 — 그 필드만 빠진 기록은 옛 기록처럼 판정된다
   it.each([
-    ['blocks not an array', { blocks: 'x' }],
-    ['a block not 16 hex', { blocks: ['xyz'] }],
-    ['base not a hash', { base: 'main' }],
-    ['meta not 16 hex', { meta: 3 }],
-  ])('rejects a record whose %s', async (_, extra) => {
-    const bad = { a: { ...rec('2026-10-15T01:00:00Z'), ...extra } };
+    ['blocks not an array', 'blocks', { blocks: 'x' }],
+    ['a block not 16 hex', 'blocks', { blocks: ['0123456789abcdef', 'xyz'] }],
+    ['base not a hash', 'base', { base: 'main' }],
+    ['meta not 16 hex', 'meta', { meta: 3 }],
+  ] as const)('drops only the field when a record has %s, and reads the rest', async (_, field, extra) => {
+    const full = { ...rec('2026-10-15T01:00:00Z'), blocks: ['0123456789abcdef'], base: 'a'.repeat(40), meta: 'fedcba9876543210' };
+    const bad = { a: { ...full, ...extra }, b: rec('2026-10-15T01:00:00Z') };
     const { f } = gistFetch({ 'device-mac.json': { content: JSON.stringify(bad), truncated: false, raw_url: '' } });
-    await expect(loadAll(new GitHub('t', f), 'g1', 'mac')).rejects.toThrow();
+    const r = await loadAll(new GitHub('t', f), 'g1', 'mac');
+    const { [field]: _gone, ...kept } = full;
+    expect(r.merged.a).toEqual(kept);
+    expect(r.own.a).toEqual(kept);
+    expect(r.merged.b).toEqual(rec('2026-10-15T01:00:00Z'));
   });
 
   it('rejects an unparseable at', async () => {

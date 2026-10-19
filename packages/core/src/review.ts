@@ -49,7 +49,10 @@ export async function buildReview(snap: Snapshot, state: DeviceState, secret: st
     complete: !snap.truncated && items.length > 0 && viewedCount === items.length };
 }
 
+// lockfile 같은 파일 하나가 서명 수천 개로 기록을 수만 자로 키워 localStorage·gist 를 부풀린다 — 넘으면 서명을 안 남겨 옛 기록처럼 판정한다
+const MAX_STORED_BLOCKS = 300;
+
 export function markRecord(item: ReviewItem, headSha: string, viewed: boolean, now = new Date()): ViewRecord {
   return { fp: item.fp, blob: item.file.blobSha, head: headSha, at: now.toISOString(), viewed, meta: item.meta,
-    ...(item.blocks ? { blocks: item.blocks } : {}), ...(item.base ? { base: item.base } : {}) };
+    ...(item.blocks && item.blocks.length <= MAX_STORED_BLOCKS ? { blocks: item.blocks } : {}), ...(item.base ? { base: item.base } : {}) };
 }

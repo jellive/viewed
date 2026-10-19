@@ -18,19 +18,22 @@ export function mergeStates(states: DeviceState[]): DeviceState {
 
 const HEX16 = /^[0-9a-f]{16}$/, OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
-function assertState(name: string, v: unknown): asserts v is DeviceState {
+// 필수 필드가 틀리면 던진다. 선택 필드(blocks·base·meta)는 옛 앱이 쓴 기록에는 없고, 형식이 틀리면 그 필드만 뺀 사본을 쓴다 —
+// 나중 버전이 형식을 바꿔도 이 버전이 기기 파일 전체를 거부하지 않게. 빠진 필드는 옛 기록처럼 보수적으로 판정된다(spec §4)
+function readState(name: string, v: unknown): DeviceState {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new Error(`${name}: not an object`);
-  for (const [k, r] of Object.entries(v)) {
+  return Object.fromEntries(Object.entries(v).map(([k, r]) => {
     const x = r as Partial<Record<keyof ViewRecord, unknown>> | null;
     const ok = typeof x === 'object' && x !== null && typeof x.fp === 'string' &&
       (x.blob === null || typeof x.blob === 'string') && typeof x.head === 'string' &&
       typeof x.at === 'string' && !Number.isNaN(Date.parse(x.at)) && typeof x.viewed === 'boolean';
-    // 블록 필드는 선택 — 옛 앱이 쓴 기록에는 없고, 있으면 모양까지 본다(spec §4)
-    const extra = ok && (x.blocks === undefined || (Array.isArray(x.blocks) && x.blocks.every((s) => typeof s === 'string' && HEX16.test(s))))
-      && (x.base === undefined || (typeof x.base === 'string' && OID.test(x.base)))
-      && (x.meta === undefined || (typeof x.meta === 'string' && HEX16.test(x.meta)));
-    if (!ok || !extra) throw new Error(`${name}: invalid record ${k}`);
-  }
+    if (!ok) throw new Error(`${name}: invalid record ${k}`);
+    const out = { ...x } as ViewRecord;
+    if (x.blocks !== undefined && !(Array.isArray(x.blocks) && x.blocks.every((s) => typeof s === 'string' && HEX16.test(s)))) delete out.blocks;
+    if (x.base !== undefined && !(typeof x.base === 'string' && OID.test(x.base))) delete out.base;
+    if (x.meta !== undefined && !(typeof x.meta === 'string' && HEX16.test(x.meta))) delete out.meta;
+    return [k, out];
+  }));
 }
 
 export async function loadAll(gh: GitHub, gistId: string, deviceId: string) {
@@ -42,8 +45,7 @@ export async function loadAll(gh: GitHub, gistId: string, deviceId: string) {
   for (const [name, file] of Object.entries(gist.files)) {
     if (!name.startsWith(PREFIX) || !name.endsWith('.json')) continue;
     const text = file.truncated ? await gh.fetchRaw(file.raw_url) : file.content;
-    const state: unknown = JSON.parse(text);   // 깨진 파일·잘못된 모양은 던진다 — 조용히 버리지 않는다
-    assertState(name, state);
+    const state = readState(name, JSON.parse(text));   // 깨진 파일·필수 필드가 틀린 기록은 던진다 — 조용히 버리지 않는다
     states.push(state);
     if (name === deviceFileName(deviceId)) own = state;
   }

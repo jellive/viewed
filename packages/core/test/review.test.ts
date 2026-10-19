@@ -196,4 +196,38 @@ describe('buildReview — block judgment after a rebase or merge (spec §5)', ()
     const r = await buildReview(snapAt(p1rebased, 'mb2'), st, S);
     expect(r).toMatchObject({ viewedCount: 1, complete: true });
   });
+
+  // n 개 블록 — 블록마다 앞에 문맥 줄 하나. 맨 앞 ' top' 은 어느 블록에도 붙지 않아 바꿔도 서명은 그대로다(지문만 바뀐다)
+  const manyBlocks = (n: number, top = ' top') =>
+    ctx(['@@ -1,999 +1,999 @@', top, ...Array.from({ length: n }, (_, i) => [` c${i}`, `-o${i}`, `+n${i}`]).flat()]);
+
+  it('stores block signatures for up to 300 blocks', async () => {
+    const st = await viewedAt(snapAt(manyBlocks(300), 'mb1'));
+    expect(Object.values(st)[0].blocks).toHaveLength(300);
+    const it = (await buildReview(snapAt(manyBlocks(300, ' top DEV'), 'mb2'), st, S)).items[0];
+    expect(it.state).toBe('viewed');
+    expect(it.carried).toBe('same');
+  });
+
+  it('a file over 300 blocks stores no signatures and keeps the old behavior after a rebase', async () => {
+    const st = await viewedAt(snapAt(manyBlocks(301), 'mb1'));
+    const rec = Object.values(st)[0];
+    expect(rec.blocks).toBeUndefined();
+    expect(rec.base).toBe('mb1');
+    expect(rec.meta).toMatch(/^[0-9a-f]{16}$/);
+    const it = (await buildReview(snapAt(manyBlocks(301, ' top DEV'), 'mb2'), st, S)).items[0];
+    expect(it.state).toBe('changed-since-viewed');
+    expect(it.carried).toBeUndefined();
+    expect(it.newBlocks).toBeUndefined();
+  });
+
+  it('the signature cache is keyed by the secret too', async () => {
+    // 같은 지문이라도 비밀이 다르면 서명이 다르다 — 캐시가 지문만 보면 다른 비밀의 서명을 돌려준다
+    const s = snapAt(p1, 'mb1');
+    const a = (await buildReview(s, {}, 'secret-a')).items[0].blocks;
+    const b = (await buildReview(s, {}, 'secret-b')).items[0].blocks;
+    expect(a).toHaveLength(1);
+    expect(b).toHaveLength(1);
+    expect(b).not.toEqual(a);
+  });
 });
