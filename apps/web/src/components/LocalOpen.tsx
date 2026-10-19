@@ -19,9 +19,9 @@ export function LocalOpen({ onOpen, onError, takeAuto }: { onOpen: (repo: string
   useEffect(() => {
     git.list().then((l) => {
       setRepos(l);
-      // 마지막으로 연 레포부터 — 목록에 없으면 첫 레포
-      const last = readRecent().last;
-      setRepo((r) => r || (last?.source === 'local' && l.includes(last.repo) ? last.repo : l[0]) || '');
+      // 마지막으로 연 로컬 레포부터(그 뒤에 GitHub 를 열었어도) — 목록에 없으면 첫 레포
+      const lr = readRecent().localRepo;
+      setRepo((r) => r || (lr !== undefined && l.includes(lr) ? lr : l[0]) || '');
     }).catch((e) => onError(errorText(e)));
     return () => { takeAuto(); };   // 정하기 전에 화면을 떠나면 자동 열기는 없던 일로
   }, []);
@@ -33,10 +33,11 @@ export function LocalOpen({ onOpen, onError, takeAuto }: { onOpen: (repo: string
       if (!live) return;
       setInfo(i);
       const heads = i.refs.filter((r) => r.startsWith('refs/heads/'));
-      // 이 레포에서 마지막으로 연 것이 아직 있으면 그것, 없으면 지금 규칙
+      // 이 레포에서 마지막으로 연 것이 둘 다 아직 있으면 그 쌍, 하나라도 없으면 둘 다 지금 규칙 — 반쪽만 쓰면 main...main 이 될 수 있다
       const mem = readRecent().local[repo];
-      const b = mem && heads.includes(mem.branch) ? mem.branch : i.current && heads.includes(i.current) ? i.current : heads[0] ?? '';
-      const bs = mem && i.refs.includes(mem.base) ? mem.base : i.defaultBase ?? i.refs.find((r) => r === 'refs/heads/main' || r === 'refs/heads/master') ?? '';
+      const useMem = !!mem && heads.includes(mem.branch) && i.refs.includes(mem.base);
+      const b = useMem ? mem.branch : i.current && heads.includes(i.current) ? i.current : heads[0] ?? '';
+      const bs = useMem ? mem.base : i.defaultBase ?? i.refs.find((r) => r === 'refs/heads/main' || r === 'refs/heads/master') ?? '';
       setBranch(b); setBase(bs);
       // 고르기와 자동 열기를 이 응답 하나에서 정한다. 처음 정해지는 레포가 권한을 쓴다 — 그 사이 레포를 바꿨으면 다른 레포라 안 연다
       const a = takeAuto();
