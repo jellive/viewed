@@ -7,7 +7,7 @@ import { getDeviceStore, getSyncStore, type SyncStore } from './syncStore';
 import { errorText, t } from './i18n';
 import { LocalOpen } from './components/LocalOpen';
 import { desktopGit, localBlob, localGit } from './localSource';
-import { rememberLocal } from './recent';
+import { readRecent, rememberGithub, rememberLocal } from './recent';
 
 type ReadBlob = (sha: string) => Promise<string | null>;
 // head: 로컬 모드에서 브랜치 끝 커밋을 싸게 읽는다 — 바뀌면 자동으로 다시 읽는다
@@ -19,9 +19,14 @@ const DEVICE_SECRET = 'viewed-device';
 
 export function App() {
   const [settings, setSettings] = useState<S | null | undefined>(undefined);
-  const [form, setForm] = useState({ account: '', repo: '', branch: '', base: '' });
+  // 마지막으로 연 리뷰 — 켤 때 한 번 읽어 소스·GitHub 칸을 채운다
+  const [last] = useState(() => readRecent().last);
+  const [form, setForm] = useState(() => last?.source === 'github'
+    ? { account: last.account, repo: last.repo, branch: last.branch, base: last.base } : { account: '', repo: '', branch: '', base: '' });
   const [loaded, setLoaded] = useState<{ id: number; snap: Snapshot; merged: DeviceState; store: SyncStore; readBlob: ReadBlob; make: Make; head?: () => Promise<string> } | null>(null);
-  const [source, setSource] = useState<'github' | 'local'>(() => (desktopGit() ? 'local' : 'github'));
+  const [source, setSource] = useState<'github' | 'local'>(() => (desktopGit() && last?.source !== 'github' ? 'local' : 'github'));
+  // 마지막 로컬 리뷰를 켤 때 한 번 자동으로 여는 권한. 실행당 1회라 App 이 든다 — 설정·소스 전환으로 LocalOpen 이 다시 마운트돼도 다시 안 준다
+  const auto = useRef(last?.source === 'local' ? last : undefined);
   const [error, setError] = useState('');
   const [editing, setEditing] = useState(false);
   const [loadError, setLoadError] = useState('');
@@ -94,15 +99,19 @@ export function App() {
     const repoStr = form.repo.trim();
     if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repoStr)) { setError(t.repoShape); return; }
     if (!form.branch.trim()) { setError(t.branchRequired); return; }
+    // 기억해 둔 계정이 지금 설정에 없으면 첫 계정으로
+    const label = settings!.accounts.some((a) => a.label === form.account) ? form.account : settings!.accounts[0].label;
+    const branch = form.branch.trim(), base = form.base;
     load(async () => {
       const [owner, repo] = repoStr.split('/');
-      const label = form.account || settings!.accounts[0].label;
       const now = () => settingsRef.current?.accounts.find((a) => a.label === label)?.token ?? '';
       const gh = new GitHub(now());
-      const snap = await loadSnapshot(gh, owner, repo, form.branch.trim(), form.base || undefined);
+      const snap = await loadSnapshot(gh, owner, repo, branch, base || undefined);
       return { snap, readBlob: (sha) => gh.blobText(owner, repo, sha) };
-    });
+    }, false, () => rememberGithub(label, repoStr, branch, base));
   }
+  // 마지막 소스가 GitHub 여도 계정이 없으면 쓸 수 없다 — 로컬 폴더
+  const localForm = source === 'local' || settings.accounts.length === 0;
   return (
     <main className="app">
       {desktopGit() && settings.accounts.length > 0 && (
@@ -111,9 +120,9 @@ export function App() {
           <button type="button" data-testid="source-local" aria-pressed={source === 'local'} onClick={() => setSource('local')}>{t.sourceLocal}</button>
         </div>
       )}
-      {source === 'local' || settings.accounts.length === 0 ? (
+      {localForm ? (
         <form data-testid="open-form" className="open-bar" onSubmit={(e) => e.preventDefault()}>
-          <LocalOpen onError={setError} onOpen={(repo, info, branch, base) => load(async () => ({
+          <LocalOpen onError={setError} takeAuto={() => { const a = auto.current; auto.current = undefined; return a; }} onOpen={(repo, info, branch, base) => load(async () => ({
             snap: await loadLocalSnapshot(localGit(repo), repoIdFromRemote(info.remote, repo), branch, base),
             readBlob: localBlob(repo),
             head: () => localGit(repo).resolve(branch),
@@ -131,7 +140,7 @@ export function App() {
         <button type="button" data-testid="settings-open" onClick={() => setEditing(true)}>{t.settings}</button>
       </form>
       )}
-      {source === 'local' && <p className="hint">{t.localFetchHint}</p>}
+      {localForm && <p className="hint">{t.localFetchHint}</p>}
       {error && <p data-testid="error" role="alert" className="flash err">{error}</p>}
       {loaded && (
         <ReviewView key={loaded.id} snap={loaded.snap} merged={loaded.merged} secret={device ? DEVICE_SECRET : settings.secret} store={loaded.store} readBlob={loaded.readBlob} onRefresh={() => refreshRef.current()} live={!!loaded.head} />

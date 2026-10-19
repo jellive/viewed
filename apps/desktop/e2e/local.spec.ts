@@ -1,6 +1,6 @@
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, realpathSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -21,19 +21,22 @@ function makeRepo() {
 const pickNext = (app: ElectronApplication, p: string) =>
   app.evaluate(({ dialog }, p) => { dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [p] })) as never; }, p);
 
-async function launch(repo: string): Promise<{ app: ElectronApplication; win: Page; github: string[] }> {
-  const userData = mkdtempSync(join(tmpdir(), 'viewed-'));
+// userData 를 넘기면 그 앱 데이터로 다시 띄운다 — 설정은 이미 저장돼 있다
+async function launch(repo: string, reuse?: string): Promise<{ app: ElectronApplication; win: Page; github: string[]; userData: string }> {
+  const userData = reuse ?? mkdtempSync(join(tmpdir(), 'viewed-'));
   const app = await electron.launch({ args: ['.', '--lang=en-US', `--user-data-dir=${userData}`], cwd: join(__dirname, '..') });
   await pickNext(app, repo);
   const win = await app.firstWindow();
   const github: string[] = [];   // 기기 저장 + 로컬 폴더면 GitHub 에 한 건도 안 가야 한다
   await win.route('https://api.github.com/**', (r) => { github.push(r.request().url()); return r.abort(); });
   // 첫 실행 기본값: 이 기기에만 저장, 계정 없음 — 바로 저장되고, GitHub 계정이 없으니 소스 전환 없이 로컬 폴더 폼이 뜬다
-  await expect(win.getByTestId('storage-device')).toBeChecked();
-  await win.getByTestId('settings-save').click();
+  if (!reuse) {
+    await expect(win.getByTestId('storage-device')).toBeChecked();
+    await win.getByTestId('settings-save').click();
+  }
   await expect(win.getByTestId('source-local')).toHaveCount(0);
   await expect(win.getByTestId('local-add')).toBeVisible();
-  return { app, win, github };
+  return { app, win, github, userData };
 }
 
 async function openLocal(win: Page) {
@@ -164,5 +167,73 @@ test('a remembered branch or base that was deleted falls back to the usual pick'
   await expect(win.getByTestId('local-base-select')).toHaveValue('refs/heads/main');
   await win.getByTestId('open-btn').click();   // 화면 값만이 아니라 상태도 — 없는 값을 고른 select 는 첫 항목을 보여 준다
   await expect(win.getByTestId('progress')).toHaveText('0 / 2');
+  await app.close();
+});
+
+// a 를 더하고 x(base old)로 연 뒤 닫는다 — 다음 실행이 기억할 마지막 리뷰
+async function openXAndQuit(a: string) {
+  const { app, win, userData } = await launch(a);
+  await win.getByTestId('local-add').click();
+  await win.getByTestId('local-branch-select').selectOption('refs/heads/x');
+  await win.getByTestId('local-base-select').selectOption('refs/heads/old');
+  await win.getByTestId('open-btn').click();
+  await expect(win.getByTestId('progress')).toHaveText('0 / 1');
+  return { app, win, userData };
+}
+
+test('relaunching opens the last review by itself, not a selection that was never opened', async () => {
+  const a = makeRepoWithX(), b = makeRepo();
+  const first = await openXAndQuit(a);
+  await first.win.getByTestId('local-branch-select').selectOption('refs/heads/feat');   // 고르기만 하고
+  await pickNext(first.app, b);
+  await first.win.getByTestId('local-add').click();   // 레포도 바꾸기만 하고 열지 않는다
+  await expect(first.win.getByTestId('local-branch-select')).toHaveValue('refs/heads/feat');
+  await first.app.close();
+
+  const { app, win, github } = await launch(a, first.userData);
+  await expect(win.getByTestId('local-repo-select')).toHaveValue(a);
+  await expect(win.getByTestId('progress')).toHaveText('0 / 1');   // 누르지 않아도 열린다
+  await expect(win.getByTestId('local-branch-select')).toHaveValue('refs/heads/x');
+  await expect(win.getByTestId('local-base-select')).toHaveValue('refs/heads/old');
+  expect(github).toEqual([]);
+  await app.close();
+});
+
+test('a trip through settings does not open the last review again', async () => {
+  const a = makeRepoWithX();
+  const first = await openXAndQuit(a);
+  await first.app.close();
+  const { app, win } = await launch(a, first.userData);
+  await expect(win.getByTestId('progress')).toHaveText('0 / 1');
+  await win.getByTestId('settings-open').click();
+  await win.getByLabel('device id').fill('other');   // 기기가 바뀌면 열린 화면을 버린다 — 다시 열리면 보이게
+  await win.getByTestId('settings-save').click();
+  await expect(win.getByTestId('local-branch-select')).toHaveValue('refs/heads/x');   // 고르기는 하되
+  await win.waitForTimeout(1000);
+  await expect(win.getByTestId('file-row')).toHaveCount(0);   // 열지는 않는다
+  await app.close();
+});
+
+test('the last review does not open by itself when its branch is gone', async () => {
+  const a = makeRepoWithX();
+  const first = await openXAndQuit(a);
+  await first.app.close();
+  git(a, 'branch', '-D', 'x');
+  const { app, win } = await launch(a, first.userData);
+  await expect(win.getByTestId('local-branch-select')).toHaveValue('refs/heads/feat');
+  await expect(win.getByTestId('local-base-select')).toHaveValue('refs/heads/old');
+  await win.waitForTimeout(1000);
+  await expect(win.getByTestId('file-row')).toHaveCount(0);
+  await app.close();
+});
+
+test('the last review does not open by itself when its folder is gone, and the error shows as before', async () => {
+  const a = makeRepoWithX();
+  const first = await openXAndQuit(a);
+  await first.app.close();
+  rmSync(a, { recursive: true, force: true });
+  const { app, win } = await launch(a, first.userData);
+  await expect(win.getByTestId('error')).toBeVisible();
+  await expect(win.getByTestId('file-row')).toHaveCount(0);
   await app.close();
 });
