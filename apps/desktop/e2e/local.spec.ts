@@ -170,8 +170,42 @@ test('a remembered branch or base that was deleted falls back to the usual pick'
   await app.close();
 });
 
-// 브랜치만 지워지고 base 는 남았을 때 base 만 기억값을 쓰면 체크아웃(main)과 겹쳐 main...main 이 된다
-test('when only the remembered branch is gone, its base is not kept either', async () => {
+// 브랜치·base 기억은 각자 살아 있으면 쓴다 — release 처럼 고정 base 로 기능 브랜치를 오가다 기능 브랜치를 지워도 base 는 남는다
+async function openXOldThenSwitchToB(a: string, b: string) {
+  const { app, win } = await launch(a);
+  await win.getByTestId('local-add').click();
+  await win.getByTestId('local-branch-select').selectOption('refs/heads/x');
+  await win.getByTestId('local-base-select').selectOption('refs/heads/old');
+  await win.getByTestId('open-btn').click();
+  await expect(win.getByTestId('progress')).toHaveText('0 / 1');
+  await pickNext(app, b);
+  await win.getByTestId('local-add').click();
+  await expect(win.getByTestId('local-branch-select')).toHaveValue('refs/heads/feat');
+  return { app, win };
+}
+
+test('when only the remembered branch is gone, the remembered base that is still there is kept', async () => {
+  const a = makeRepoWithX(), b = makeRepo();
+  const { app, win } = await openXOldThenSwitchToB(a, b);
+  git(a, 'branch', '-D', 'x');
+  await win.getByTestId('local-repo-select').selectOption(a);
+  await expect(win.getByTestId('local-branch-select')).toHaveValue('refs/heads/feat');   // 체크아웃 브랜치
+  await expect(win.getByTestId('local-base-select')).toHaveValue('refs/heads/old');   // 기억한 base
+  await app.close();
+});
+
+test('when only the remembered base is gone, the remembered branch that is still there is kept', async () => {
+  const a = makeRepoWithX(), b = makeRepo();
+  const { app, win } = await openXOldThenSwitchToB(a, b);
+  git(a, 'branch', '-D', 'old');
+  await win.getByTestId('local-repo-select').selectOption(a);
+  await expect(win.getByTestId('local-branch-select')).toHaveValue('refs/heads/x');   // 기억한 브랜치
+  await expect(win.getByTestId('local-base-select')).toHaveValue('refs/heads/main');   // 규칙 값
+  await app.close();
+});
+
+// 브랜치가 지워져 체크아웃(main)이 브랜치가 됐는데 기억한 base 도 main 이면 main...main 이 된다 — 그때만 base 는 규칙 값
+test('when the remembered branch is gone and the checkout is the remembered base, the base takes the usual rule', async () => {
   const a = makeRepoWithX(), b = makeRepo();
   git(a, 'update-ref', 'refs/remotes/origin/main', 'refs/heads/main');
   git(a, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main');   // 규칙의 base = origin/main
@@ -243,7 +277,7 @@ test('the last review does not open by itself when its branch is gone', async ()
   git(a, 'branch', '-D', 'x');
   const { app, win } = await launch(a, first.userData);
   await expect(win.getByTestId('local-branch-select')).toHaveValue('refs/heads/feat');
-  await expect(win.getByTestId('local-base-select')).toHaveValue('refs/heads/main');   // 브랜치가 없으면 기억한 base 도 안 쓴다 — 쌍으로 규칙 값
+  await expect(win.getByTestId('local-base-select')).toHaveValue('refs/heads/old');   // 브랜치가 없어도 살아 있는 base 는 기억값
   await win.waitForTimeout(1000);
   await expect(win.getByTestId('file-row')).toHaveCount(0);
   await app.close();
