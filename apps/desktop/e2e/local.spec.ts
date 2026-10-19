@@ -243,7 +243,7 @@ test('the last review does not open by itself when its branch is gone', async ()
   git(a, 'branch', '-D', 'x');
   const { app, win } = await launch(a, first.userData);
   await expect(win.getByTestId('local-branch-select')).toHaveValue('refs/heads/feat');
-  await expect(win.getByTestId('local-base-select')).toHaveValue('refs/heads/old');
+  await expect(win.getByTestId('local-base-select')).toHaveValue('refs/heads/main');   // 브랜치가 없으면 기억한 base 도 안 쓴다 — 쌍으로 규칙 값
   await win.waitForTimeout(1000);
   await expect(win.getByTestId('file-row')).toHaveCount(0);
   await app.close();
