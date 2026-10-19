@@ -10,8 +10,10 @@ export interface ChangedFile {
 export interface Snapshot {
   owner: string; repo: string; base: string; branch: string;
   headSha: string; files: ChangedFile[]; truncated: boolean;
+  mergeBase?: string;   // base 와 브랜치의 갈래점 — 기록의 base 와 같으면 base 가 안 움직인 것
 }
-export interface ViewRecord { fp: string; blob: string | null; head: string; at: string; viewed: boolean }
+// blocks·base·meta: 확인할 때의 변경 블록 서명·merge-base·meta (spec §4). 이 기능 전 기록에는 없다
+export interface ViewRecord { fp: string; blob: string | null; head: string; at: string; viewed: boolean; blocks?: string[]; base?: string; meta?: string }
 export type DeviceState = Record<string, ViewRecord>;   // 키 = HMAC hex
 export type FileState = 'viewed' | 'unread' | 'changed-since-viewed';
 export interface ReviewItem { file: ChangedFile; key: string; fp: string; state: FileState; record?: ViewRecord }

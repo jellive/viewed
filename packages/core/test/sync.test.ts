@@ -90,6 +90,23 @@ describe('gist io', () => {
     await expect(loadAll(new GitHub('t', f), 'g1', 'mac')).rejects.toThrow();
   });
 
+  it('accepts records with and without the block fields', async () => {
+    const withBlocks = { ...rec('2026-10-15T01:00:00Z'), blocks: ['0123456789abcdef'], base: 'a'.repeat(40), meta: 'fedcba9876543210' };
+    const { f } = gistFetch({ 'device-mac.json': { content: JSON.stringify({ a: withBlocks, b: rec('2026-10-15T01:00:00Z') }), truncated: false, raw_url: '' } });
+    expect(Object.keys((await loadAll(new GitHub('t', f), 'g1', 'mac')).merged).sort()).toEqual(['a', 'b']);
+  });
+
+  it.each([
+    ['blocks not an array', { blocks: 'x' }],
+    ['a block not 16 hex', { blocks: ['xyz'] }],
+    ['base not a hash', { base: 'main' }],
+    ['meta not 16 hex', { meta: 3 }],
+  ])('rejects a record whose %s', async (_, extra) => {
+    const bad = { a: { ...rec('2026-10-15T01:00:00Z'), ...extra } };
+    const { f } = gistFetch({ 'device-mac.json': { content: JSON.stringify(bad), truncated: false, raw_url: '' } });
+    await expect(loadAll(new GitHub('t', f), 'g1', 'mac')).rejects.toThrow();
+  });
+
   it('rejects an unparseable at', async () => {
     const bad = { a: { ...rec('not-a-date') } };
     const { f } = gistFetch({ 'device-mac.json': { content: JSON.stringify(bad), truncated: false, raw_url: '' } });

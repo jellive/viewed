@@ -53,6 +53,7 @@ describe('loadLocalSnapshot', () => {
     expect(s.headSha).toBe(git('rev-parse', 'feat').trim());
     expect(s.owner).toBe('local');
     expect(s.truncated).toBe(false);
+    expect(s.mergeBase).toBe(git('merge-base', 'main', 'feat').trim());
 
     expect(by['keep.ts'].status).toBe('modified');
     expect(by['keep.ts'].patch).toBe('@@ -1,3 +1,4 @@\n a\n-b\n+B\n c\n+diff --git a/x b/x');

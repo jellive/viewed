@@ -43,6 +43,11 @@ describe('GitHub', () => {
     expect(r.files[2].patch).toBeUndefined();
   });
 
+  it('compare returns the merge base commit', async () => {
+    const { f } = fake({ '/compare/main...h1': { body: { files: [], merge_base_commit: { sha: 'mb1' } } } });
+    expect((await new GitHub('t', f).compare('acme', 'widget', 'main', 'h1')).mergeBase).toBe('mb1');
+  });
+
   it('reads tree modes', async () => {
     const { f } = fake({ '/git/trees/h1?recursive=1': { body: { truncated: false, tree: [
       { path: 'a.ts', mode: '100755', type: 'blob' }, { path: 'dir', mode: '040000', type: 'tree' },

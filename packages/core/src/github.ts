@@ -63,7 +63,7 @@ export class GitHub {
 
   async compare(owner: string, repo: string, base: string, headSha: string) {
     type F = { filename: string; previous_filename?: string; status: FileStatus; sha: string; patch?: string };
-    const body = await this.json<{ files?: F[] }>(`/repos/${owner}/${repo}/compare/${encodeURIComponent(base)}...${headSha}`);
+    const body = await this.json<{ files?: F[]; merge_base_commit?: { sha?: string } }>(`/repos/${owner}/${repo}/compare/${encodeURIComponent(base)}...${headSha}`);
     const raw = body.files ?? [];
     const files: ChangedFile[] = raw.map((x) => ({
       path: x.filename,
@@ -73,7 +73,7 @@ export class GitHub {
       ...(x.patch !== undefined ? { patch: x.patch } : {}),
     }));
     // GitHub 은 300개에서 자르고, 정확히 300개와 잘림을 구분할 수 없다 (spec §5.1)
-    return { files, truncated: raw.length >= 300 };
+    return { files, truncated: raw.length >= 300, mergeBase: body.merge_base_commit?.sha };
   }
 
   async treeModes(owner: string, repo: string, headSha: string) {

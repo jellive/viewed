@@ -78,7 +78,7 @@ export async function loadLocalSnapshot(git: LocalGit, repoId: string, branchRef
       mode: removed ? undefined : e.newMode,
     };
   });
-  return { owner: 'local', repo: repoId, base: baseRef, branch: branchRef, headSha: head, files, truncated: false };
+  return { owner: 'local', repo: repoId, base: baseRef, branch: branchRef, headSha: head, files, truncated: false, mergeBase: mb };
 }
 
 // 체크 기록의 레포 이름. 원격이 있으면 host/owner/repo, 없으면 폴더 전체 경로. 로컬 모드는 owner 가 'local' 이라 GitHub 모드 기록과 섞이지 않는다

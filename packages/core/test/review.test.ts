@@ -74,7 +74,7 @@ describe('loadSnapshot', () => {
     const routes: Record<string, unknown> = {
       '/repos/acme/widget': { default_branch: 'main' },
       '/repos/acme/widget/branches/feat': { commit: { sha: 'h9' } },
-      '/compare/main...h9': { files: [{ filename: 'a.ts', status: 'modified', sha: 'a1', patch: 'p' }] },
+      '/compare/main...h9': { files: [{ filename: 'a.ts', status: 'modified', sha: 'a1', patch: 'p' }], merge_base_commit: { sha: 'mb9' } },
       '/git/trees/h9?recursive=1': { truncated: false, tree: [{ path: 'a.ts', mode: '100755', type: 'blob' }] },
     };
     const f: FetchLike = async (url) => {
@@ -84,5 +84,6 @@ describe('loadSnapshot', () => {
     const s = await loadSnapshot(new GitHub('t', f), 'acme', 'widget', 'feat');
     expect(s).toMatchObject({ base: 'main', headSha: 'h9', truncated: false });
     expect(s.files[0].mode).toBe('100755');
+    expect(s.mergeBase).toBe('mb9');
   });
 });

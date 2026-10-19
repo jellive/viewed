@@ -16,6 +16,8 @@ export function mergeStates(states: DeviceState[]): DeviceState {
   return out;
 }
 
+const HEX16 = /^[0-9a-f]{16}$/, OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
 function assertState(name: string, v: unknown): asserts v is DeviceState {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new Error(`${name}: not an object`);
   for (const [k, r] of Object.entries(v)) {
@@ -23,7 +25,11 @@ function assertState(name: string, v: unknown): asserts v is DeviceState {
     const ok = typeof x === 'object' && x !== null && typeof x.fp === 'string' &&
       (x.blob === null || typeof x.blob === 'string') && typeof x.head === 'string' &&
       typeof x.at === 'string' && !Number.isNaN(Date.parse(x.at)) && typeof x.viewed === 'boolean';
-    if (!ok) throw new Error(`${name}: invalid record ${k}`);
+    // 블록 필드는 선택 — 옛 앱이 쓴 기록에는 없고, 있으면 모양까지 본다(spec §4)
+    const extra = ok && (x.blocks === undefined || (Array.isArray(x.blocks) && x.blocks.every((s) => typeof s === 'string' && HEX16.test(s))))
+      && (x.base === undefined || (typeof x.base === 'string' && OID.test(x.base)))
+      && (x.meta === undefined || (typeof x.meta === 'string' && HEX16.test(x.meta)));
+    if (!ok || !extra) throw new Error(`${name}: invalid record ${k}`);
   }
 }
 
