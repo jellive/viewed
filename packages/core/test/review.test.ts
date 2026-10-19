@@ -43,7 +43,8 @@ describe('buildReview', () => {
     const first = await buildReview(snap([fa, fb]), {}, S);
     const state: DeviceState = {};
     for (const it of first.items) state[it.key] = markRecord(it, 'h1', true);
-    const r = await buildReview(snap([{ ...fa, patch: 'pa2', blobSha: 'a2' }, fb]), state, S);
+    // 블록 판정이 생겨서 바뀐 patch 에 실제 변경 줄이 있어야 한다 — 변경 줄 없는 'pa'→'pa2' 는 블록 0개끼리라 확인함으로 남는다
+    const r = await buildReview(snap([{ ...fa, patch: '@@ -1 +1 @@\n-a\n+pa2', blobSha: 'a2' }, fb]), state, S);
     expect(r.items.map((i) => i.state)).toEqual(['changed-since-viewed', 'viewed']);
     expect(r.items[0].record?.blob).toBe('a1');
     expect(r.viewedCount).toBe(1);
@@ -85,5 +86,82 @@ describe('loadSnapshot', () => {
     expect(s).toMatchObject({ base: 'main', headSha: 'h9', truncated: false });
     expect(s.files[0].mode).toBe('100755');
     expect(s.mergeBase).toBe('mb9');
+  });
+});
+
+describe('buildReview — block judgment after a rebase or merge (spec §5)', () => {
+  const ctx = (lines: string[]) => lines.join('\n');
+  // S1: dev 가 내 줄 근처(line 6)를 고쳐 문맥만 바뀜
+  const p1 = ctx(['@@ -5,7 +5,7 @@', ' line 5', ' line 6', ' line 7', '-line 8', '+line 8 FEAT', ' line 9', ' line 10', ' line 11']);
+  const p1rebased = ctx(['@@ -5,7 +5,7 @@', ' line 5', ' line 6 DEV', ' line 7', '-line 8', '+line 8 FEAT', ' line 9', ' line 10', ' line 11']);
+  // S3: 머지 뒤 내 새 블록(line 11)
+  const p3 = ctx(['@@ -5,8 +5,8 @@', ' line 6 DEV', ' line 7', '-line 8', '+line 8 FEAT', ' line 9', ' line 10', '-line 11', '+line 11 FEAT2', ' line 12']);
+  const at = new Date('2026-10-15T00:00:00Z');
+  const snapAt = (patch: string | undefined, mergeBase: string, extra: Partial<Snapshot['files'][number]> = {}) =>
+    ({ ...snap([{ path: 'a.ts', status: 'modified' as const, blobSha: patch ?? 'bin', ...(patch !== undefined ? { patch } : {}), mode: '100644', ...extra }]), mergeBase });
+  async function viewedAt(s: Snapshot) {
+    const r = await buildReview(s, {}, S);
+    return { [r.items[0].key]: markRecord(r.items[0], 'h1', true, at) };
+  }
+
+  it('markRecord stores blocks, base and meta', async () => {
+    const st = await viewedAt(snapAt(p1, 'mb1'));
+    const rec = Object.values(st)[0];
+    expect(rec.blocks).toHaveLength(1);
+    expect(rec.base).toBe('mb1');
+    expect(rec.meta).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it('S1 context-only change stays viewed and is marked carried', async () => {
+    const st = await viewedAt(snapAt(p1, 'mb1'));
+    const it = (await buildReview(snapAt(p1rebased, 'mb2'), st, S)).items[0];
+    expect(it.state).toBe('viewed');
+    expect(it.carried).toBe(true);
+  });
+
+  it('S2 my blocks shrank to a subset: viewed', async () => {
+    const two = ctx(['@@ -1,3 +1,3 @@', ' l1', '-l2', '+l2 A', ' l3', '@@ -9,3 +9,3 @@', ' l9', '-l10', '+l10 B', ' l11']);
+    const one = ctx(['@@ -9,3 +9,3 @@', ' l9', '-l10', '+l10 B', ' l11']);
+    const st = await viewedAt(snapAt(two, 'mb1'));
+    expect((await buildReview(snapAt(one, 'mb2'), st, S)).items[0].state).toBe('viewed');
+  });
+
+  it('S3 a new block: changed-since-viewed with its index', async () => {
+    const st = await viewedAt(snapAt(p1, 'mb1'));
+    const it = (await buildReview(snapAt(p3, 'mb2'), st, S)).items[0];
+    expect(it.state).toBe('changed-since-viewed');
+    expect(it.newBlocks).toEqual([1]);
+    expect(it.carried).toBeUndefined();
+  });
+
+  it('overlap: same + line but the base - line changed is a new block', async () => {
+    const st = await viewedAt(snapAt(ctx(['@@ -8 +8 @@', '-line 8', '+mine']), 'mb1'));
+    const it = (await buildReview(snapAt(ctx(['@@ -8 +8 @@', '-line 8 DEV', '+mine']), 'mb2'), st, S)).items[0];
+    expect(it.state).toBe('changed-since-viewed');
+  });
+
+  it('mode change with identical blocks is changed-since-viewed', async () => {
+    const st = await viewedAt(snapAt(p1, 'mb1'));
+    expect((await buildReview(snapAt(p1rebased, 'mb2', { mode: '100755' }), st, S)).items[0].state).toBe('changed-since-viewed');
+  });
+
+  it('a record from before this feature (no blocks) keeps the old behavior', async () => {
+    const st = await viewedAt(snapAt(p1, 'mb1'));
+    const k = Object.keys(st)[0];
+    const { blocks: _b, base: _ba, meta: _m, ...old } = st[k];
+    const it = (await buildReview(snapAt(p1rebased, 'mb2'), { [k]: old }, S)).items[0];
+    expect(it.state).toBe('changed-since-viewed');
+    expect(it.newBlocks).toBeUndefined();
+  });
+
+  it('a file without a patch skips block judgment', async () => {
+    const st = await viewedAt(snapAt(p1, 'mb1'));
+    expect((await buildReview(snapAt(undefined, 'mb2'), st, S)).items[0].state).toBe('changed-since-viewed');
+  });
+
+  it('carried files count toward progress and completion', async () => {
+    const st = await viewedAt(snapAt(p1, 'mb1'));
+    const r = await buildReview(snapAt(p1rebased, 'mb2'), st, S);
+    expect(r).toMatchObject({ viewedCount: 1, complete: true });
   });
 });

@@ -16,5 +16,9 @@ export interface Snapshot {
 export interface ViewRecord { fp: string; blob: string | null; head: string; at: string; viewed: boolean; blocks?: string[]; base?: string; meta?: string }
 export type DeviceState = Record<string, ViewRecord>;   // 키 = HMAC hex
 export type FileState = 'viewed' | 'unread' | 'changed-since-viewed';
-export interface ReviewItem { file: ChangedFile; key: string; fp: string; state: FileState; record?: ViewRecord }
+// newBlocks: 확인한 블록과 안 맞는 지금 블록 번호 / carried: 지문은 바뀌었지만 블록이 전부 확인한 것이라 확인함
+export interface ReviewItem {
+  file: ChangedFile; key: string; fp: string; meta: string; blocks?: string[]; base?: string;
+  state: FileState; record?: ViewRecord; newBlocks?: number[]; carried?: boolean;
+}
 export interface Review { items: ReviewItem[]; viewedCount: number; total: number; incomplete: boolean; complete: boolean }
