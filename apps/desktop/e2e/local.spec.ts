@@ -303,7 +303,8 @@ test('S2: part of my work squashed into base, then rebase — still viewed', asy
   commitOnMain(repo, { 3: 'line 3 A' });
   git(repo, 'rebase', '-q', 'main');   // 첫 커밋은 main 에 같은 내용이 있어 git 이 건너뛴다
   await win.getByTestId('open-btn').click();
-  await expect(row.getByTestId('file-state')).toHaveText('Reviewed changes unchanged');
+  // 확인한 블록 2개 중 line 3 이 base 로 들어가 diff 에서 빠졌다 — 확인함으로 두되 경고 배지
+  await expect(row.getByTestId('file-state')).toHaveText('1 reviewed change dropped');
   await expect(row).toHaveAttribute('data-state', 'viewed');
   await app.close();
 });
