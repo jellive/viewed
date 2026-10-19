@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractBlocks, blockSigs, metaSig, unmatchedBlocks, hunksWithBlocks, markedHunks } from '../src/blocks';
+import { blockSigs, metaSig, unmatchedBlocks, markedHunks } from '../src/blocks';
 import { hmacHex, recordKey } from '../src/keys';
 
 const P = [
@@ -20,19 +20,36 @@ const P = [
   '\\ No newline at end of file',
 ].join('\n');
 
-describe('extractBlocks', () => {
-  it('splits runs of -/+ lines, drops context and hunk headers, keeps \\ lines inside a run', () => {
-    expect(extractBlocks(P)).toEqual([
-      ['-b', '+B'],
-      ['-e', '+E', '+E2'],
-      ['-last', '\\ No newline at end of file', '+last', '\\ No newline at end of file'],
-    ]);
+// 서명(blockSigs)과 덩어리 선별(markedHunks)은 블록을 따로 센다 — 번호가 어긋나면 엉뚱한 덩어리가 보인다
+// markedHunks 가 센 블록 수 = 비지 않은 덩어리를 돌려주는 가장 큰 번호 + 1
+const markedCount = (patch: string) => { let i = 0; while (markedHunks(patch, [i]).patch !== '') i++; return i; };
+const sigInput = (b: string[]) => hmacHex('s', JSON.stringify(b)).then((h) => h.slice(0, 16));
+
+describe('block boundaries — signatures and markedHunks count the same blocks', () => {
+  it('-/+ runs are blocks; context and hunk headers split them, \\ lines inside a run stay in it', async () => {
+    expect(await blockSigs('s', P)).toHaveLength(3);
+    expect(markedCount(P)).toBe(3);
   });
-  it('a \\ line after context is not a block', () => {
-    expect(extractBlocks('@@ -1 +1 @@\n keep\n\\ No newline at end of file')).toEqual([]);
+  it('a \\ line after context is not a block', async () => {
+    const p = '@@ -1 +1 @@\n keep\n\\ No newline at end of file';
+    expect(await blockSigs('s', p)).toEqual([]);
+    expect(markedCount(p)).toBe(0);
   });
-  it('a hunk header ends a run even without context between', () => {
-    expect(extractBlocks('@@ -1 +1 @@\n-a\n+b\n@@ -9 +9 @@\n-c\n+d')).toEqual([['-a', '+b'], ['-c', '+d']]);
+  it('a hunk header ends a run even without context between', async () => {
+    const p = '@@ -1 +1 @@\n-a\n+b\n@@ -9 +9 @@\n-c\n+d';
+    expect(await blockSigs('s', p)).toEqual(await Promise.all([['', '-a', '+b', ''], ['', '-c', '+d', '']].map(sigInput)));
+    expect(markedCount(p)).toBe(2);
+    expect(markedHunks(p, [1]).patch).toBe('@@ -9 +9 @@\n-c\n+d');
+  });
+  it('a blank line ends a run like a context line, but is no neighbor', async () => {
+    const p = '@@ -1,3 +1,3 @@\n-a\n+A\n\n-b\n+B';
+    expect(await blockSigs('s', p)).toEqual(await Promise.all([['', '-a', '+A', ''], ['', '-b', '+B', '']].map(sigInput)));
+    expect(markedCount(p)).toBe(2);
+    expect(markedHunks(p, [1])).toEqual({ patch: p, seen: [1, 2] });
+  });
+  it('a trailing newline adds no block', async () => {
+    expect(await blockSigs('s', '@@ -1 +1 @@\n-x\n+y\n')).toHaveLength(1);
+    expect(markedCount('@@ -1 +1 @@\n-x\n+y\n')).toBe(1);
   });
 });
 
@@ -57,16 +74,15 @@ describe('blockSigs / metaSig', () => {
     const a = await blockSigs('s', '@@ -1,2 +1,2 @@\n-b\n+B\n c');
     expect((await blockSigs('s', '@@ -1,3 +1,3 @@\n a\n-b\n+B\n c'))[0]).not.toBe(a[0]);
   });
-  it('one signature per extractBlocks block, in the same order, over [before, ...block, after]', async () => {
+  it('one signature per block, in patch order, over [before, ...block, after]', async () => {
     const sigs = await blockSigs('s', P);
-    expect(sigs).toHaveLength(extractBlocks(P).length);
-    // 경계 규칙이 extractBlocks 와 같아야 hunksWithBlocks 의 번호와 맞는다 — 서명 입력 모양을 그대로 고정한다
+    // 블록 경계와 앞뒤 문맥을 서명 입력 모양으로 그대로 고정한다 — '\\' 줄은 블록 안, 덩어리 끝의 뒤 문맥은 ''
     const want = [
       [' a', '-b', '+B', ' c'],
       [' d', '-e', '+E', '+E2', ''],
       [' x', '-last', '\\ No newline at end of file', '+last', '\\ No newline at end of file', ''],
     ];
-    expect(sigs).toEqual(await Promise.all(want.map(async (b) => (await hmacHex('s', JSON.stringify(b))).slice(0, 16))));
+    expect(sigs).toEqual(await Promise.all(want.map(sigInput)));
   });
   it('meta changes with status, previous path and mode', async () => {
     const base = { path: 'a', status: 'modified' as const, blobSha: 'x' };
@@ -117,20 +133,17 @@ describe('unmatchedBlocks', () => {
   });
 });
 
-describe('hunksWithBlocks', () => {
-  it('keeps only hunks holding a wanted block, numbering blocks like extractBlocks', () => {
-    expect(hunksWithBlocks(P, [2])).toBe(P.split('\n').slice(9).join('\n'));
-    expect(hunksWithBlocks(P, [1])).toBe(P.split('\n').slice(0, 9).join('\n'));
-    expect(hunksWithBlocks(P, [])).toBe('');
-    // '\' 줄을 사이에 둔 -last/+last 는 한 블록 — 블록은 3개뿐이라 3번은 없다
-    expect(hunksWithBlocks(P, [3])).toBe('');
-  });
-});
-
 describe('markedHunks', () => {
-  it('same patch as hunksWithBlocks, plus the line numbers of blocks not asked for', () => {
+  it('keeps only hunks holding a wanted block', () => {
+    expect(markedHunks(P, [2]).patch).toBe(P.split('\n').slice(9).join('\n'));
+    expect(markedHunks(P, [1]).patch).toBe(P.split('\n').slice(0, 9).join('\n'));
+    expect(markedHunks(P, []).patch).toBe('');
+    // '\' 줄을 사이에 둔 -last/+last 는 한 블록 — 블록은 3개뿐이라 3번은 없다
+    expect(markedHunks(P, [3]).patch).toBe('');
+  });
+  it('also returns the line numbers of blocks not asked for', () => {
     // want=[1] 은 첫 덩어리를 남긴다 — 같은 덩어리의 블록 0(-b/+B)은 이미 확인한 것
-    expect(markedHunks(P, [1])).toEqual({ patch: hunksWithBlocks(P, [1]), seen: [2, 3] });
+    expect(markedHunks(P, [1])).toEqual({ patch: P.split('\n').slice(0, 9).join('\n'), seen: [2, 3] });
     expect(markedHunks(P, [0]).seen).toEqual([6, 7, 8]);
     expect(markedHunks(P, [0, 1]).seen).toEqual([]);
     expect(markedHunks(P, [])).toEqual({ patch: '', seen: [] });

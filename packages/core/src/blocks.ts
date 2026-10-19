@@ -3,23 +3,8 @@ import { hmacHex } from './keys';
 import type { ChangedFile } from './types';
 
 // 블록 = 덩어리 안에서 연속한 -/+ 줄. 문맥 줄과 덩어리 머리는 안 든다 — 문맥은 base 쪽 변경으로도 바뀐다(spec §3)
-// '\ No newline' 줄은 바로 앞이 -/+ 면 그 블록에 붙인다(끝 개행 변경도 내 변경)
-export function extractBlocks(patch: string): string[][] {
-  const blocks: string[][] = [];
-  let cur: string[] | null = null;
-  for (const line of patch.split('\n')) {
-    const c = line[0];
-    if (c === '-' || c === '+') {
-      if (!cur) { cur = []; blocks.push(cur); }
-      cur.push(line);
-    } else if (c === '\\') {
-      if (cur) cur.push(line);
-    } else cur = null;
-  }
-  return blocks;
-}
-
-// 서명용: [앞 문맥, ...블록, 뒤 문맥]. 문맥은 바로 앞·뒤 줄이 문맥 줄(' ')일 때만, 아니면 ''. 경계는 extractBlocks 와 같다
+// '\ No newline' 줄은 바로 앞이 -/+ 면 그 블록에 붙인다(끝 개행 변경도 내 변경). 경계는 markedHunks 의 블록 번호와 같아야 한다
+// 서명용: [앞 문맥, ...블록, 뒤 문맥]. 문맥은 바로 앞·뒤 줄이 문맥 줄(' ')일 때만, 아니면 ''
 // 같은 -/+ 블록이 다른 위치에 나타난 것과 구분한다. 1줄인 이유: dev 가 2줄 떨어진 곳을 고친 S1 은 계속 맞아야 한다
 function anchoredBlocks(patch: string): string[][] {
   const lines = patch.split('\n');
@@ -78,7 +63,7 @@ export function unmatchedBlocks(prev: string[], cur: string[]): number[] {
 }
 
 // want 번 블록이 든 덩어리만 남기고, 남긴 patch 의 줄 번호(\n 으로 나눈) 중 want 밖 블록의 -/+/\ 줄을 seen 으로 돌려준다
-// — 같은 덩어리에 든 이미 확인한 블록을 흐리게 그리려고. 블록 번호는 extractBlocks 와 같은 규칙으로 센다
+// — 같은 덩어리에 든 이미 확인한 블록을 흐리게 그리려고. 블록 번호는 blockSigs 의 서명 순서와 같은 규칙으로 센다
 export function markedHunks(patch: string, want: number[]): { patch: string; seen: number[] } {
   const keep = new Set(want);
   const out: string[] = [], seen: number[] = [];
@@ -100,8 +85,4 @@ export function markedHunks(patch: string, want: number[]): { patch: string; see
   }
   flush();
   return { patch: out.join('\n'), seen };
-}
-
-export function hunksWithBlocks(patch: string, want: number[]): string {
-  return markedHunks(patch, want).patch;
 }
