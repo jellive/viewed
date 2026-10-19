@@ -133,6 +133,9 @@ button.primary:hover { background: var(--primary-hover); }
 }
 .file:has(.file-body) .file-head { border-bottom: 1px solid var(--border); }
 .path { flex: 1; min-width: 0; font: 600 12px/20px var(--mono); overflow-wrap: anywhere; }
+/* 경로가 곧 펼침 버튼 — 버튼 기본 모양을 걷어 낸다 */
+button.path { display: flex; gap: 6px; min-height: 0; padding: 0; text-align: left; background: none; border: 0; border-radius: 0; }
+.chev { flex: none; width: 12px; color: var(--fg-muted); }
 .badge:empty { display: none; }
 .badge {
   flex: none; padding: 0 7px; font-size: 12px; font-weight: 500; line-height: 18px;

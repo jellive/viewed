@@ -196,3 +196,84 @@ test('refresh reads the branch with the token saved now, not the one it was open
   await expect.poll(() => auth.length).toBe(2);
   expect(auth).toEqual(['Bearer tok', 'Bearer tok-new']);
 });
+
+// 확인한 파일 다시 보기 — 펼침은 화면 상태일 뿐, 체크·진행률·저장 기록을 건드리지 않는다
+test('a viewed file opens again from its header, with check, progress and the gist record untouched', async ({ page }) => {
+  await seedSettings(page);
+  const { gistPatches } = await mockGitHub(page, { files });
+  await open(page);
+  const row = page.getByTestId('file-row').filter({ hasText: 'a.ts' });
+  const head = row.getByTestId('file-expand');
+  await expect(head).toHaveAttribute('aria-expanded', 'true');
+  await row.getByTestId('file-check').check();
+  await expect(row.getByTestId('diff')).toBeHidden();
+  await expect(head).toHaveAttribute('aria-expanded', 'false');
+  await expect.poll(() => gistPatches.length, { timeout: 5000 }).toBe(1);
+  await head.click();
+  await expect(row.getByTestId('diff')).toContainText('+y');   // 전체 diff(base...head)
+  await expect(head).toHaveAttribute('aria-expanded', 'true');
+  await expect(row).toHaveAttribute('data-state', 'viewed');
+  await expect(row.getByTestId('file-check')).toBeChecked();
+  await expect(page.getByTestId('progress')).toHaveText('1 / 2');
+  await head.click();
+  await expect(row.getByTestId('diff')).toBeHidden();
+  await expect(head).toHaveAttribute('aria-expanded', 'false');
+  await page.waitForTimeout(2500);   // 저장이 예약됐다면 1.5초 디바운스가 지났다
+  expect(gistPatches).toHaveLength(1);
+});
+
+test('opening a viewed file leaves the device-only record as it was', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('viewed.settings', JSON.stringify({
+    accounts: [{ label: 'personal', token: 'tok' }], gistAccount: 'personal', gistId: '', secret: 'k', deviceId: 'mac', storage: 'device' })));
+  await mockGitHub(page, { files });
+  await open(page);
+  const row = page.getByTestId('file-row').filter({ hasText: 'a.ts' });
+  await row.getByTestId('file-check').check();
+  await expect(page.getByTestId('progress')).toHaveText('1 / 2');
+  const before = await page.evaluate(() => localStorage.getItem('viewed.device.mac'));
+  expect(before).toContain('"viewed":true');
+  await row.getByTestId('file-expand').click();
+  await expect(row.getByTestId('diff')).toBeVisible();
+  await row.getByTestId('file-expand').click();
+  await expect(row.getByTestId('diff')).toBeHidden();
+  expect(await page.evaluate(() => localStorage.getItem('viewed.device.mac'))).toBe(before);
+  await expect(page.getByTestId('progress')).toHaveText('1 / 2');
+});
+
+test('a file folded by hand stays folded on refresh, and opens again when a new commit changes it', async ({ page }) => {
+  await seedSettings(page);
+  await mockGitHub(page, { files });
+  await open(page);
+  const row = page.getByTestId('file-row').filter({ hasText: 'a.ts' });
+  await row.getByTestId('file-expand').click();   // 안 본 파일도 접을 수 있다
+  await expect(row.getByTestId('diff')).toBeHidden();
+  await expect(row).toHaveAttribute('data-state', 'unread');
+  await page.getByTestId('refresh-btn').click();   // 내용이 같으면 접은 채로
+  await expect(page.getByTestId('progress')).toHaveText('0 / 2');
+  await expect(row.getByTestId('file-expand')).toHaveAttribute('aria-expanded', 'false');
+  await mockGitHub(page, { files: [{ filename: 'a.ts', status: 'modified', sha: 'a2', patch: '@@ -1 +1,2 @@\n-x\n+y\n+z' }, files[1]] });
+  await page.getByTestId('refresh-btn').click();   // 새 커밋이 이 파일을 바꿨다 — 바뀐 줄이 숨지 않게 다시 펼친다
+  await expect(row.getByTestId('diff')).toContainText('+z');
+  await expect(row.getByTestId('file-expand')).toHaveAttribute('aria-expanded', 'true');
+});
+
+test('checking folds and unchecking opens, whatever the header was set to', async ({ page }) => {
+  await seedSettings(page);
+  await mockGitHub(page, { files });
+  await open(page);
+  const row = page.getByTestId('file-row').filter({ hasText: 'a.ts' });
+  const head = row.getByTestId('file-expand');
+  await head.click();   // 안 본 파일을 접어 둔 채로
+  await row.getByTestId('file-check').check();
+  await expect(head).toHaveAttribute('aria-expanded', 'false');
+  await row.getByTestId('file-check').uncheck();   // 풀면 펼친다 — 접어 둔 선택이 남지 않는다
+  await expect(row.getByTestId('diff')).toBeVisible();
+  await row.getByTestId('file-check').check();
+  await head.click();   // 확인한 파일을 펼쳐 둔 채로
+  await expect(row.getByTestId('diff')).toBeVisible();
+  await row.getByTestId('file-check').uncheck();
+  await expect(row.getByTestId('diff')).toBeVisible();
+  await row.getByTestId('file-check').check();   // 다시 체크하면 접는다 — 펼쳐 둔 선택이 남지 않는다
+  await expect(row.getByTestId('diff')).toBeHidden();
+  await expect(head).toHaveAttribute('aria-expanded', 'false');
+});
