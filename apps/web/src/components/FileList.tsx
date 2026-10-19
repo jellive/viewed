@@ -11,7 +11,6 @@ export function FileList({ review, syncOk, onToggle, renderDiff }: { review: Rev
   // 머리를 눌러 펼치고 접은 것. 그때의 지문이 지금과 같을 때만 따른다 — 새 커밋이 바꾼 파일은 기본값(펼침)으로 돌아가 바뀐 줄이 숨지 않는다
   const [picked, setPicked] = useState<Record<string, { open: boolean; fp: string }>>({});
   const isOpen = (it: ReviewItem) => (picked[it.key]?.fp === it.fp ? picked[it.key].open : it.state !== 'viewed');
-  const unpick = (key: string) => setPicked(({ [key]: _, ...rest }) => rest);
   const shown = onlyUnviewed ? review.items.filter((it) => it.state !== 'viewed') : review.items;
   return (
     <section className="review">
@@ -28,14 +27,20 @@ export function FileList({ review, syncOk, onToggle, renderDiff }: { review: Rev
           return (
             <li key={it.key} data-testid="file-row" data-state={it.state} className="file">
               <div className="file-head">
-                <button type="button" data-testid="file-expand" className="path" aria-expanded={open} title={t.toggleDiff}
+                {/* 경로는 버튼 밖에 둬 드래그로 복사할 수 있게 — 펼침은 앞의 작은 버튼만 */}
+                <button type="button" data-testid="file-expand" className="expand" aria-expanded={open} aria-label={t.toggleDiff} title={t.toggleDiff}
                   onClick={() => setPicked((p) => ({ ...p, [it.key]: { open: !open, fp: it.fp } }))}>
-                  <span className="chev" aria-hidden="true">{open ? '▾' : '▸'}</span>{it.file.path}
+                  <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6" /></svg>
                 </button>
+                <span className="path">{it.file.path}</span>
                 <span data-testid="file-state" className="badge">{MARK[it.state]}</span>
                 <label className="viewed-toggle">
-                  {/* 체크하면 접고 풀면 펼친다 — 머리로 고른 것은 잊는다 */}
-                  <input type="checkbox" data-testid="file-check" aria-label={t.viewedFile(it.file.path)} checked={it.state === 'viewed'} onChange={(e) => { unpick(it.key); onToggle(it, e.target.checked); }} />
+                  {/* 체크하면 접고 풀면 펼친다 — 머리로 고른 것은 덮는다. 판정이 비동기라 목표 상태를 바로 넣어야 옛 state 로 한 번 그려질 때 깜빡이지 않는다 */}
+                  <input type="checkbox" data-testid="file-check" aria-label={t.viewedFile(it.file.path)} checked={it.state === 'viewed'} onChange={(e) => {
+                    const v = e.target.checked;
+                    setPicked((p) => ({ ...p, [it.key]: { open: !v, fp: it.fp } }));
+                    onToggle(it, v);
+                  }} />
                   {t.viewed}
                 </label>
               </div>

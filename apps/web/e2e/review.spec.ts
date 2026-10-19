@@ -277,3 +277,52 @@ test('checking folds and unchecking opens, whatever the header was set to', asyn
   await expect(row.getByTestId('diff')).toBeHidden();
   await expect(head).toHaveAttribute('aria-expanded', 'false');
 });
+
+// 체크·해제 직후 판정(buildReview)은 비동기라 한 번은 옛 state 로 그려진다 — 그때 반대 펼침이 잠깐이라도 DOM 에 오르면 깜빡임이다
+test('checking or unchecking never flashes the opposite fold state first', async ({ page }) => {
+  await seedSettings(page);
+  await mockGitHub(page, { files });
+  await open(page);
+  const row = page.getByTestId('file-row').filter({ hasText: 'a.ts' });
+  const head = row.getByTestId('file-expand');
+  // aria-expanded 가 바뀔 때마다 그 값을 적는다
+  const watch = () => head.evaluate((el) => {
+    const w = window as unknown as { seen: (string | null)[] };
+    w.seen = [];
+    new MutationObserver(() => w.seen.push(el.getAttribute('aria-expanded'))).observe(el, { attributes: true, attributeFilter: ['aria-expanded'] });
+  });
+  const seen = () => page.evaluate(() => (window as unknown as { seen: (string | null)[] }).seen);
+  await head.click();   // 안 본 파일을 접어 둔 채로 체크 — 펼쳐지면 안 된다
+  await expect(head).toHaveAttribute('aria-expanded', 'false');
+  await watch();
+  await row.getByTestId('file-check').check();
+  await expect(page.getByTestId('progress')).toHaveText('1 / 2');
+  await expect(head).toHaveAttribute('aria-expanded', 'false');
+  expect(await seen()).toEqual([]);
+  await head.click();   // 확인한 파일을 펼쳐 둔 채로 해제 — 접히면 안 된다
+  await expect(row.getByTestId('diff')).toBeVisible();
+  await watch();
+  await row.getByTestId('file-check').uncheck();
+  await expect(page.getByTestId('progress')).toHaveText('0 / 2');
+  await expect(head).toHaveAttribute('aria-expanded', 'true');
+  expect(await seen()).toEqual([]);
+});
+
+// 경로는 버튼 밖의 글자라 드래그로 골라 복사할 수 있다. 눌러도 펼침이 바뀌지 않는다
+test('the path is plain text outside the expand button', async ({ page }) => {
+  await seedSettings(page);
+  await mockGitHub(page, { files });
+  await open(page);
+  const row = page.getByTestId('file-row').filter({ hasText: 'a.ts' });
+  const head = row.getByTestId('file-expand');
+  const path = row.locator('.file-head span.path');
+  await expect(path).toHaveText('a.ts');
+  expect(await path.evaluate((el) => el.closest('button') === null && getComputedStyle(el).userSelect !== 'none')).toBe(true);
+  await expect(head).not.toContainText('a.ts');
+  await expect(head).toHaveAccessibleName('Show or hide the diff');
+  await path.click();
+  await expect(head).toHaveAttribute('aria-expanded', 'true');
+  await expect(row.getByTestId('diff')).toBeVisible();
+  await head.click();
+  await expect(head).toHaveAttribute('aria-expanded', 'false');
+});
