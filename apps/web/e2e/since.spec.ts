@@ -107,6 +107,11 @@ const L = (lines: string[]) => lines.join('\n');
 const P1 = L(['@@ -5,7 +5,7 @@', ' line 5', ' line 6', ' line 7', '-line 8', '+line 8 FEAT', ' line 9', ' line 10', ' line 11']);
 const P1_REBASED = L(['@@ -5,7 +5,7 @@', ' line 5', ' line 6 DEV', ' line 7', '-line 8', '+line 8 FEAT', ' line 9', ' line 10', ' line 11']);
 const P3 = L(['@@ -5,8 +5,8 @@', ' line 6 DEV', ' line 7', '-line 8', '+line 8 FEAT', ' line 9', ' line 10', '-line 11', '+line 11 FEAT2', ' line 12']);
+// 확인한 블록(line 8)과 새 블록(line 20)이 서로 다른 덩어리에 있다 — 덩어리 선별이 실제로 일하는지 재려고
+const P3_APART = L([
+  '@@ -5,7 +5,7 @@', ' line 5', ' line 6 DEV', ' line 7', '-line 8', '+line 8 FEAT', ' line 9', ' line 10', ' line 11',
+  '@@ -17,7 +17,7 @@', ' line 17', ' line 18', ' line 19', '-line 20', '+line 20 FEAT2', ' line 21', ' line 22', ' line 23',
+]);
 const recordAt = (patch: string, base: string) =>
   viewedGist([{ filename: 'a.ts', status: 'modified', sha: 'a1', patch }], undefined, { base });
 
@@ -136,14 +141,41 @@ test('after a merge, only the hunk with my new block is shown and no blob is fet
   await seedSettings(page);
   const blobRequests: string[] = [];
   page.on('request', (r) => { if (r.url().includes('/git/blobs/')) blobRequests.push(r.url()); });
-  await mockGitHub(page, { head: 'h2', mergeBase: MB2, files: [{ filename: 'a.ts', status: 'modified', sha: 'a2', patch: P3 }], gistFiles: await recordAt(P1, MB1) });
+  await mockGitHub(page, { head: 'h2', mergeBase: MB2, files: [{ filename: 'a.ts', status: 'modified', sha: 'a2', patch: P3_APART }], gistFiles: await recordAt(P1, MB1) });
   await open(page);
   const row = page.getByTestId('file-row');
   await expect(row).toHaveAttribute('data-state', 'changed-since-viewed');
   await expect(row.getByTestId('since-blocks')).toBeVisible();
-  await expect(row.getByTestId('since-diff')).toContainText('+line 11 FEAT2');
+  await expect(row.getByTestId('since-diff')).toContainText('+line 20 FEAT2');
+  await expect(row.getByTestId('since-diff')).not.toContainText('line 8 FEAT');   // 확인한 블록만 든 덩어리는 빠진다
   for (const line of await row.getByTestId('since-diff').locator('.ln.add, .ln.del').allTextContents()) expect(line).not.toContain('DEV');
   expect(blobRequests).toEqual([]);
+  await row.getByTestId('full-tab').click();
+  await expect(row.getByTestId('diff')).toContainText('+line 8 FEAT');   // 빠진 덩어리는 전체 diff 에 있다
+});
+
+test('in the block view, a viewed block sharing a hunk with a new one is dimmed', async ({ page }) => {
+  await seedSettings(page);
+  await mockGitHub(page, { head: 'h2', mergeBase: MB2, files: [{ filename: 'a.ts', status: 'modified', sha: 'a2', patch: P3 }], gistFiles: await recordAt(P1, MB1) });
+  await open(page);
+  const diff = page.getByTestId('file-row').getByTestId('since-diff');
+  await expect(diff.locator('.ln.seen')).toHaveText(['-line 8', '+line 8 FEAT']);
+  expect(await diff.locator('.ln.seen').first().evaluate((el) => getComputedStyle(el).opacity)).toBe('0.5');
+  for (const ln of await diff.locator('.ln', { hasText: 'line 11' }).all()) await expect(ln).not.toHaveClass(/\bseen\b/);
+  await expect(diff.locator('.ln', { hasText: 'line 11' })).toHaveCount(2);
+});
+
+test('the block notice shows only on the since-viewed tab', async ({ page }) => {
+  await seedSettings(page);
+  await mockGitHub(page, { head: 'h2', mergeBase: MB2, files: [{ filename: 'a.ts', status: 'modified', sha: 'a2', patch: P3 }], gistFiles: await recordAt(P1, MB1) });
+  await open(page);
+  const row = page.getByTestId('file-row');
+  await expect(row.getByTestId('since-blocks')).toBeVisible();
+  await row.getByTestId('full-tab').click();
+  await expect(row.getByTestId('diff')).toContainText('+line 11 FEAT2');   // 전체 탭이 그려진 뒤에 센다
+  await expect(row.getByTestId('since-blocks')).toHaveCount(0);
+  await row.getByTestId('since-tab').click();
+  await expect(row.getByTestId('since-blocks')).toBeVisible();
 });
 
 test('base unchanged keeps the line-level since diff from blobs', async ({ page }) => {

@@ -260,19 +260,19 @@ test('the last review does not open by itself when its folder is gone, and the e
   await app.close();
 });
 
-// 12줄 파일 f.ts — feat 커밋마다 edits 를 통째로 적용한다
-const lines = (edits: Record<number, string> = {}) => Array.from({ length: 12 }, (_, i) => edits[i + 1] ?? `line ${i + 1}`).join('\n') + '\n';
-function lineRepo(featCommits: Record<number, string>[]) {
+// n줄(기본 12) 파일 f.ts — feat 커밋마다 edits 를 통째로 적용한다
+const lines = (edits: Record<number, string> = {}, n = 12) => Array.from({ length: n }, (_, i) => edits[i + 1] ?? `line ${i + 1}`).join('\n') + '\n';
+function lineRepo(featCommits: Record<number, string>[], n = 12) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'viewed-rebase-')));
   git(dir, 'init', '-q', '-b', 'main');
-  writeFileSync(join(dir, 'f.ts'), lines()); git(dir, 'add', '-A'); git(dir, 'commit', '-q', '-m', 'base');
+  writeFileSync(join(dir, 'f.ts'), lines({}, n)); git(dir, 'add', '-A'); git(dir, 'commit', '-q', '-m', 'base');
   git(dir, 'checkout', '-q', '-b', 'feat');
-  for (const e of featCommits) { writeFileSync(join(dir, 'f.ts'), lines(e)); git(dir, 'commit', '-q', '-am', 'feat'); }
+  for (const e of featCommits) { writeFileSync(join(dir, 'f.ts'), lines(e, n)); git(dir, 'commit', '-q', '-am', 'feat'); }
   return dir;
 }
-function commitOnMain(dir: string, edits: Record<number, string>) {
+function commitOnMain(dir: string, edits: Record<number, string>, n = 12) {
   git(dir, 'checkout', '-q', 'main');
-  writeFileSync(join(dir, 'f.ts'), lines(edits)); git(dir, 'commit', '-q', '-am', 'main moves');
+  writeFileSync(join(dir, 'f.ts'), lines(edits, n)); git(dir, 'commit', '-q', '-am', 'main moves');
   git(dir, 'checkout', '-q', 'feat');
 }
 async function openAndCheck(repo: string) {
@@ -309,17 +309,21 @@ test('S2: part of my work squashed into base, then rebase — still viewed', asy
   await app.close();
 });
 
-test('S3: merging base then changing another line shows only my new block', async () => {
-  const repo = lineRepo([{ 8: 'line 8 FEAT' }]);
+// 30줄 — 확인한 블록(line 8)과 새 블록(line 20)이 11줄 떨어져 diff 에서 서로 다른 덩어리가 된다
+test('S3: merging base then changing a far line shows only the hunk with my new block', async () => {
+  const repo = lineRepo([{ 8: 'line 8 FEAT' }], 30);
   const { app, win, row } = await openAndCheck(repo);
-  commitOnMain(repo, { 2: 'line 2 DEV' });
+  commitOnMain(repo, { 2: 'line 2 DEV' }, 30);
   git(repo, 'merge', '-q', '--no-edit', 'main');
-  writeFileSync(join(repo, 'f.ts'), lines({ 2: 'line 2 DEV', 8: 'line 8 FEAT', 11: 'line 11 FEAT2' }));
+  writeFileSync(join(repo, 'f.ts'), lines({ 2: 'line 2 DEV', 8: 'line 8 FEAT', 20: 'line 20 FEAT2' }, 30));
   git(repo, 'commit', '-q', '-am', 'more');
   await win.getByTestId('open-btn').click();
   await expect(row).toHaveAttribute('data-state', 'changed-since-viewed');
   await expect(row.getByTestId('since-blocks')).toBeVisible();
-  await expect(row.getByTestId('since-diff')).toContainText('+line 11 FEAT2');
+  await expect(row.getByTestId('since-diff')).toContainText('+line 20 FEAT2');
+  await expect(row.getByTestId('since-diff')).not.toContainText('line 8 FEAT');   // 확인한 블록만 든 덩어리는 빠진다
   for (const line of await row.getByTestId('since-diff').locator('.ln.add, .ln.del').allTextContents()) expect(line).not.toContain('DEV');
+  await row.getByTestId('full-tab').click();
+  await expect(row.getByTestId('diff')).toContainText('+line 8 FEAT');
   await app.close();
 });

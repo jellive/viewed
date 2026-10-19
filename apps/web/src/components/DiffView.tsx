@@ -18,12 +18,13 @@ function lines(patch: string): Line[] {
   });
 }
 
-export function DiffView({ patch }: { patch?: string }) {
+// seen: patch 를 \n 으로 나눈 줄 번호 중 이미 확인한 블록의 줄 — 흐리게 그린다
+export function DiffView({ patch, seen }: { patch?: string; seen?: ReadonlySet<number> }) {
   if (patch === undefined) return <p data-testid="no-patch" className="note">{t.noPatch}</p>;
   return (
     <pre data-testid="diff" className="diff">
       {lines(patch).map((l, i) => (
-        <div key={i} className={`ln ${l.kind}`} data-o={l.o ?? ''} data-n={l.n ?? ''}>
+        <div key={i} className={`ln ${l.kind}${seen?.has(i) ? ' seen' : ''}`} data-o={l.o ?? ''} data-n={l.n ?? ''}>
           {l.kind === 'hunk' || l.kind === 'meta'
             ? <span className="code">{l.text}</span>
             : <span className="code"><span className="mk">{l.text.slice(0, 1)}</span>{l.text.slice(1)}</span>}
