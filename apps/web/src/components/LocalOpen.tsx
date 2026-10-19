@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { desktopGit, shortRef } from '../localSource';
 import { errorText, t } from '../i18n';
+import { readRecent } from '../recent';
 
 type Info = Awaited<ReturnType<NonNullable<ReturnType<typeof desktopGit>>['info']>>;
 
@@ -22,8 +23,10 @@ export function LocalOpen({ onOpen, onError }: { onOpen: (repo: string, info: In
       if (!live) return;
       setInfo(i);
       const heads = i.refs.filter((r) => r.startsWith('refs/heads/'));
-      setBranch(i.current && heads.includes(i.current) ? i.current : heads[0] ?? '');
-      setBase(i.defaultBase ?? i.refs.find((r) => r === 'refs/heads/main' || r === 'refs/heads/master') ?? '');
+      // 이 레포에서 마지막으로 연 것이 아직 있으면 그것, 없으면 지금 규칙
+      const mem = readRecent().local[repo];
+      setBranch(mem && heads.includes(mem.branch) ? mem.branch : i.current && heads.includes(i.current) ? i.current : heads[0] ?? '');
+      setBase(mem && i.refs.includes(mem.base) ? mem.base : i.defaultBase ?? i.refs.find((r) => r === 'refs/heads/main' || r === 'refs/heads/master') ?? '');
     }).catch((e) => { if (live) onError(errorText(e)); });
     return () => { live = false; };
   }, [repo]);

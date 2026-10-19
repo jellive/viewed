@@ -7,6 +7,7 @@ import { getDeviceStore, getSyncStore, type SyncStore } from './syncStore';
 import { errorText, t } from './i18n';
 import { LocalOpen } from './components/LocalOpen';
 import { desktopGit, localBlob, localGit } from './localSource';
+import { rememberLocal } from './recent';
 
 type ReadBlob = (sha: string) => Promise<string | null>;
 // head: 로컬 모드에서 브랜치 끝 커밋을 싸게 읽는다 — 바뀌면 자동으로 다시 읽는다
@@ -60,7 +61,8 @@ export function App() {
   const token = (label: string) => settings.accounts.find((a) => a.label === label)?.token ?? '';
   // 스냅샷을 만드는 방법만 소스마다 다르고, 체크 기록(gist)을 붙이는 뒷부분은 같다
   // refresh: 보던 화면을 지우지 않고 그 자리에서 바꾼다(같은 id 라 필터·스크롤이 남는다)
-  async function load(make: Make, refresh = false) {
+  // remember: 이 요청이 화면에 올라갔을 때 그 요청의 값으로 기록한다 — 폼의 지금 값이 아니다. 다시 읽기는 기록하지 않는다
+  async function load(make: Make, refresh = false, remember?: () => void) {
     const mine = ++seq.current;
     setError(''); if (!refresh) setLoaded(null);
     const keep = (id: number) => (refresh && loaded ? loaded.id : id);
@@ -70,6 +72,7 @@ export function App() {
         const store = getDeviceStore(settings!.deviceId);
         if (mine !== seq.current) return;
         setLoaded({ id: keep(mine), snap, merged: store.own(), store, readBlob, make, head });
+        remember?.();
         return;
       }
       const gistGh = new GitHub(token(settings!.gistAccount));
@@ -80,6 +83,7 @@ export function App() {
       const merged = mergeStates([all.merged, store.own()]);
       if (mine !== seq.current) return;
       setLoaded({ id: keep(mine), snap, merged, store, readBlob, make, head });
+      remember?.();
     } catch (e) {
       if (mine !== seq.current) return;
       setError(errorText(e));
@@ -113,7 +117,7 @@ export function App() {
             snap: await loadLocalSnapshot(localGit(repo), repoIdFromRemote(info.remote, repo), branch, base),
             readBlob: localBlob(repo),
             head: () => localGit(repo).resolve(branch),
-          }))} />
+          }), false, () => rememberLocal(repo, branch, base))} />
           <button type="button" data-testid="settings-open" onClick={() => setEditing(true)}>{t.settings}</button>
         </form>
       ) : (
