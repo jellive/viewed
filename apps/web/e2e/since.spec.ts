@@ -119,6 +119,19 @@ test('after a rebase, a file whose own blocks did not change stays viewed', asyn
   await expect(row.getByTestId('file-state')).toHaveText('Reviewed changes unchanged');
 });
 
+test('after a rebase, a file that lost one of its viewed blocks stays viewed with a warning badge', async ({ page }) => {
+  // S2 — 확인한 블록 2개 중 1개가 base 에 들어갔거나 유실됨. 서명으로는 못 가르므로 확인함 + 경고
+  const TWO = L(['@@ -1,3 +1,3 @@', ' l1', '-l2', '+l2 A', ' l3', '@@ -9,3 +9,3 @@', ' l9', '-l10', '+l10 B', ' l11']);
+  const ONE = L(['@@ -9,3 +9,3 @@', ' l9', '-l10', '+l10 B', ' l11']);
+  await seedSettings(page);
+  await mockGitHub(page, { head: 'h2', mergeBase: MB2, files: [{ filename: 'a.ts', status: 'modified', sha: 'a2', patch: ONE }], gistFiles: await recordAt(TWO, MB1) });
+  await open(page);
+  const row = page.getByTestId('file-row');
+  await expect(row.getByTestId('file-state')).toHaveText('1 reviewed change dropped');
+  await expect(row).toHaveAttribute('data-state', 'viewed');
+  await expect(row.getByTestId('file-state')).not.toHaveClass(/muted/);   // 중립이 아닌 경고색
+});
+
 test('after a merge, only the hunk with my new block is shown and no blob is fetched', async ({ page }) => {
   await seedSettings(page);
   const blobRequests: string[] = [];
