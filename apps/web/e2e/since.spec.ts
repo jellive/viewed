@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { mockGitHub, seedSettings, viewedGist } from './fixtures';
+import { MB1, MB2, mockGitHub, seedSettings, viewedGist } from './fixtures';
 
 const seedViewedRecord = (f: { path: string; status: 'modified' | 'added'; blobSha: string; patch?: string }) =>
   viewedGist([{ filename: f.path, status: f.status, sha: f.blobSha, ...(f.patch !== undefined ? { patch: f.patch } : {}) }]);
@@ -101,4 +101,49 @@ test('a blob request that fails with 500 shows the error, not the force-push not
   const row = page.getByTestId('file-row');
   await expect(row.getByTestId('since-error')).toBeVisible();
   await expect(row.getByTestId('since-unavailable')).toHaveCount(0);
+});
+
+const L = (lines: string[]) => lines.join('\n');
+const P1 = L(['@@ -5,7 +5,7 @@', ' line 5', ' line 6', ' line 7', '-line 8', '+line 8 FEAT', ' line 9', ' line 10', ' line 11']);
+const P1_REBASED = L(['@@ -5,7 +5,7 @@', ' line 5', ' line 6 DEV', ' line 7', '-line 8', '+line 8 FEAT', ' line 9', ' line 10', ' line 11']);
+const P3 = L(['@@ -5,8 +5,8 @@', ' line 6 DEV', ' line 7', '-line 8', '+line 8 FEAT', ' line 9', ' line 10', '-line 11', '+line 11 FEAT2', ' line 12']);
+const recordAt = (patch: string, base: string) =>
+  viewedGist([{ filename: 'a.ts', status: 'modified', sha: 'a1', patch }], undefined, { base });
+
+test('after a rebase, a file whose own blocks did not change stays viewed', async ({ page }) => {
+  await seedSettings(page);
+  await mockGitHub(page, { head: 'h2', mergeBase: MB2, files: [{ filename: 'a.ts', status: 'modified', sha: 'a2', patch: P1_REBASED }], gistFiles: await recordAt(P1, MB1) });
+  await open(page);
+  const row = page.getByTestId('file-row');
+  await expect(row).toHaveAttribute('data-state', 'viewed');
+  await expect(row.getByTestId('file-state')).toHaveText('Reviewed changes unchanged');
+});
+
+test('after a merge, only the hunk with my new block is shown and no blob is fetched', async ({ page }) => {
+  await seedSettings(page);
+  const blobRequests: string[] = [];
+  page.on('request', (r) => { if (r.url().includes('/git/blobs/')) blobRequests.push(r.url()); });
+  await mockGitHub(page, { head: 'h2', mergeBase: MB2, files: [{ filename: 'a.ts', status: 'modified', sha: 'a2', patch: P3 }], gistFiles: await recordAt(P1, MB1) });
+  await open(page);
+  const row = page.getByTestId('file-row');
+  await expect(row).toHaveAttribute('data-state', 'changed-since-viewed');
+  await expect(row.getByTestId('since-blocks')).toBeVisible();
+  await expect(row.getByTestId('since-diff')).toContainText('+line 11 FEAT2');
+  for (const line of await row.getByTestId('since-diff').locator('.ln.add, .ln.del').allTextContents()) expect(line).not.toContain('DEV');
+  expect(blobRequests).toEqual([]);
+});
+
+test('base unchanged keeps the line-level since diff from blobs', async ({ page }) => {
+  await seedSettings(page);
+  await mockGitHub(page, {
+    head: 'h2', mergeBase: MB1,
+    files: [{ filename: 'a.ts', status: 'modified', sha: 'a2', patch: '@@ -1 +1,2 @@\n-x\n+y\n+NEWLINE' }],
+    blobs: { a1: 'y\n', a2: 'y\nNEWLINE\n' },
+    gistFiles: await recordAt('@@ -1 +1 @@\n-x\n+y', MB1),
+  });
+  await open(page);
+  const row = page.getByTestId('file-row');
+  await expect(row.getByTestId('since-diff')).toContainText('+NEWLINE');
+  await expect(row.getByTestId('since-blocks')).toHaveCount(0);   // 화면이 그려진 뒤에 센다 — 그리기 전 0개로 통과하지 않게
+  await expect(row.getByTestId('since-diff')).not.toContainText('-x');
 });

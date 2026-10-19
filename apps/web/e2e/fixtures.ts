@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import { fingerprint, recordKey, type FileStatus } from '@viewed/core';
+import { blockSigs, fingerprint, metaSig, recordKey, type ChangedFile, type FileStatus } from '@viewed/core';
 
 export interface MockFile { filename: string; status: string; sha: string; patch?: string; previous_filename?: string }
 export interface MockOpts {
@@ -8,7 +8,11 @@ export interface MockOpts {
   modes?: Record<string, string>;
   blobs?: Record<string, string>;            // 없는 sha 는 404
   gistFiles?: Record<string, string>;        // 파일명 → content
+  mergeBase?: string;                        // compare 의 merge_base_commit (기본 MB1)
 }
+
+// merge base 는 기록에 들어가 gist 검사(40/64 hex)를 거치므로 진짜 해시 모양이어야 한다
+export const MB1 = '1'.repeat(40), MB2 = '2'.repeat(40);
 
 export async function mockGitHub(page: Page, o: MockOpts) {
   const gistPatches: unknown[] = [];
@@ -20,7 +24,7 @@ export async function mockGitHub(page: Page, o: MockOpts) {
     const json = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
     if (p === '/repos/acme/widget') return json({ default_branch: 'main' });
     if (p === '/repos/acme/widget/branches/feat') return json({ commit: { sha: head } });
-    if (p === `/repos/acme/widget/compare/main...${head}`) return json({ files: o.files });
+    if (p === `/repos/acme/widget/compare/main...${head}`) return json({ files: o.files, merge_base_commit: { sha: o.mergeBase ?? MB1 } });
     if (p === `/repos/acme/widget/git/trees/${head}`)
       return json({ truncated: false, tree: o.files.map((f) => ({ path: f.filename, type: 'blob', mode: o.modes?.[f.filename] ?? '100644' })) });
     const blob = p.match(/^\/repos\/acme\/widget\/git\/blobs\/(.+)$/);
@@ -36,15 +40,19 @@ export async function mockGitHub(page: Page, o: MockOpts) {
 export const SETTINGS = { accounts: [{ label: 'personal', token: 'tok' }], gistAccount: 'personal', gistId: 'g1', secret: 's3cret', deviceId: 'mac' };
 
 // 주어진 파일들을 '이미 봤음'으로 기록한 gist 내용 — 앱과 같은 core 함수로 키·지문을 만든다
-export async function viewedGist(files: MockFile[], at = '2026-10-15T00:00:00Z') {
+// opts.base: 블록 판정 이후의 기록(블록 서명·merge base·meta 포함). 없으면 그 전 기록 모양
+export async function viewedGist(files: MockFile[], at = '2026-10-15T00:00:00Z', opts?: { base?: string }) {
   const state: Record<string, unknown> = {};
   for (const f of files) {
     const key = await recordKey(SETTINGS.secret, 'acme', 'widget', 'feat', f.filename);
-    const fp = await fingerprint({
+    const file: ChangedFile = {
       path: f.filename, previousPath: f.previous_filename, status: f.status as FileStatus,
       blobSha: f.status === 'removed' ? null : f.sha, ...(f.patch !== undefined ? { patch: f.patch } : {}), mode: '100644',
-    });
-    state[key] = { fp, blob: f.sha, head: 'h1', at, viewed: true };
+    };
+    const fp = await fingerprint(file);
+    state[key] = { fp, blob: f.sha, head: 'h1', at, viewed: true, ...(opts?.base ? {
+      ...(f.patch !== undefined ? { blocks: await blockSigs(SETTINGS.secret, f.patch) } : {}), base: opts.base, meta: await metaSig(file),
+    } : {}) };
   }
   return { [`device-${SETTINGS.deviceId}.json`]: JSON.stringify(state) };
 }
@@ -97,7 +105,7 @@ export async function mockBranch(page: Page, branch: string, head: string, files
     const p = new URL(route.request().url()).pathname;
     const json = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
     if (p === `/repos/acme/widget/branches/${branch}`) return json({ commit: { sha: head } });
-    if (p === `/repos/acme/widget/compare/main...${head}`) return json({ files });
+    if (p === `/repos/acme/widget/compare/main...${head}`) return json({ files, merge_base_commit: { sha: MB1 } });
     if (p === `/repos/acme/widget/git/trees/${head}`) return json({ truncated: false, tree: files.map((f) => ({ path: f.filename, type: 'blob', mode: '100644' })) });
     return route.fallback();
   });

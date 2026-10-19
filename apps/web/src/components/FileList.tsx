@@ -33,7 +33,8 @@ export function FileList({ review, syncOk, onToggle, renderDiff }: { review: Rev
                   <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6" /></svg>
                 </button>
                 <span className="path">{it.file.path}</span>
-                <span data-testid="file-state" className="badge">{MARK[it.state]}</span>
+                {/* carried: 리베이스·머지로 diff 는 바뀌었지만 내 변경 블록은 전부 본 것 — 경고색이 아닌 중립 배지 */}
+                <span data-testid="file-state" className={it.carried ? 'badge muted' : 'badge'}>{it.carried ? t.carried : MARK[it.state]}</span>
                 <label className="viewed-toggle">
                   {/* 체크하면 접고 풀면 펼친다 — 머리로 고른 것은 덮는다. 판정이 비동기라 목표 상태를 바로 넣어야 옛 state 로 한 번 그려질 때 깜빡이지 않는다 */}
                   <input type="checkbox" data-testid="file-check" aria-label={t.viewedFile(it.file.path)} checked={it.state === 'viewed'} onChange={(e) => {

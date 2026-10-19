@@ -147,6 +147,7 @@ button.primary:hover { background: var(--primary-hover); }
   flex: none; padding: 0 7px; font-size: 12px; font-weight: 500; line-height: 18px;
   color: var(--warn); border: 1px solid var(--warn); border-radius: 2em;
 }
+.badge.muted { color: var(--fg-muted); border-color: var(--border); }
 .viewed-toggle {
   flex: none; display: inline-flex; align-items: center; gap: 6px;
   padding: 3px 12px; font-size: 12px; cursor: pointer;
