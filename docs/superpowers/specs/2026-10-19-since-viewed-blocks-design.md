@@ -50,7 +50,7 @@ file.patch 없음(바이너리·종류 변경·서브모듈·너무 큼) → cha
 record.meta != meta               → changed-since-viewed
 record.base 또는 snap.mergeBase 없음, 또는 둘이 같음(base 안 움직임) → changed-since-viewed
                                   (base 가 그대로면 지문 변화는 전부 내 변경이다 — 블록으로 거를 소음이 없다)
-지금 블록 서명 vs record.blocks 를 최장 공통 부분열로 맞대(core 에 직접 구현 — 표가 100만 칸을 넘으면 전부 안 맞음)
+지금 블록 서명 vs record.blocks 를 최장 공통 부분열로 맞대(core 에 직접 구현 — 앞뒤 공통 블록을 잘라 낸 가운데만 표로, 가운데가 100만 칸을 넘으면 가운데 전부 안 맞음)
   안 맞은 지금 블록 0개           → viewed, carried = 'same'(확인한 블록이 전부 남음, S1) 또는 'shrunk'(일부가 diff 에서 사라짐, S2)
   1개 이상                        → changed-since-viewed, newBlocks=[안 맞은 블록 번호]  (S3·겹침)
 ```
