@@ -130,9 +130,10 @@ button.primary:hover { background: var(--primary-hover); }
   display: flex; align-items: center; gap: 8px;
   padding: 8px 8px 8px 16px;
   background: var(--canvas-subtle);
+  cursor: pointer;   /* 빈 곳을 눌러도 펼친다 — 경로 글자는 고를 수 있는 글자 모양 */
 }
 .file:has(.file-body) .file-head { border-bottom: 1px solid var(--border); }
-.path { flex: 1; min-width: 0; font: 600 12px/20px var(--mono); overflow-wrap: anywhere; }
+.path { flex: 1; min-width: 0; font: 600 12px/20px var(--mono); overflow-wrap: anywhere; cursor: text; }
 /* 펼침 버튼 — 꺾쇠만, 누를 자리는 24px 이상. 펼치면 아래로 돈다 */
 .expand {
   flex: none; display: inline-flex; align-items: center; justify-content: center;

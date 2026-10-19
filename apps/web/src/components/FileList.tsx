@@ -24,12 +24,19 @@ export function FileList({ review, syncOk, onToggle, renderDiff }: { review: Rev
       <ul className="files">
         {shown.map((it) => {
           const open = isOpen(it);
+          const flip = () => setPicked((p) => ({ ...p, [it.key]: { open: !open, fp: it.fp } }));
           return (
             <li key={it.key} data-testid="file-row" data-state={it.state} className="file">
-              <div className="file-head">
-                {/* 경로는 버튼 밖에 둬 드래그로 복사할 수 있게 — 펼침은 앞의 작은 버튼만 */}
-                <button type="button" data-testid="file-expand" className="expand" aria-expanded={open} aria-label={t.toggleDiff} title={t.toggleDiff}
-                  onClick={() => setPicked((p) => ({ ...p, [it.key]: { open: !open, fp: it.fp } }))}>
+              {/* 머리 빈 곳·경로를 눌러도 꺾쇠처럼 펼친다. 체크 라벨·버튼·링크는 각자 일하고(겹치면 두 번 바뀐다), 경로를 드래그로 고르는 중이면 그대로.
+                  키보드는 꺾쇠 버튼이 맡는다 — 머리에 role·tabindex 를 달면 탭 정지가 겹친다 */}
+              <div className="file-head" onClick={(e) => {
+                if ((e.target as Element).closest('label, input, button, a')) return;
+                if (window.getSelection()?.toString()) return;
+                flip();
+              }}>
+                {/* 경로는 버튼 밖에 둬 드래그로 복사할 수 있게 */}
+                <button type="button" data-testid="file-expand" className="expand" aria-expanded={open} aria-label={t.toggleDiffOf(it.file.path)} title={t.toggleDiff}
+                  onClick={flip}>
                   <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6" /></svg>
                 </button>
                 <span className="path">{it.file.path}</span>

@@ -311,8 +311,8 @@ test('checking or unchecking never flashes the opposite fold state first', async
   expect(await seen()).toEqual([]);
 });
 
-// 경로는 버튼 밖의 글자라 드래그로 골라 복사할 수 있다. 눌러도 펼침이 바뀌지 않는다
-test('the path is plain text outside the expand button', async ({ page }) => {
+// 경로는 버튼 밖의 글자라 드래그로 골라 복사할 수 있다. 버튼 이름에는 경로가 든다 — 스크린 리더가 어느 파일의 버튼인지 알게
+test('the path is plain text outside the expand button, and the button is named after the path', async ({ page }) => {
   await seedSettings(page);
   await mockGitHub(page, { files });
   await open(page);
@@ -322,10 +322,86 @@ test('the path is plain text outside the expand button', async ({ page }) => {
   await expect(path).toHaveText('a.ts');
   expect(await path.evaluate((el) => el.closest('button') === null && getComputedStyle(el).userSelect !== 'none')).toBe(true);
   await expect(head).not.toContainText('a.ts');
-  await expect(head).toHaveAccessibleName('Show or hide the diff');
-  await path.click();
-  await expect(head).toHaveAttribute('aria-expanded', 'true');
-  await expect(row.getByTestId('diff')).toBeVisible();
+  await expect(head).toHaveAccessibleName('Show or hide the diff of a.ts');
+  await expect(page.getByRole('button', { name: /a\.ts/ })).toHaveAttribute('data-testid', 'file-expand');
   await head.click();
   await expect(head).toHaveAttribute('aria-expanded', 'false');
+});
+
+// 머리 줄의 빈 곳이나 경로 글자를 눌러도 꺾쇠처럼 펼치고 접는다
+test('clicking the path or an empty spot of the header toggles the diff like the chevron', async ({ page }) => {
+  await seedSettings(page);
+  await mockGitHub(page, { files });
+  await open(page);
+  const row = page.getByTestId('file-row').filter({ hasText: 'a.ts' });
+  const head = row.getByTestId('file-expand');
+  const bar = row.locator('.file-head');
+  await expect(head).toHaveAttribute('aria-expanded', 'true');
+  await row.locator('.file-head span.path').click();
+  await expect(head).toHaveAttribute('aria-expanded', 'false');
+  await expect(row.getByTestId('diff')).toBeHidden();
+  const box = (await bar.boundingBox())!;
+  await page.mouse.click(box.x + box.width - 3, box.y + box.height / 2);   // 체크 라벨 오른쪽의 여백 — 머리 자신
+  await expect(head).toHaveAttribute('aria-expanded', 'true');
+  await expect(row.getByTestId('diff')).toBeVisible();
+  await head.click();   // 꺾쇠는 한 번만 바뀐다 — 머리 토글이 겹치면 그대로 펼쳐져 있다
+  await expect(head).toHaveAttribute('aria-expanded', 'false');
+  // 손가락 모양은 머리 빈 곳에만 — 경로 글자는 고를 수 있는 글자 모양
+  expect(await bar.evaluate((el) => getComputedStyle(el).cursor)).toBe('pointer');
+  expect(await row.locator('.file-head span.path').evaluate((el) => getComputedStyle(el).cursor)).toBe('text');
+});
+
+// 체크박스와 그 라벨은 머리 안에 있다 — 머리 토글이 겹치면 체크 규칙(체크=접기, 해제=펼치기) 위에 한 번 더 뒤집힌다.
+// 라벨 글자 클릭은 라벨·입력 두 번의 click 이라, 겹치면 끝 상태는 맞아도 중간에 접혔다 펼쳐진다(본문이 다시 그려져 탭 선택도 잃는다)
+test('the checkbox and its label in the header follow the check rule, without a second toggle from the header', async ({ page }) => {
+  await seedSettings(page);
+  await mockGitHub(page, { files });
+  await open(page);
+  const row = page.getByTestId('file-row').filter({ hasText: 'a.ts' });
+  const head = row.getByTestId('file-expand');
+  // aria-expanded 가 바뀔 때마다 그 값을 적는다
+  const watch = () => head.evaluate((el) => {
+    const w = window as unknown as { seen: (string | null)[] };
+    w.seen = [];
+    new MutationObserver(() => w.seen.push(el.getAttribute('aria-expanded'))).observe(el, { attributes: true, attributeFilter: ['aria-expanded'] });
+  });
+  const seen = () => page.evaluate(() => (window as unknown as { seen: (string | null)[] }).seen);
+  await head.click();   // 안 본 파일을 접어 둔 채로 체크 — 접힌 채여야 한다
+  await expect(head).toHaveAttribute('aria-expanded', 'false');
+  await watch();
+  await row.getByTestId('file-check').click();
+  await expect(page.getByTestId('progress')).toHaveText('1 / 2');
+  await expect(head).toHaveAttribute('aria-expanded', 'false');
+  expect(await seen()).toEqual([]);
+  await head.click();   // 확인한 파일을 펼쳐 둔 채로 라벨 글자를 눌러 해제 — 펼친 채여야 한다
+  await expect(row.getByTestId('diff')).toBeVisible();
+  await watch();
+  await row.locator('label.viewed-toggle').getByText('Viewed', { exact: true }).click();
+  await expect(page.getByTestId('progress')).toHaveText('0 / 2');
+  await expect(head).toHaveAttribute('aria-expanded', 'true');
+  expect(await seen()).toEqual([]);
+  await expect(row.getByTestId('diff')).toBeVisible();
+});
+
+test('drag-selecting the path keeps the fold as it was', async ({ page }) => {
+  await seedSettings(page);
+  await mockGitHub(page, { files });
+  await open(page);
+  const row = page.getByTestId('file-row').filter({ hasText: 'a.ts' });
+  const head = row.getByTestId('file-expand');
+  await expect(head).toHaveAttribute('aria-expanded', 'true');
+  // 글자가 차지한 범위 — span 은 flex:1 이라 글자보다 넓다
+  const r = await row.locator('.file-head span.path').evaluate((el) => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const b = range.getBoundingClientRect();
+    return { x: b.x, y: b.y + b.height / 2, w: b.width };
+  });
+  await page.mouse.move(r.x + 1, r.y);
+  await page.mouse.down();
+  await page.mouse.move(r.x + r.w - 1, r.y, { steps: 5 });
+  await page.mouse.up();
+  expect(await page.evaluate(() => window.getSelection()?.toString() ?? '')).not.toBe('');   // 실제로 골라졌다 — 안 골라졌으면 이 검사는 공허하다
+  await expect(head).toHaveAttribute('aria-expanded', 'true');
+  await expect(row.getByTestId('diff')).toBeVisible();
 });
