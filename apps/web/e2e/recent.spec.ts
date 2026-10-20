@@ -177,3 +177,43 @@ test('a manual refresh never writes the remembered review', async ({ page }) => 
   await expect(page.getByTestId('progress')).toHaveText('0 / 3');
   expect(await writes()).toBe(1);
 });
+
+const history = (page: Page) => page.evaluate(() => JSON.parse(localStorage.getItem('viewed.recent') ?? '{}').history);
+const at = (repo: string, branch = 'refs/heads/feat', base = 'refs/heads/main') => ({ repo, branch, base });
+async function openRepo(page: Page, repo: string) {
+  await page.getByTestId('local-repo-select').selectOption(repo);
+  await expect(page.getByTestId('local-branch-select')).toHaveValue('refs/heads/feat');
+  await page.getByTestId('open-btn').click();
+  await expect(page.getByTestId('progress')).toHaveText('0 / 0');
+}
+
+// 최근 목록은 연 조합을 최근 것부터 한 번씩 쌓는다 — 그 기록 전에 쓴 기록(레포별 마지막 조합, 마지막 것 먼저)에서 시작한다
+test('a local open goes first in the history once, and the history starts from the record kept before it', async ({ page }) => {
+  await fakeDesktop(page);
+  await page.addInitScript(() => localStorage.setItem('viewed.recent', JSON.stringify({
+    // 마지막 브랜치는 없다 — 켤 때 자동으로 열리지 않는다
+    last: { source: 'local', repo: '/r/b', branch: 'refs/heads/gone', base: 'refs/heads/main' },
+    local: { '/r/c': { branch: 'refs/heads/feat', base: 'refs/heads/main' }, '/r/b': { branch: 'refs/heads/gone', base: 'refs/heads/main' } },
+  })));
+  await page.goto('/');
+  await expect(page.getByTestId('local-repo-select')).toHaveValue('/r/b');
+  await openRepo(page, '/r/a');
+  await expect.poll(() => history(page)).toEqual([at('/r/a'), at('/r/b', 'refs/heads/gone'), at('/r/c')]);
+  await openRepo(page, '/r/b');
+  await openRepo(page, '/r/a');
+  await expect.poll(() => history(page)).toEqual([at('/r/a'), at('/r/b'), at('/r/b', 'refs/heads/gone'), at('/r/c')]);
+});
+
+// 깨진 항목은 빼고, 겹치면 앞의 것 하나만, 10개까지
+test('the history keeps well-formed entries once each, at most ten', async ({ page }) => {
+  await fakeDesktop(page);
+  await page.addInitScript(() => {
+    const e = (i: number) => ({ repo: '/r/x', branch: `refs/heads/f${i}`, base: 'refs/heads/main' });
+    localStorage.setItem('viewed.recent', JSON.stringify({ local: {}, history: [
+      e(0), 1, null, 'x', { repo: '/r/x', branch: 'refs/heads/f1' }, { repo: 2, branch: 'refs/heads/f1', base: 'refs/heads/main' }, e(0),
+      ...Array.from({ length: 12 }, (_, i) => e(i + 1))] }));
+  });
+  await page.goto('/');
+  await openRepo(page, '/r/a');
+  await expect.poll(() => history(page)).toEqual([at('/r/a'), ...Array.from({ length: 9 }, (_, i) => at('/r/x', `refs/heads/f${i}`))]);
+});
