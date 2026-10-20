@@ -20,7 +20,11 @@ export function LocalOpen({ onOpen, onError, onCancel, takeAuto, recentRev }: { 
   const pick = useRef(0);
   // 최근 항목으로 바꾼 레포: 칸은 고를 때 맞췄으니 [repo] effect 가 레포별 기억으로 덮지도, 다시 읽지도 않는다
   const preset = useRef<string | undefined>(undefined);
+  // 최근 항목을 칸에 맞춘 횟수 — 그 전에 시작한 [repo] effect 의 늦은 답은 칸을 덮지 않는다.
+  // pick 번호와 따로 둔다: 폴더 추가를 눌렀다 취소해도 pick 은 오르는데, 그때 첫 info 를 버리면 브랜치 칸이 빈다
+  const applied = useRef(0);
   const menu = useRef<HTMLDetailsElement>(null);
+  const folder = useRef<HTMLSelectElement>(null);
   const [drops, setDrops] = useState(0);
   // 최근 목록은 열기 성공(recentRev)과 여기서 뺄 때(drops)만 바뀐다
   const history = useMemo(() => readRecent().history, [recentRev, drops]);
@@ -44,8 +48,9 @@ export function LocalOpen({ onOpen, onError, onCancel, takeAuto, recentRev }: { 
     setInfo(null);
     if (!repo) return;
     let live = true;
+    const at = applied.current;
     git.info(repo).then((i) => {
-      if (!live) return;
+      if (!live || at !== applied.current) return;
       setInfo(i);
       const heads = i.refs.filter((r) => r.startsWith('refs/heads/'));
       // 이 레포에서 마지막으로 연 브랜치·base 는 각자 아직 있으면 쓴다 — 고정 base 로 기능 브랜치를 오가다 브랜치를 지워도 base 는 남게.
@@ -58,7 +63,7 @@ export function LocalOpen({ onOpen, onError, onCancel, takeAuto, recentRev }: { 
       // 고르기와 자동 열기를 이 응답 하나에서 정한다. 처음 정해지는 레포가 권한을 쓴다 — 그 사이 레포를 바꿨으면 다른 레포라 안 연다
       const a = takeAuto();
       if (a && a.repo === repo && a.branch === b && a.base === bs) onOpen(repo, i, b, bs);
-    }).catch((e) => { if (live) { takeAuto(); onError(errorText(e)); } });   // 폴더가 사라졌으면 지금처럼 오류만
+    }).catch((e) => { if (live && at === applied.current) { takeAuto(); onError(errorText(e)); } });   // 폴더가 사라졌으면 지금처럼 오류만
     return () => { live = false; };
   }, [repo]);
 
@@ -76,17 +81,20 @@ export function LocalOpen({ onOpen, onError, onCancel, takeAuto, recentRev }: { 
   // 최근 항목은 고를 때마다 새로 읽는다 — 같은 레포여도 들고 있던 info 는 지워진 브랜치·바뀐 origin 을 모른다
   async function openRecent(h: LocalReview) {
     const n = ++pick.current;
-    if (menu.current) menu.current.open = false;
+    if (menu.current) { menu.current.open = false; menu.current.querySelector('summary')?.focus(); }   // 숨은 항목에 포커스를 두지 않는다
     takeAuto(); onCancel();   // 앞서 시작한 열기도 없던 일로 — 이번 것이 실패해도 그게 늦게 올라오지 않게
     let i: Info;
     try { i = await git.info(h.repo); } catch (e) { if (n === pick.current) onError(errorText(e)); return; }   // 못 읽은 건 일시적일 수 있어(외장 디스크 등) 항목은 남긴다
     if (n !== pick.current) return;
     // 지워진 브랜치·base 만 확실히 죽은 항목이다. branch === base 는 거절하지 않는다 — 열기 버튼도 막지 않아 성공했던 조합이다
     if (!i.refs.some((r) => r === h.branch && r.startsWith('refs/heads/')) || !i.refs.includes(h.base)) {
+      // 마지막 항목이 빠지면 목록째 사라진다 — 포커스가 거기 있었으면 폴더 select 로
+      if (shown.every((g) => g === h) && menu.current?.contains(document.activeElement)) folder.current?.focus();
       dropRecent(h); setDrops((d) => d + 1); onError(t.recentGone);
       return;
     }
     if (h.repo !== repo) preset.current = h.repo;
+    applied.current++;
     setRepo(h.repo); setInfo(i); setBranch(h.branch); setBase(h.base);
     onOpen(h.repo, i, h.branch, h.base);
   }
@@ -98,7 +106,9 @@ export function LocalOpen({ onOpen, onError, onCancel, takeAuto, recentRev }: { 
     <>
       {shown.length > 0 && (
         <details ref={menu} className="recent" data-testid="local-recent"
-          onKeyDown={(e) => { if (e.key !== 'Escape' || !e.currentTarget.open) return; e.currentTarget.open = false; e.currentTarget.querySelector('summary')?.focus(); }}>
+          onKeyDown={(e) => { if (e.key !== 'Escape' || !e.currentTarget.open) return; e.currentTarget.open = false; e.currentTarget.querySelector('summary')?.focus(); }}
+          // Tab 으로 밖에 나가면 닫는다. 갈 곳 없는 blur(창 전환 등)는 그대로 — 바깥 클릭은 pointerdown 이 닫는다
+          onBlur={(e) => { const to = e.relatedTarget; if (to && e.currentTarget.open && !e.currentTarget.contains(to)) e.currentTarget.open = false; }}>
           <summary>{t.recent}</summary>
           {/* 닫힌 select 는 방향키로 훑기만 해도 change 가 나는 플랫폼이 있다 — 항목 버튼은 누를 때만 연다 */}
           <div className="recent-list">
@@ -111,7 +121,7 @@ export function LocalOpen({ onOpen, onError, onCancel, takeAuto, recentRev }: { 
           </div>
         </details>
       )}
-      <select data-testid="local-repo-select" aria-label={t.localRepo} value={repo} onChange={(e) => { takeAuto(); pick.current++; setRepo(e.target.value); }}>
+      <select ref={folder} data-testid="local-repo-select" aria-label={t.localRepo} value={repo} onChange={(e) => { takeAuto(); pick.current++; setRepo(e.target.value); }}>
         {repos.length === 0 && <option value="">{t.noFolder}</option>}
         {repos.map((r) => <option key={r} value={r}>{r.split('/').pop()}</option>)}
       </select>
@@ -128,7 +138,7 @@ export function LocalOpen({ onOpen, onError, onCancel, takeAuto, recentRev }: { 
         </select>
       </label>
       <button data-testid="open-btn" className="primary" disabled={!info || !branch || !base}
-        onClick={(e) => { e.preventDefault(); if (info) onOpen(repo, info, branch, base); }}>{t.open}</button>
+        onClick={(e) => { e.preventDefault(); pick.current++; if (info) onOpen(repo, info, branch, base); }}>{t.open}</button>
     </>
   );
 }

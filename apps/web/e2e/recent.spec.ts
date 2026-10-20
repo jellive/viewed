@@ -241,16 +241,28 @@ async function heldDesktop(page: Page, repos: string[]) {
     };
   }, repos);
 }
-// 그 레포의 가장 오래된 대기 요청을 브랜치들(+main)로 푼다. 받은 쪽의 후속 처리(마이크로태스크)가 다 돌 때까지 기다린다
-async function answer(page: Page, repo: string, branches: string[]) {
+// 그 레포의 대기 요청(기본은 가장 오래된 것)을 브랜치들(+main)로 푼다. 받은 쪽의 후속 처리(마이크로태스크)가 다 돌 때까지 기다린다
+async function answer(page: Page, repo: string, branches: string[], which: 'oldest' | 'newest' = 'oldest') {
   await page.waitForFunction((r) => (window as any).held.some((h: { repo: string }) => h.repo === r), repo);
-  await page.evaluate(async ([r, bs]) => {
+  await page.evaluate(async ([r, bs, which]) => {
     const w = window as any;
-    const [h] = w.held.splice(w.held.findIndex((x: { repo: string }) => x.repo === r), 1);
+    const mine = w.held.flatMap((x: { repo: string }, i: number) => (x.repo === r ? [i] : []));
+    const [h] = w.held.splice(which === 'newest' ? mine[mine.length - 1] : mine[0], 1);
     h.res({ refs: [...bs.map((b) => `refs/heads/${b}`), 'refs/heads/main'], defaultBase: null, current: `refs/heads/${bs[0]}`, remote: null });
     await new Promise((done) => setTimeout(done, 0));
-  }, [repo, branches] as const);
+  }, [repo, branches, which] as const);
 }
+async function reject(page: Page, repo: string) {
+  await page.waitForFunction((r) => (window as any).held.some((h: { repo: string }) => h.repo === r), repo);
+  await page.evaluate(async (r) => {
+    const w = window as any;
+    const [h] = w.held.splice(w.held.findIndex((x: { repo: string }) => x.repo === r), 1);
+    h.rej(new Error('disk gone'));
+    await new Promise((done) => setTimeout(done, 0));
+  }, repo);
+}
+const heldCount = (page: Page, repo: string) => page.evaluate((r) => (window as any).held.filter((h: { repo: string }) => h.repo === r).length, repo);
+const last = (page: Page) => page.evaluate(() => JSON.parse(localStorage.getItem('viewed.recent') ?? '{}').last);
 const runs = (page: Page) => page.evaluate(() => [...new Set((window as any).runs as string[])]);
 const waiting = (page: Page, repo: string) => page.waitForFunction((r) => (window as any).held.some((h: { repo: string }) => h.repo === r), repo);
 async function pickRecent(page: Page, nth: number) {
@@ -364,4 +376,130 @@ test('a recent pick cancels an open still loading, even when the pick then fails
   expect(await history(page)).toEqual([]);   // 늦게 끝난 a 는 기록되지 않았다
   await expect(page.getByTestId('progress')).toHaveCount(0);
   await expect(page.getByTestId('error')).toBeVisible();
+});
+
+// 켤 때(또는 폴더를 바꾼 뒤) 그 폴더의 첫 info 를 기다리는 사이 같은 폴더의 최근 항목을 골랐으면, 늦게 온 첫 info 는 칸을 덮지 않는다
+for (const after of ['launch', 'a folder switch'] as const) {
+  test(`after ${after}, a late first answer for the folder does not overwrite a recent pick of that folder`, async ({ page }) => {
+    const r = after === 'launch' ? '/r/a' : '/r/b';
+    await heldDesktop(page, ['/r/a', '/r/b']);
+    await page.addInitScript((r) => localStorage.setItem('viewed.recent', JSON.stringify({ localRepo: '/r/a',
+      local: { [r]: { branch: 'refs/heads/m1', base: 'refs/heads/main' } }, history: [{ repo: r, branch: 'refs/heads/x', base: 'refs/heads/old' }] })), r);
+    await page.goto('/');
+    if (after !== 'launch') {
+      await answer(page, '/r/a', ['a1']);
+      await page.getByTestId('local-repo-select').selectOption('/r/b');
+    }
+    await waiting(page, r);   // 그 폴더의 첫 info 가 대기 중
+    await pickRecent(page, 0);
+    await expect.poll(() => heldCount(page, r)).toBe(2);
+    // 열기를 git 에서 붙잡아 둔다 — 끝나면 그 레포 기억이 고른 조합으로 바뀌어 덮어써도 같은 값이 된다
+    await page.evaluate((r) => { const w = window as any; w.gates[r] = new Promise((res) => { w.release = res; }); }, r);
+    await answer(page, r, ['x', 'm1', 'old'], 'newest');   // 고른 항목의 info 가 먼저
+    await answer(page, r, ['x', 'm1', 'old'], 'oldest');   // 늦게 온 첫 info
+    await page.evaluate(() => (window as any).release());
+    await expect(page.getByTestId('progress')).toHaveText('0 / 0');
+    await page.getByTestId('open-btn').click();   // 칸 그대로 다시 연다 — 덮였으면 기억(m1←main)이 열린다
+    await expect(page.getByTestId('progress')).toHaveText('0 / 0');
+    expect(await last(page)).toMatchObject({ repo: r, branch: 'refs/heads/x', base: 'refs/heads/old' });
+    await expect(page.getByTestId('local-branch-select')).toHaveValue('refs/heads/x');
+    await expect(page.getByTestId('local-base-select')).toHaveValue('refs/heads/old');
+  });
+}
+
+// 폴더 추가를 눌렀다 취소해도 대기 중이던 첫 info 는 버리지 않는다 — 버리면 브랜치 칸이 빈다
+test('adding a folder and cancelling the dialog keeps the first answer for the current folder', async ({ page }) => {
+  await heldDesktop(page, ['/r/a']);
+  await page.goto('/');
+  await waiting(page, '/r/a');
+  await page.getByTestId('local-add').click();   // 가짜 대화상자는 취소(null)
+  await answer(page, '/r/a', ['a1']);
+  await expect(page.getByTestId('local-branch-select')).toHaveValue('refs/heads/a1');
+  await page.getByTestId('open-btn').click();
+  await expect(page.getByTestId('progress')).toHaveText('0 / 0');
+  expect(await last(page)).toMatchObject({ repo: '/r/a', branch: 'refs/heads/a1' });
+});
+
+// 최근 항목이 git 을 기다리는 사이 열기를 누르면 누른 것이 이긴다 — 늦게 온 항목 답으로 다시 열지 않는다
+test('pressing open while a recent pick waits for git wins over the pick', async ({ page }) => {
+  await heldDesktop(page, ['/r/a', '/r/b']);
+  await page.addInitScript(() => localStorage.setItem('viewed.recent', JSON.stringify({ local: {}, history: [
+    { repo: '/r/b', branch: 'refs/heads/b1', base: 'refs/heads/main' }] })));
+  await page.goto('/');
+  await answer(page, '/r/a', ['a1']);
+  await pickRecent(page, 0);
+  await waiting(page, '/r/b');
+  await page.getByTestId('open-btn').click();
+  await expect(page.getByTestId('progress')).toHaveText('0 / 0');
+  await answer(page, '/r/b', ['b1']);   // 늦게 온 항목 답
+  expect(await runs(page)).toEqual(['/r/a']);
+  expect(await last(page)).toMatchObject({ repo: '/r/a', branch: 'refs/heads/a1' });
+  await expect(page.getByTestId('local-repo-select')).toHaveValue('/r/a');
+});
+
+// 키보드로 고르면 포커스는 펼침 버튼으로 — 마지막 항목이 빠져 목록이 사라지면 폴더 select 로
+test('after a keyboard pick focus goes to the menu button, or to the folder select when the menu is gone', async ({ page }) => {
+  await heldDesktop(page, ['/r/a', '/r/b']);
+  await page.addInitScript(() => localStorage.setItem('viewed.recent', JSON.stringify({ local: {}, history: [
+    { repo: '/r/b', branch: 'refs/heads/b1', base: 'refs/heads/main' }] })));
+  await page.goto('/');
+  await answer(page, '/r/a', ['a1']);
+  const summary = page.getByTestId('local-recent').locator('summary');
+  await summary.focus();
+  for (const key of ['Enter', 'Tab', 'Enter']) await page.keyboard.press(key);
+  await expect(summary).toBeFocused();
+  await answer(page, '/r/b', ['b1']);
+  await expect(page.getByTestId('progress')).toHaveText('0 / 0');
+  await expect(summary).toBeFocused();
+  for (const key of ['Enter', 'Tab', 'Enter']) await page.keyboard.press(key);
+  await answer(page, '/r/b', ['other']);   // 이번엔 b1 이 없다 — 유일한 항목이 빠진다
+  await expect(page.getByTestId('local-recent')).toHaveCount(0);
+  await expect(page.getByTestId('local-repo-select')).toBeFocused();
+});
+
+// 펼친 채 Tab 으로 밖에 나가면 닫힌다. 바깥을 눌러도 닫힌다
+test('the recent menu closes when Tab leaves it and when clicking outside', async ({ page }) => {
+  await heldDesktop(page, ['/r/a', '/r/b']);
+  await page.addInitScript(() => localStorage.setItem('viewed.recent', JSON.stringify({ local: {}, history: [
+    { repo: '/r/b', branch: 'refs/heads/b1', base: 'refs/heads/main' }, { repo: '/r/a', branch: 'refs/heads/a1', base: 'refs/heads/main' }] })));
+  await page.goto('/');
+  await answer(page, '/r/a', ['a1']);
+  const menu = page.getByTestId('local-recent');
+  await menu.locator('summary').focus();
+  for (const key of ['Enter', 'Tab', 'Tab']) await page.keyboard.press(key);
+  await expect(menu).toHaveJSProperty('open', true);   // 항목 사이는 그대로
+  await page.keyboard.press('Tab');
+  await expect(page.getByTestId('local-repo-select')).toBeFocused();
+  await expect(menu).toHaveJSProperty('open', false);
+  await menu.locator('summary').click();
+  await expect(menu).toHaveJSProperty('open', true);
+  await page.mouse.click(1000, 500);   // 빈 곳 — 펼친 목록이 아래 글을 덮는다
+  await expect(menu).toHaveJSProperty('open', false);
+  expect(await runs(page)).toEqual([]);
+});
+
+// 저장된 목록도 읽을 때 겹침을 빼고 10개로 자른다 — 연 적이 없어도
+test('the recent menu shows a stored history once each and at most ten, before anything is opened', async ({ page }) => {
+  await heldDesktop(page, ['/r/a']);
+  await page.addInitScript(() => {
+    const e = (i: number) => ({ repo: '/r/a', branch: `refs/heads/f${i}`, base: 'refs/heads/main' });
+    localStorage.setItem('viewed.recent', JSON.stringify({ local: {}, history: [e(0), e(0), e(1), e(0), ...Array.from({ length: 12 }, (_, i) => e(i + 2))] }));
+  });
+  await page.goto('/');
+  await expect(page.getByTestId('recent-item').locator('span')).toHaveText(Array.from({ length: 10 }, (_, i) => `a · f${i} ← main`));
+});
+
+// 폴더를 못 읽으면(외장 디스크 등 일시적일 수 있다) 오류만 보이고 항목은 남긴다
+test('a recent pick whose folder cannot be read shows the error and keeps the entry', async ({ page }) => {
+  await heldDesktop(page, ['/r/a', '/r/b']);
+  await page.addInitScript(() => localStorage.setItem('viewed.recent', JSON.stringify({ local: {}, history: [
+    { repo: '/r/b', branch: 'refs/heads/b1', base: 'refs/heads/main' }] })));
+  await page.goto('/');
+  await answer(page, '/r/a', ['a1']);
+  await pickRecent(page, 0);
+  await reject(page, '/r/b');
+  await expect(page.getByTestId('error')).toHaveText('Error: disk gone');
+  await expect(page.getByTestId('recent-item')).toHaveCount(1);
+  expect(await history(page)).toEqual([at('/r/b', 'refs/heads/b1')]);
+  expect(await runs(page)).toEqual([]);
 });

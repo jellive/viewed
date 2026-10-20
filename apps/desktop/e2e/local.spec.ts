@@ -402,7 +402,16 @@ test('R1: the recent menu lists opened reviews newest first, and one click opens
   await win.waitForTimeout(500);   // 레포를 바꾼 뒤에도 칸이 그 레포 기억으로 덮이지 않는다
   await expect(win.getByTestId('local-branch-select')).toHaveValue('refs/heads/x');
   await expect(win.getByTestId('local-base-select')).toHaveValue('refs/heads/old');
-  await win.getByTestId('open-btn').click();   // 화면 값만이 아니라 상태도
+  // 화면 값만이 아니라 상태도 — 다시 열기가 실제로 일어나 그 조합을 기록하는지 본다(다시 읽기는 기록하지 않는다)
+  await win.evaluate(() => {
+    const w = window as unknown as { opened: unknown[] };
+    w.opened = [];
+    const orig = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (k: string, v: string) { if (k === 'viewed.recent') w.opened.push(JSON.parse(v).last); return orig.call(this, k, v); };
+  });
+  await win.getByTestId('open-btn').click();
+  await expect.poll(() => win.evaluate(() => (window as unknown as { opened: unknown[] }).opened))
+    .toEqual([{ source: 'local', ...at(a, 'x', 'old') }]);
   await expect(win.getByTestId('progress')).toHaveText('0 / 1');
   await app.close();
 });
