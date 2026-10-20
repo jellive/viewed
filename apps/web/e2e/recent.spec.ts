@@ -217,3 +217,107 @@ test('the history keeps well-formed entries once each, at most ten', async ({ pa
   await openRepo(page, '/r/a');
   await expect.poll(() => history(page)).toEqual([at('/r/a'), ...Array.from({ length: 9 }, (_, i) => at('/r/x', `refs/heads/f${i}`))]);
 });
+
+// info 는 테스트가 손으로 푼다 — 응답 순서를 시간이 아니라 테스트가 정한다. runs: 열기가 부른 git 의 레포
+async function heldDesktop(page: Page, repos: string[]) {
+  await page.addInitScript((repos) => {
+    localStorage.setItem('viewed.settings', JSON.stringify({ accounts: [{ label: 'personal', token: '' }], gistAccount: 'personal', gistId: '', secret: '', deviceId: 'mac', storage: 'device' }));
+    const w = window as any;
+    w.held = []; w.runs = [];
+    const oid = (c: string) => c.repeat(40);
+    w.viewedDesktop = {
+      getSecret: async (n: string) => (n === 'token:personal' ? 'tok' : null),
+      setSecret: async () => {},
+      git: {
+        pick: async () => null,
+        list: async () => repos,
+        info: (repo: string) => new Promise((res, rej) => w.held.push({ repo, res, rej })),
+        run: async (repo: string, op: string, ref: string) => {
+          w.runs.push(repo);
+          return op === 'resolve' ? oid(ref === 'refs/heads/main' ? 'e' : 'f') : op === 'mergeBase' ? oid('e') : '';
+        },
+      },
+    };
+  }, repos);
+}
+// 그 레포의 가장 오래된 대기 요청을 브랜치들(+main)로 푼다. 받은 쪽의 후속 처리(마이크로태스크)가 다 돌 때까지 기다린다
+async function answer(page: Page, repo: string, branches: string[]) {
+  await page.waitForFunction((r) => (window as any).held.some((h: { repo: string }) => h.repo === r), repo);
+  await page.evaluate(async ([r, bs]) => {
+    const w = window as any;
+    const [h] = w.held.splice(w.held.findIndex((x: { repo: string }) => x.repo === r), 1);
+    h.res({ refs: [...bs.map((b) => `refs/heads/${b}`), 'refs/heads/main'], defaultBase: null, current: `refs/heads/${bs[0]}`, remote: null });
+    await new Promise((done) => setTimeout(done, 0));
+  }, [repo, branches] as const);
+}
+const runs = (page: Page) => page.evaluate(() => [...new Set((window as any).runs as string[])]);
+const waiting = (page: Page, repo: string) => page.waitForFunction((r) => (window as any).held.some((h: { repo: string }) => h.repo === r), repo);
+async function pickRecent(page: Page, nth: number) {
+  await page.getByTestId('local-recent').locator('summary').click();
+  await page.getByTestId('recent-item').nth(nth).click();
+}
+
+// 최근 항목을 고르고 답을 기다리는 사이 폴더를 바꾸면 늦게 온 답으로 열지 않는다 — 칸은 바꾼 폴더 것
+test('a recent pick still waiting for git is dropped when the folder is changed meanwhile', async ({ page }) => {
+  await heldDesktop(page, ['/r/a', '/r/b', '/r/c']);
+  await page.addInitScript(() => localStorage.setItem('viewed.recent', JSON.stringify({ local: {}, history: [
+    { repo: '/r/b', branch: 'refs/heads/b1', base: 'refs/heads/main' }] })));
+  await page.goto('/');
+  await answer(page, '/r/a', ['a1']);
+  await expect(page.getByTestId('local-branch-select')).toHaveValue('refs/heads/a1');
+  await pickRecent(page, 0);
+  await waiting(page, '/r/b');
+  await page.getByTestId('local-repo-select').selectOption('/r/c');
+  await answer(page, '/r/c', ['c1']);
+  await expect(page.getByTestId('local-branch-select')).toHaveValue('refs/heads/c1');
+  await answer(page, '/r/b', ['b1']);   // 늦게 온 B
+  expect(await runs(page)).toEqual([]);
+  await expect(page.getByTestId('local-repo-select')).toHaveValue('/r/c');
+  await expect(page.getByTestId('local-branch-select')).toHaveValue('refs/heads/c1');
+  await page.getByTestId('open-btn').click();   // 화면 값만이 아니라 상태도 C
+  await expect(page.getByTestId('progress')).toHaveText('0 / 0');
+  expect(await runs(page)).toEqual(['/r/c']);
+});
+
+// 잇달아 두 항목을 고르면 뒤의 것만 연다 — 앞의 답이 늦게 와도
+test('of two recent picks in a row only the later opens, even when the earlier answer comes last', async ({ page }) => {
+  await heldDesktop(page, ['/r/a', '/r/b', '/r/c']);
+  await page.addInitScript(() => localStorage.setItem('viewed.recent', JSON.stringify({ local: {}, history: [
+    { repo: '/r/b', branch: 'refs/heads/b1', base: 'refs/heads/main' }, { repo: '/r/c', branch: 'refs/heads/c1', base: 'refs/heads/main' }] })));
+  await page.goto('/');
+  await answer(page, '/r/a', ['a1']);
+  await expect(page.getByTestId('local-branch-select')).toHaveValue('refs/heads/a1');
+  await pickRecent(page, 0);
+  await waiting(page, '/r/b');
+  await pickRecent(page, 1);
+  await waiting(page, '/r/c');
+  await answer(page, '/r/c', ['c1']);
+  await expect(page.getByTestId('progress')).toHaveText('0 / 0');
+  await answer(page, '/r/b', ['b1']);   // 늦게 온 앞의 답
+  expect(await runs(page)).toEqual(['/r/c']);
+  await expect(page.getByTestId('local-repo-select')).toHaveValue('/r/c');
+  await expect(page.getByTestId('local-branch-select')).toHaveValue('refs/heads/c1');
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('viewed.recent') ?? '{}').last)).toMatchObject({ repo: '/r/c' });
+});
+
+// 최근 목록 전에 쓴 기록도 목록이 된다 — 마지막 로컬 레포가 먼저, 레포마다 한 번
+test('records kept before the history fill the recent menu, the last local repo first and each once', async ({ page }) => {
+  await heldDesktop(page, ['/r/a', '/r/b', '/r/c']);
+  await page.addInitScript(() => localStorage.setItem('viewed.recent', JSON.stringify({
+    last: { source: 'github', account: 'personal', repo: 'acme/widget', branch: 'feat', base: '' }, localRepo: '/r/c',
+    local: { '/r/b': { branch: 'refs/heads/b1', base: 'refs/heads/main' }, '/r/c': { branch: 'refs/heads/c1', base: 'refs/heads/main' } } })));
+  await page.goto('/');
+  await page.getByTestId('source-local').click();
+  await expect(page.getByTestId('recent-item').locator('span')).toHaveText(['c · c1 ← main', 'b · b1 ← main']);
+  await expect(page.getByTestId('recent-item').locator('small')).toHaveText(['/r', '/r']);
+});
+
+// 비운 목록은 옛 기록으로 되살리지 않는다 — 항목이 없으면 버튼도 없다
+test('an emptied history shows no recent menu even with older records', async ({ page }) => {
+  await heldDesktop(page, ['/r/a', '/r/b']);
+  await page.addInitScript(() => localStorage.setItem('viewed.recent', JSON.stringify({ history: [],
+    last: { source: 'local', repo: '/r/b', branch: 'refs/heads/b1', base: 'refs/heads/main' }, local: { '/r/b': { branch: 'refs/heads/b1', base: 'refs/heads/main' } } })));
+  await page.goto('/');
+  await expect(page.getByTestId('local-repo-select')).toHaveValue('/r/b');   // 폴더 목록을 받은 뒤
+  await expect(page.getByTestId('local-recent')).toHaveCount(0);
+});

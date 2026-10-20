@@ -1,20 +1,29 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { desktopGit, shortRef } from '../localSource';
 import { errorText, t } from '../i18n';
-import { readRecent } from '../recent';
+import { dropRecent, readRecent, type LocalReview } from '../recent';
 
 type Info = Awaited<ReturnType<NonNullable<ReturnType<typeof desktopGit>>['info']>>;
 type Auto = { repo: string; branch: string; base: string } | undefined;
 
 // 로컬 폴더(데스크톱 전용): 고른 레포의 로컬 브랜치를 base 와 비교한다. 푸시하지 않은 커밋도 보인다
 // takeAuto: 켤 때 한 번 자동으로 열 마지막 리뷰를 꺼낸다(꺼내면 사라진다)
-export function LocalOpen({ onOpen, onError, takeAuto }: { onOpen: (repo: string, info: Info, branch: string, base: string) => void; onError: (msg: string) => void; takeAuto: () => Auto }) {
+// onCancel: 진행 중인 열기를 없던 일로(App) · recentRev: 열기에 성공해 최근 목록이 바뀌면 오른다
+export function LocalOpen({ onOpen, onError, onCancel, takeAuto, recentRev }: { onOpen: (repo: string, info: Info, branch: string, base: string) => void; onError: (msg: string) => void; onCancel: () => void; takeAuto: () => Auto; recentRev: number }) {
   const git = desktopGit()!;
   const [repos, setRepos] = useState<string[]>([]);
   const [repo, setRepo] = useState('');
   const [info, setInfo] = useState<Info | null>(null);
   const [branch, setBranch] = useState('');
   const [base, setBase] = useState('');
+  // 최근 항목을 고른 요청 번호 — 다른 항목을 고르거나 칸을 바꾸면 올라가 늦게 온 답을 버린다
+  const pick = useRef(0);
+  // 최근 항목으로 바꾼 레포: 칸은 고를 때 맞췄으니 [repo] effect 가 레포별 기억으로 덮지도, 다시 읽지도 않는다
+  const preset = useRef<string | undefined>(undefined);
+  const menu = useRef<HTMLDetailsElement>(null);
+  const [drops, setDrops] = useState(0);
+  // 최근 목록은 열기 성공(recentRev)과 여기서 뺄 때(drops)만 바뀐다
+  const history = useMemo(() => readRecent().history, [recentRev, drops]);
 
   useEffect(() => {
     git.list().then((l) => {
@@ -23,9 +32,15 @@ export function LocalOpen({ onOpen, onError, takeAuto }: { onOpen: (repo: string
       const lr = readRecent().localRepo;
       setRepo((r) => r || (lr !== undefined && l.includes(lr) ? lr : l[0]) || '');
     }).catch((e) => onError(errorText(e)));
-    return () => { takeAuto(); };   // 정하기 전에 화면을 떠나면 자동 열기는 없던 일로
+    // 바깥을 누르면 최근 목록을 닫는다
+    const close = (e: PointerEvent) => { if (menu.current?.open && !menu.current.contains(e.target as Node)) menu.current.open = false; };
+    document.addEventListener('pointerdown', close);
+    return () => { takeAuto(); pick.current++; document.removeEventListener('pointerdown', close); };   // 정하기 전에 화면을 떠나면 자동 열기도 최근 고르기도 없던 일로
   }, []);
   useEffect(() => {
+    const p = preset.current;
+    preset.current = undefined;
+    if (p === repo) return;
     setInfo(null);
     if (!repo) return;
     let live = true;
@@ -47,9 +62,9 @@ export function LocalOpen({ onOpen, onError, takeAuto }: { onOpen: (repo: string
     return () => { live = false; };
   }, [repo]);
 
-  // 사용자가 레포를 바꾸면 자동 열기는 취소
+  // 사용자가 레포를 바꾸면 자동 열기와 최근 고르기는 취소
   async function add() {
-    takeAuto();
+    takeAuto(); pick.current++;
     try {
       const picked = await git.pick();
       if (!picked) return;
@@ -58,21 +73,56 @@ export function LocalOpen({ onOpen, onError, takeAuto }: { onOpen: (repo: string
     } catch (e) { onError(errorText(e)); }
   }
 
+  // 최근 항목은 고를 때마다 새로 읽는다 — 같은 레포여도 들고 있던 info 는 지워진 브랜치·바뀐 origin 을 모른다
+  async function openRecent(h: LocalReview) {
+    const n = ++pick.current;
+    if (menu.current) menu.current.open = false;
+    takeAuto(); onCancel();   // 앞서 시작한 열기도 없던 일로 — 이번 것이 실패해도 그게 늦게 올라오지 않게
+    let i: Info;
+    try { i = await git.info(h.repo); } catch (e) { if (n === pick.current) onError(errorText(e)); return; }   // 못 읽은 건 일시적일 수 있어(외장 디스크 등) 항목은 남긴다
+    if (n !== pick.current) return;
+    // 지워진 브랜치·base 만 확실히 죽은 항목이다. branch === base 는 거절하지 않는다 — 열기 버튼도 막지 않아 성공했던 조합이다
+    if (!i.refs.some((r) => r === h.branch && r.startsWith('refs/heads/')) || !i.refs.includes(h.base)) {
+      dropRecent(h); setDrops((d) => d + 1); onError(t.recentGone);
+      return;
+    }
+    if (h.repo !== repo) preset.current = h.repo;
+    setRepo(h.repo); setInfo(i); setBranch(h.branch); setBase(h.base);
+    onOpen(h.repo, i, h.branch, h.base);
+  }
+
   const heads = info?.refs.filter((r) => r.startsWith('refs/heads/')) ?? [];
+  // 폴더 목록에 있는 레포 것만 — 없으면 버튼도 안 그린다
+  const shown = history.filter((h) => repos.includes(h.repo));
   return (
     <>
-      <select data-testid="local-repo-select" aria-label={t.localRepo} value={repo} onChange={(e) => { takeAuto(); setRepo(e.target.value); }}>
+      {shown.length > 0 && (
+        <details ref={menu} className="recent" data-testid="local-recent"
+          onKeyDown={(e) => { if (e.key !== 'Escape' || !e.currentTarget.open) return; e.currentTarget.open = false; e.currentTarget.querySelector('summary')?.focus(); }}>
+          <summary>{t.recent}</summary>
+          {/* 닫힌 select 는 방향키로 훑기만 해도 change 가 나는 플랫폼이 있다 — 항목 버튼은 누를 때만 연다 */}
+          <div className="recent-list">
+            {shown.map((h) => (
+              <button type="button" key={`${h.repo}\n${h.branch}\n${h.base}`} data-testid="recent-item" onClick={() => openRecent(h)}>
+                <span>{h.repo.split('/').pop()} · {shortRef(h.branch)} ← {shortRef(h.base)}</span>
+                <small>{h.repo.slice(0, h.repo.lastIndexOf('/')) || '/'}</small>
+              </button>
+            ))}
+          </div>
+        </details>
+      )}
+      <select data-testid="local-repo-select" aria-label={t.localRepo} value={repo} onChange={(e) => { takeAuto(); pick.current++; setRepo(e.target.value); }}>
         {repos.length === 0 && <option value="">{t.noFolder}</option>}
         {repos.map((r) => <option key={r} value={r}>{r.split('/').pop()}</option>)}
       </select>
       <button type="button" data-testid="local-add" onClick={add}>{t.addFolder}</button>
       <label className="ref"><span>{t.compareLabel}</span>
-        <select data-testid="local-branch-select" value={branch} onChange={(e) => setBranch(e.target.value)}>
+        <select data-testid="local-branch-select" value={branch} onChange={(e) => { pick.current++; setBranch(e.target.value); }}>
           {heads.map((r) => <option key={r} value={r}>{shortRef(r)}</option>)}
         </select>
       </label>
       <label className="ref"><span>{t.baseLabel}</span>
-        <select data-testid="local-base-select" value={base} onChange={(e) => setBase(e.target.value)}>
+        <select data-testid="local-base-select" value={base} onChange={(e) => { pick.current++; setBase(e.target.value); }}>
           {!base && <option value="">—</option>}
           {info?.refs.map((r) => <option key={r} value={r}>{shortRef(r)}</option>)}
         </select>

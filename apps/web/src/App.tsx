@@ -28,6 +28,8 @@ export function App() {
   // 마지막 로컬 리뷰를 켤 때 한 번 자동으로 여는 권한. 실행당 1회라 App 이 든다 — 설정·소스 전환으로 LocalOpen 이 다시 마운트돼도 다시 안 준다
   const auto = useRef(last?.source === 'local' ? last : undefined);
   const [error, setError] = useState('');
+  // 로컬 열기가 성공해 최근 목록이 바뀌면 오른다 — LocalOpen 이 목록을 다시 읽는다
+  const [recentRev, setRecentRev] = useState(0);
   const [editing, setEditing] = useState(false);
   const [loadError, setLoadError] = useState('');
   const seq = useRef(0);
@@ -122,11 +124,11 @@ export function App() {
       )}
       {localForm ? (
         <form data-testid="open-form" className="open-bar" onSubmit={(e) => e.preventDefault()}>
-          <LocalOpen onError={setError} takeAuto={() => { const a = auto.current; auto.current = undefined; return a; }} onOpen={(repo, info, branch, base) => load(async () => ({
+          <LocalOpen onError={setError} onCancel={() => { seq.current++; }} recentRev={recentRev} takeAuto={() => { const a = auto.current; auto.current = undefined; return a; }} onOpen={(repo, info, branch, base) => load(async () => ({
             snap: await loadLocalSnapshot(localGit(repo), repoIdFromRemote(info.remote, repo), branch, base),
             readBlob: localBlob(repo),
             head: () => localGit(repo).resolve(branch),
-          }), false, () => rememberLocal(repo, branch, base))} />
+          }), false, () => { rememberLocal(repo, branch, base); setRecentRev((n) => n + 1); })} />
           <button type="button" data-testid="settings-open" onClick={() => setEditing(true)}>{t.settings}</button>
         </form>
       ) : (

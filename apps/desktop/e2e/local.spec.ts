@@ -2,7 +2,7 @@ import { test, expect, _electron as electron, type ElectronApplication, type Pag
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 const git = (dir: string, ...a: string[]) => execFileSync('git', ['-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { encoding: 'utf8' });
 
@@ -359,5 +359,115 @@ test('S3: merging base then changing a far line shows only the hunk with my new 
   for (const line of await row.getByTestId('since-diff').locator('.ln.add, .ln.del').allTextContents()) expect(line).not.toContain('DEV');
   await row.getByTestId('full-tab').click();
   await expect(row.getByTestId('diff')).toContainText('+line 8 FEAT');
+  await app.close();
+});
+
+// 최근 목록 — 열기에 성공한 조합을 최근 것부터 보이고, 누르면 그 조합을 바로 연다
+const storedHistory = (win: Page) => win.evaluate(() => JSON.parse(localStorage.getItem('viewed.recent') ?? '{}').history);
+const at = (repo: string, branch: string, base: string) => ({ repo, branch: `refs/heads/${branch}`, base: `refs/heads/${base}` });
+
+// 더한 a 에서 x←old, feat←main 순으로 연다 — 최근 목록은 [feat←main, x←old], a 의 레포별 기억은 feat←main
+async function openXOldThenFeatMain(win: Page) {
+  await win.getByTestId('local-branch-select').selectOption('refs/heads/x');
+  await win.getByTestId('local-base-select').selectOption('refs/heads/old');
+  await win.getByTestId('open-btn').click();
+  await expect(win.getByTestId('progress')).toHaveText('0 / 1');
+  await win.getByTestId('local-branch-select').selectOption('refs/heads/feat');
+  await win.getByTestId('local-base-select').selectOption('refs/heads/main');
+  await win.getByTestId('open-btn').click();
+  await expect(win.getByTestId('progress')).toHaveText('0 / 2');
+}
+
+test('R1: the recent menu lists opened reviews newest first, and one click opens the one picked', async () => {
+  const a = makeRepoWithX(), b = makeRepo();
+  const { app, win } = await launch(a);
+  await win.getByTestId('local-add').click();
+  await expect(win.getByTestId('local-branch-select')).toHaveValue('refs/heads/feat');
+  await expect(win.getByTestId('local-recent')).toHaveCount(0);   // 연 적이 없으면 버튼도 없다
+  await openXOldThenFeatMain(win);
+  await pickNext(app, b);
+  await win.getByTestId('local-add').click();
+  await openLocal(win);
+  await expect(win.getByTestId('progress')).toHaveText('0 / 2');
+  const items = win.getByTestId('recent-item'), na = basename(a), nb = basename(b);
+  await expect(items.locator('span')).toHaveText([`${nb} · feat ← main`, `${na} · feat ← main`, `${na} · x ← old`]);
+  await expect(items.locator('small')).toHaveText([dirname(b), dirname(a), dirname(a)]);   // 같은 이름 폴더를 가르는 부모 경로
+  await win.getByTestId('local-recent').locator('summary').click();
+  await items.nth(2).click();   // 다른 레포의, 그 레포 기억(feat←main)과 다른 조합
+  await expect(win.getByTestId('progress')).toHaveText('0 / 1');
+  await expect(win.getByTestId('local-recent')).toHaveJSProperty('open', false);   // 누르면 닫힌다
+  await expect(win.getByTestId('local-repo-select')).toHaveValue(a);
+  await expect(items.locator('span')).toHaveText([`${na} · x ← old`, `${nb} · feat ← main`, `${na} · feat ← main`]);   // 다시 연 조합은 맨 위로, 한 번만
+  expect(await storedHistory(win)).toEqual([at(a, 'x', 'old'), at(b, 'feat', 'main'), at(a, 'feat', 'main')]);
+  await win.waitForTimeout(500);   // 레포를 바꾼 뒤에도 칸이 그 레포 기억으로 덮이지 않는다
+  await expect(win.getByTestId('local-branch-select')).toHaveValue('refs/heads/x');
+  await expect(win.getByTestId('local-base-select')).toHaveValue('refs/heads/old');
+  await win.getByTestId('open-btn').click();   // 화면 값만이 아니라 상태도
+  await expect(win.getByTestId('progress')).toHaveText('0 / 1');
+  await app.close();
+});
+
+test('R2: a recent review whose branch was deleted is not opened, says so, and leaves the menu', async () => {
+  const a = makeRepoWithX();
+  const { app, win } = await launch(a);
+  await win.getByTestId('local-add').click();
+  await openXOldThenFeatMain(win);
+  git(a, 'branch', '-D', 'x');
+  await win.getByTestId('local-recent').locator('summary').click();
+  await win.getByTestId('recent-item').nth(1).click();
+  await expect(win.getByTestId('error')).toHaveText("That review's branch or base no longer exists, so it was removed from the list.");
+  await expect(win.getByTestId('recent-item')).toHaveCount(1);
+  expect(await storedHistory(win)).toEqual([at(a, 'feat', 'main')]);
+  await expect(win.getByTestId('progress')).toHaveText('0 / 2');   // 보던 리뷰 그대로
+  await expect(win.getByTestId('local-branch-select')).toHaveValue('refs/heads/feat');
+  await app.close();
+});
+
+// Tab 으로 항목을 지나가기만 해서는 안 열린다 — Enter 로 연다. Escape 는 닫고 펼침 버튼으로 돌아간다
+test('R3: the recent menu works from the keyboard, and moving through it opens nothing', async () => {
+  const a = makeRepoWithX();
+  const { app, win } = await launch(a);
+  await win.getByTestId('local-add').click();
+  await openXOldThenFeatMain(win);
+  const menu = win.getByTestId('local-recent'), summary = menu.locator('summary'), items = win.getByTestId('recent-item');
+  await summary.focus();
+  await win.keyboard.press('Enter');
+  await expect(menu).toHaveJSProperty('open', true);
+  await win.keyboard.press('Tab');
+  await win.keyboard.press('Tab');
+  await expect(items.nth(1)).toBeFocused();   // x ← old 위에 있기만
+  await expect(menu).toHaveJSProperty('open', true);
+  await win.waitForTimeout(500);
+  await expect(win.getByTestId('progress')).toHaveText('0 / 2');
+  await expect(win.getByTestId('local-branch-select')).toHaveValue('refs/heads/feat');
+  await win.keyboard.press('Escape');
+  await expect(menu).toHaveJSProperty('open', false);
+  await expect(summary).toBeFocused();
+  await win.keyboard.press('Enter');
+  await win.keyboard.press('Tab');
+  await win.keyboard.press('Tab');
+  await win.keyboard.press('Enter');
+  await expect(win.getByTestId('progress')).toHaveText('0 / 1');
+  await expect(win.getByTestId('local-branch-select')).toHaveValue('refs/heads/x');
+  await expect(win.getByTestId('local-base-select')).toHaveValue('refs/heads/old');
+  await app.close();
+});
+
+test('R4: a recent review of a folder that is not in the folder list is not shown', async () => {
+  const a = makeRepo();
+  const first = await launch(a);
+  await first.win.getByTestId('local-add').click();
+  await openLocal(first.win);
+  await expect(first.win.getByTestId('progress')).toHaveText('0 / 2');
+  await first.win.evaluate(() => {
+    const r = JSON.parse(localStorage.getItem('viewed.recent') ?? '{}');
+    r.history = [{ repo: '/nowhere/ghost', branch: 'refs/heads/feat', base: 'refs/heads/main' }, ...r.history];
+    localStorage.setItem('viewed.recent', JSON.stringify(r));
+  });
+  await first.app.close();
+  const { app, win } = await launch(a, first.userData);
+  await expect(win.getByTestId('progress')).toHaveText('0 / 2');   // 마지막 리뷰가 열렸다 — 폴더 목록을 받은 뒤
+  await expect(win.getByTestId('recent-item').locator('span')).toHaveText([`${basename(a)} · feat ← main`]);
+  expect((await storedHistory(win))[1]).toMatchObject({ repo: '/nowhere/ghost' });   // 기록에는 남아 있다
   await app.close();
 });

@@ -223,6 +223,25 @@ button.primary:hover { background: var(--primary-hover); }
 .ref { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-muted); font-size: 12px; }
 .ref select { color: var(--fg); font-size: 14px; }
 .hint { margin: -8px 0 16px; font-size: 12px; color: var(--fg-muted); }
+/* 최근 연 리뷰 — 여는 막대 맨 앞의 펼침 버튼, 목록은 아래 내용 위에 뜬다(진행 막대보다 위) */
+.recent { position: relative; }
+.recent > summary {
+  display: inline-flex; align-items: center; min-height: 32px; padding: 5px 16px;
+  font-weight: 500; list-style: none; cursor: pointer;
+  background: var(--canvas-subtle); border: 1px solid var(--border); border-radius: 6px;
+}
+.recent > summary::-webkit-details-marker { display: none; }
+.recent > summary:hover { border-color: var(--fg-muted); }
+.recent > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.recent-list {
+  position: absolute; z-index: 3; top: calc(100% + 4px); left: 0;
+  display: flex; flex-direction: column; min-width: 280px; max-width: min(480px, calc(100vw - 32px)); padding: 4px;
+  background: var(--canvas); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 8px 24px rgba(31, 35, 40, 0.12);
+}
+.recent-list button { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 6px 12px; text-align: left; background: none; border: 0; border-radius: 4px; }
+.recent-list button:hover { background: var(--canvas-subtle); }
+.recent-list span { overflow-wrap: anywhere; }
+.recent-list small { font-size: 12px; font-weight: 400; color: var(--fg-muted); overflow-wrap: anywhere; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 .storage { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 16px; border: 1px solid var(--border); border-radius: 6px; }
 .storage legend { padding: 0 4px; font-weight: 600; }
