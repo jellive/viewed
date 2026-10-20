@@ -218,12 +218,12 @@ test('the history keeps well-formed entries once each, at most ten', async ({ pa
   await expect.poll(() => history(page)).toEqual([at('/r/a'), ...Array.from({ length: 9 }, (_, i) => at('/r/x', `refs/heads/f${i}`))]);
 });
 
-// info 는 테스트가 손으로 푼다 — 응답 순서를 시간이 아니라 테스트가 정한다. runs: 열기가 부른 git 의 레포
+// info 는 테스트가 손으로 푼다 — 응답 순서를 시간이 아니라 테스트가 정한다. runs: 열기가 부른 git 의 레포, gates: 레포별로 git 을 멈춰 둘 Promise
 async function heldDesktop(page: Page, repos: string[]) {
   await page.addInitScript((repos) => {
     localStorage.setItem('viewed.settings', JSON.stringify({ accounts: [{ label: 'personal', token: '' }], gistAccount: 'personal', gistId: '', secret: '', deviceId: 'mac', storage: 'device' }));
     const w = window as any;
-    w.held = []; w.runs = [];
+    w.held = []; w.runs = []; w.gates = {};
     const oid = (c: string) => c.repeat(40);
     w.viewedDesktop = {
       getSecret: async (n: string) => (n === 'token:personal' ? 'tok' : null),
@@ -234,6 +234,7 @@ async function heldDesktop(page: Page, repos: string[]) {
         info: (repo: string) => new Promise((res, rej) => w.held.push({ repo, res, rej })),
         run: async (repo: string, op: string, ref: string) => {
           w.runs.push(repo);
+          await w.gates[repo];
           return op === 'resolve' ? oid(ref === 'refs/heads/main' ? 'e' : 'f') : op === 'mergeBase' ? oid('e') : '';
         },
       },
@@ -320,4 +321,47 @@ test('an emptied history shows no recent menu even with older records', async ({
   await page.goto('/');
   await expect(page.getByTestId('local-repo-select')).toHaveValue('/r/b');   // 폴더 목록을 받은 뒤
   await expect(page.getByTestId('local-recent')).toHaveCount(0);
+});
+
+// 브랜치·base 를 바꿔도 기다리던 최근 고르기는 버린다
+test('changing the branch or the base also drops a recent pick still waiting for git', async ({ page }) => {
+  await heldDesktop(page, ['/r/a', '/r/b']);
+  await page.addInitScript(() => localStorage.setItem('viewed.recent', JSON.stringify({ local: {}, history: [
+    { repo: '/r/b', branch: 'refs/heads/b1', base: 'refs/heads/main' }] })));
+  await page.goto('/');
+  await answer(page, '/r/a', ['a1', 'a2']);
+  await expect(page.getByTestId('local-branch-select')).toHaveValue('refs/heads/a1');
+  await pickRecent(page, 0);
+  await waiting(page, '/r/b');
+  await page.getByTestId('local-branch-select').selectOption('refs/heads/a2');
+  await answer(page, '/r/b', ['b1']);
+  expect(await runs(page)).toEqual([]);
+  await pickRecent(page, 0);
+  await waiting(page, '/r/b');
+  await page.getByTestId('local-base-select').selectOption('refs/heads/a1');
+  await answer(page, '/r/b', ['b1']);
+  expect(await runs(page)).toEqual([]);
+  await expect(page.getByTestId('local-repo-select')).toHaveValue('/r/a');
+  await expect(page.getByTestId('local-branch-select')).toHaveValue('refs/heads/a2');
+  await expect(page.getByTestId('local-base-select')).toHaveValue('refs/heads/a1');
+});
+
+// 최근 항목을 고르면 앞서 시작한 열기는 없던 일로 — 고른 것이 실패해도 앞의 열기가 늦게 올라오지 않는다
+test('a recent pick cancels an open still loading, even when the pick then fails', async ({ page }) => {
+  await heldDesktop(page, ['/r/a', '/r/b']);
+  await page.addInitScript(() => localStorage.setItem('viewed.recent', JSON.stringify({ local: {}, history: [
+    { repo: '/r/b', branch: 'refs/heads/gone', base: 'refs/heads/main' }] })));
+  await page.goto('/');
+  await answer(page, '/r/a', ['a1']);
+  await expect(page.getByTestId('local-branch-select')).toHaveValue('refs/heads/a1');
+  await page.evaluate(() => { const w = window as any; w.gates['/r/a'] = new Promise((r) => { w.release = r; }); });
+  await page.getByTestId('open-btn').click();
+  await expect.poll(() => runs(page)).toEqual(['/r/a']);   // a 열기가 git 에서 멈춰 있다
+  await pickRecent(page, 0);
+  await answer(page, '/r/b', ['b1']);   // 기억한 gone 브랜치가 없다
+  await expect(page.getByTestId('error')).toHaveText("That review's branch or base no longer exists, so it was removed from the list.");
+  await page.evaluate(async () => { (window as any).release(); await new Promise((done) => setTimeout(done, 0)); });
+  expect(await history(page)).toEqual([]);   // 늦게 끝난 a 는 기록되지 않았다
+  await expect(page.getByTestId('progress')).toHaveCount(0);
+  await expect(page.getByTestId('error')).toBeVisible();
 });

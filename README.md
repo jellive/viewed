@@ -5,7 +5,7 @@ Mark the files of a branch as "viewed" before you open a PR. A Mac Electron app 
 Two sources:
 
 - **GitHub** (desktop and PWA): a pushed branch, read through the GitHub API with a read-only token.
-- **Local folder** (desktop only): a local clone, read with `git` on your Mac. Unpushed commits show up, and no GitHub token is needed. Use it for repositories you can't get a token for.
+- **Local folder** (desktop only): a local clone, read with `git` on your Mac. Unpushed commits show up, and no GitHub token is needed. Use it for repositories you can't get a token for. **Recent** reopens one of the last ten local reviews (folder, branch, base) in one click.
 
 Status: in development
 
