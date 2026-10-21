@@ -239,12 +239,45 @@ test('an error result shows its message and a retry', async ({ page }) => {
   await expect(page.getByTestId('thread-answer')).toHaveText('fine now');
 });
 
-test('a failed result without a known reason shows the desktop message', async ({ page }) => {
+test('a failed result is shown in the app language, not the desktop message', async ({ page }) => {
   await fakeLocal(page);
   await openLocal(page);
   await ask(page, 'add', 'new', 'why?');
-  await answer(page, { ok: false, error: 'failed', message: 'exit 3' });
-  await expect(page.getByTestId('thread-error')).toContainText('exit 3');
+  await answer(page, { ok: false, error: 'failed', message: '답을 못 받았어요. 다시 시도해 주세요' });
+  await expect(page.getByTestId('thread-error')).toContainText("Couldn't get an answer.");
+  await expect(page.getByTestId('thread-error')).not.toContainText('답을');
+});
+
+test('a session answer written by a subagent says so in its source', async ({ page }) => {
+  await fakeLocal(page);
+  await openLocal(page);
+  await ask(page, 'add', 'new', 'why?');
+  await answer(page, ok('sub', { kind: 'session', sessionId: 'e5f37e58-1111-2222', at: Date.UTC(2026, 9, 15, 5, 14), subagent: true }));
+  await expect(page.getByTestId('thread-source')).toHaveText('From the session log · e5f37e58 (subagent) · 10-15 14:14');
+});
+
+test('two questions at once: the second thread shows that it is waiting', async ({ page }) => {
+  await fakeLocal(page);
+  await openLocal(page);
+  await ask(page, 'add', 'new', 'first?');
+  const ctx = line(page, 'ctx', 'ctx');
+  await ctx.hover();
+  await ctx.getByTestId('ask-btn').click();
+  const input = page.locator('.ln.ctx + [data-testid="thread"]').getByTestId('thread-input');
+  await expect(input).toBeFocused();
+  await input.fill('second?');
+  await input.press('Enter');
+  await expect.poll(async () => (await asks(page)).length).toBe(2);
+  const [a, b] = await asks(page);
+  await page.evaluate(([a, b]) => { (window as any).__stage('queued', a); (window as any).__stage('queued', b); (window as any).__stage('searching', a); }, [a.id, b.id] as const);
+  const first = page.locator('.ln.add + [data-testid="thread"]');
+  const second = page.locator('.ln.ctx + [data-testid="thread"]');
+  await expect(first.locator('.thread-progress')).toContainText('Finding the session log…');
+  await expect(second.locator('.thread-progress')).toContainText('Waiting…');
+  await expect(second.getByTestId('thread-live')).toHaveText('Waiting…');
+  await answer(page, ok('one'), a.id);
+  await page.evaluate((b) => (window as any).__stage('searching', b), b.id);
+  await expect(second.locator('.thread-progress')).toContainText('Finding the session log…');
 });
 
 test('without a merge base, deleted lines have no +', async ({ page }) => {

@@ -11,7 +11,7 @@ function plain(text: string): ReactNode[] {
 
 const pad = (n: number) => String(n).padStart(2, '0');
 const when = (ms: number) => { const d = new Date(ms); return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
-const sourceText = (s: AskSource) => (s.kind === 'session' ? t.askSourceSession(s.sessionId.slice(0, 8), when(s.at)) : t.askSourceNone);
+const sourceText = (s: AskSource) => (s.kind === 'session' ? t.askSourceSession(s.sessionId.slice(0, 8), when(s.at), s.subagent) : t.askSourceNone);
 
 // 줄 바로 아래에 붙는 문답(GitHub 리뷰 댓글 모양). 진행 중엔 단계와 취소, 실패면 사유와 다시 시도
 export function Thread({ data, onSend, onCancel, onClose, onFocused }: { data: ThreadData; onSend: (q: string) => void; onCancel: () => void; onClose: () => void; onFocused: () => void }) {
@@ -24,8 +24,8 @@ export function Thread({ data, onSend, onCancel, onClose, onFocused }: { data: T
   }, [data.want]);
   const { pending, failed } = data;
   const root = useRef<HTMLDivElement>(null);
-  // 데스크톱 문구는 한국어 고정이라 아는 사유는 앱 언어로, 'failed' 만 데스크톱이 준 사유를 보인다
-  const errText = failed && (failed.error === 'failed' && failed.message ? failed.message : t.askError[failed.error]);
+  // 데스크톱 문구는 한국어 고정이라 사유는 전부 앱 언어 문구로 보인다(데스크톱이 준 message 는 쓰지 않는다)
+  const errText = failed && t.askError[failed.error];
   // 진행 표시는 끝나면 사라지므로, 스레드마다 하나 남는 알림 자리에서 단계·답 도착·실패를 읽어 준다
   const live = pending ? t.askStage[pending.stage] : errText || (data.turns.length ? t.askArrived : '');
   const close = () => {

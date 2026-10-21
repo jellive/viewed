@@ -24,8 +24,8 @@
 ## 3. 화면 (A안, Jell 확정)
 
 - `DiffView` 의 줄에 마우스를 올리거나 키보드로 포커스하면 줄 번호 옆에 + 버튼(이름: "이 줄에 질문"). 누르면 그 줄 `div.ln` 바로 다음에 스레드가 열리고 입력칸에 포커스.
-- 스레드: 내 질문 → Claude 답(위에 출처 표시: "세션 기록 기반 · e5f37e58 · 10-15 14:14" 또는 "세션 기록 없음 · 커밋·코드 기반", 그리고 보낸 계정 "you@example.com 계정으로") → "이어서 묻기" 입력칸. 진행 중엔 "세션 기록 찾는 중…" → "Claude 가 답하는 중… (취소)".
-- 계정(Jell 결정 2026-10-21): 그때 로그인된 계정 그대로 보낸다. 표시할 계정은 `$CLAUDE_CONFIG_DIR/.claude.json`(없으면 `~/.claude.json`)의 `oauthAccount.emailAddress` — 못 읽으면 "계정 확인 못 함". 회사 레포도 막지 않는다.
+- 스레드: 내 질문 → Claude 답(위에 출처 표시: "세션 기록 기반 · e5f37e58 · 10-15 14:14"(서브에이전트 기록이면 id 뒤에 "(서브에이전트)") 또는 "세션 기록 없음 · 커밋·코드 기반", 그리고 보낸 계정 "you@example.com 계정으로") → "이어서 묻기" 입력칸. 진행 중엔 "세션 기록 찾는 중…" → "Claude 가 답하는 중… (취소)".
+- 계정(Jell 결정 2026-10-21): 그때 로그인된 계정 그대로 보낸다. 표시할 계정은 `$CLAUDE_CONFIG_DIR/.claude.json`(그 변수가 없거나 비었을 때만 `~/.claude.json`)의 `oauthAccount.emailAddress` — `CLAUDE_CONFIG_DIR` 가 있으면 그 파일만 읽고, 못 읽어도 `~/.claude.json` 으로 넘어가지 않는다(다른 계정을 보여주지 않게). 못 읽으면 "계정 확인 못 함". 회사 레포도 막지 않는다.
 - 답은 **텍스트로만** 그린다. 백틱 `code` 만 코드 모양으로, HTML·링크는 만들지 않는다.
 - 빈 입력칸에서 Esc 는 스레드를 닫는다. 질문은 한 줄에 스레드 하나.
 - + 가 붙는 줄: §5 표의 "+ 있음" 줄만. hunk 머리·`\ No newline` 줄엔 없다.
@@ -95,7 +95,7 @@ renderer 가 질문 id(`crypto.randomUUID()`)를 정하고 `ask:start` 를 부�
 - **env:** `process.env` 에서 `GIT_*`·`ELECTRON_*`·`NODE_OPTIONS`·`DYLD_*` 를 뺀다. `HOME`·`CLAUDE_CONFIG_DIR`(있으면) 는 둔다(로그인). 그 위에 `ENABLE_CLAUDEAI_MCP_SERVERS=false` 를 항상 덮어쓴다(호출자 값 무시, 답·`--version` 둘 다) — 계정 단위 claude.ai 커넥터가 `mcp_servers` 에 올라오지 않게 한다(실측: 끄면 init 의 `tools: []`·`mcp_servers: []`).
 - **`--bare` 는 쓰지 않는다** — OAuth·키체인을 안 읽어 구독 로그인이 사라진다(codex 지적, 공식 문서).
 - **한도:** stdout 1MB·stderr 64KB 를 넘으면 끊고 실패. 취소·마감 → 그룹에 SIGTERM, 2초 뒤 SIGKILL, 종료를 확인한 뒤 실행 슬롯을 돌려준다. 동시 실행은 앱 전체 1개, 나머지는 "대기 중"으로 줄 선다.
-- **결과 판정:** JSON 파싱 실패·`is_error`·빈 `result` → 실패. 로그인 문제로 보이면 "Claude Code 로그인이 필요해요(터미널에서 claude 실행)". 그 밖은 "답을 못 받았어요" + 다시 시도.
+- **결과 판정:** JSON 파싱 실패·`is_error`·빈 `result` → 실패. 로그인 문제로 보이면 "Claude Code 로그인이 필요해요(터미널에서 claude 실행)". 그 밖은 "답을 못 받았어요" + 다시 시도. 화면 문구는 오류 종류로 앱 언어에서 고른다 — main 이 준 `message`(한국어 고정)는 보이지 않는다.
 - 실측(세션 발췌 포함, 도구 없음, 빈 폴더): 11.4초 · 1턴 · 입력 7,192토큰 · init `tools: []` `mcp_servers: []` `apiKeySource: none`(구독 로그인 — 청구가 아니라 구독 사용량).
 
 ## 8. git 근거 (main, `local-git.cjs` 에 op 추가)
@@ -112,7 +112,7 @@ renderer 가 질문 id(`crypto.randomUUID()`)를 정하고 `ask:start` 를 부�
 
 `ask:start(req)` / `ask:cancel(id)` — 둘 다 `assertSender`. preload 와 `settings.ts` 의 `Window` 타입(닫힌 유니온)도 같이 고친다.
 
-`req = { id, repo, head, mergeBase?, path, previousPath?, side, line, lineText, view, question, history }`. main 이 확인:
+`req = { id, repo, head, mergeBase?, path, previousPath?, side, line, lineText, question, history, lang }`(`view` 는 보내지 않는다 — 스레드 키에만 쓴다). main 이 확인:
 - `repos.allowed(repo)` · `head`·`mergeBase` 는 OID 이고 `cat-file -t` 가 commit.
 - `path`·`previousPath`: 상대 경로, `-` 로 시작 안 함, `..` 조각 없음, 그 커밋에 존재(`cat-file -e`).
 - `line` 은 1 이상 정수이고 그 파일 줄 수 이하. **`lineText` 가 그 좌표의 실제 줄과 같다**(좌표가 맞다는 증명 — 다르면 거부).
