@@ -625,3 +625,26 @@ test('findSpawn links a subagent to the Agent call that started it', () => {
   assert.equal(T.findSpawn(t.entries, 'zzz999'), null);
   assert.equal(T.findSpawn(t.entries, 'a.*'), null);
 });
+
+// F8 — 실저장소에서 나온 거짓 '섞임'
+const excerptOf = (text, ctx = CTX) => { const t = tx(); const h = t.human(text); return T.buildExcerpt(t.entries, h, h, ctx); };
+
+test('bare home mentions and prose separated by a middle dot are not foreign paths', () => {
+  for (const s of ['write ~/ then stop', 'home is /home/u', 'home is /home/u/.', '`~/`·`$HOME/`·`${HOME}/`', '~/·$HOME/·${HOME}/',
+    '「~/」、「$HOME/」。（${HOME}/）《~/》“~/”‘$HOME/’『~/』，~/・$HOME/']) {
+    const r = excerptOf(s);
+    assert.ok(typeof r.text === 'string', s);
+  }
+});
+
+test('a token that is an ancestor of a root is not foreign, a sibling still is', () => {
+  const ctx = { ...CTX, roots: ['/home/u/work/viewed'] };
+  assert.ok(typeof excerptOf('see /home/u/work and ~/work/', ctx).text === 'string');
+  assert.deepEqual(excerptOf('see /home/u/work/other', ctx), { mixed: true });
+});
+
+test('a foreign path next to a middle dot is still foreign', () => {
+  assert.deepEqual(excerptOf('`~/viewed/a.ts`·`~/other/.env`'), { mixed: true });
+  assert.deepEqual(excerptOf('~/·/home/u/other/.env'), { mixed: true });
+  assert.deepEqual(excerptOf('「~/viewed/a.ts」、「~/other/.env」'), { mixed: true });
+});

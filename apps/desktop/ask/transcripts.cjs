@@ -235,7 +235,9 @@ const under = (p, r) => p === r || p.startsWith(r === '/' ? '/' : r + '/');
 // 경로 토막의 시작(접은 글에서 찾는다). 별칭은 홈으로 펼친다
 const ALIASES = ['~/', '$home/', '${home}/', '"$home"/', '"${home}"/'];
 const QUOTES = '"\'`';
-const STOPS = /[\s"`]/g;   // 따옴표 없는 토막이 끝나는 글자
+// 따옴표 없는 토막이 끝나는 글자 — 공백·"·` 와, 글 속 구분에 쓰는 가운뎃점·한중일 구두점·따옴표·괄호(경로 글자가 아니다)
+const STOP_CJK = '·・、，。“”‘’「」『』（）《》';
+const STOPS = new RegExp(`[\\s"\`${STOP_CJK}]`, 'g');
 const SPACE = /\s/;
 const TRAIL = ".,;:!?)]}>'";   // 토막 끝에서만 뗀다(정규식 [..]+$ 는 긴 토막에서 되짚기가 제곱으로 는다)
 const TOKEN_MAX = 4096;        // 토막마다 앞 4096자만 본다
@@ -252,6 +254,7 @@ function pathJudge(ctx, resolve) {
   if (home === null || home === '/') return () => true;
   const fh = fold(home);
   const allowed = [...(ctx.roots || []), ...(ctx.allowDirs || [])].map(absNorm).filter((a) => a !== null).map(fold);
+  const rootsFolded = (ctx.roots || []).map(absNorm).filter((a) => a !== null).map(fold);
   // '/.'·'//' 가 없으면 posix 정규화는 그대로다 — 긴 토막이 많을 때 그만큼 아낀다
   const norm = (t) => trimSlash(t.includes('/.') || t.includes('//') ? path.posix.normalize(t) : t);
   // lowTok = 접은 토막, srcTok = resolve 에 넘길 원래 글자 토막. 정규화는 접기와 순서를 바꿔도 같다('/'·'.' 은 안 바뀐다)
@@ -265,6 +268,7 @@ function pathJudge(ctx, resolve) {
     const fr = r === n ? fn : fold(r);   // 안 바뀌었으면 접은 꼴은 fn 그대로
     if (!under(fn, fh) && !under(fr, fh)) return false;   // 홈 밖 — 판정 대상이 아니다(spec §6)
     if (fr === fh) return false;                          // 홈 자체
+    if (rootsFolded.some((r) => under(r, fr))) return false;   // 루트의 조상(홈과 루트 사이 폴더)은 다른 프로젝트가 아니다
     return !allowed.some((a) => under(fr, a));
   };
   // 홈 아래 루트·허용 폴더의 '홈 뒤' 부분 — 시작 자리에서 통째로 맞춰 본다(긴 것부터)
@@ -287,7 +291,7 @@ function pathJudge(ctx, resolve) {
     for (let i = n - 1; i >= 0; i--) nextStop[i] = isStop[i] ? i : nextStop[i + 1];
     const keep = new Int32Array(n + 1);
     for (let i = 0; i < n; i++) keep[i + 1] = TRAIL.includes(low[i]) ? keep[i] : i + 1;
-    const boundary = (i) => i >= n || low[i] === '/' || SPACE.test(low[i]) || TRAIL.includes(low[i]);
+    const boundary = (i) => i >= n || low[i] === '/' || SPACE.test(low[i]) || TRAIL.includes(low[i]) || STOP_CJK.includes(low[i]);
     // 시작 at 의 토막 [at, end) 를 판정한다(from 앞은 통째로 읽은 루트라 뗄 글자가 아니다)
     const verdict = (at, k, body, from, end) => {
       const cut = Math.max(Math.min(from, end), keep[end]);

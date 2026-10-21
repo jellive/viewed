@@ -229,3 +229,223 @@ test('an edit made through a symlinked path counts as the same file (same resolv
   const r = await S.findAuthoring(args(m));
   assert.equal(r.found, true);
 });
+
+// ---- fix round 1 ----
+const readTool = (sess, file, content, at) => {
+  const tid = `toolu_read_${at}`;
+  sess.out.push({ type: 'assistant', timestamp: iso(at), sessionId: sess.out[0].sessionId, cwd: '/x', message: { role: 'assistant', content: [{ type: 'tool_use', id: tid, name: 'Read', input: { file_path: file } }] } });
+  sess.out.push({ type: 'user', timestamp: iso(at + 1), sessionId: sess.out[0].sessionId, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: tid, content }] } });
+};
+const withReads = async (fn) => {
+  const orig = fs.promises.readFile;
+  try { return await fn(orig); } finally { fs.promises.readFile = orig; }
+};
+
+test('F1 a Read through an in-repo symlink to another project never reaches the excerpt', async () => {
+  const m = mk();
+  const other = path.join(m.home, 'company-repo');
+  fs.mkdirSync(other);
+  fs.writeFileSync(path.join(other, 'secret.txt'), 'x');
+  fs.symlinkSync(path.join(other, 'secret.txt'), path.join(m.repo, 'src', 'evil.txt'));
+  const a = session('aaaaaaaa-1111');
+  a.human('PROMPT', 0);
+  readTool(a, path.join(m.repo, 'src', 'evil.txt'), 'TOP-SECRET-OTHER-PROJECT-CONTENT', 1);
+  a.edit(m.file, LINE, 5);
+  write(path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl'), a.out);
+  const r = await S.findAuthoring(args(m));
+  assert.ok(r.found === false || !r.excerpt.includes('TOP-SECRET-OTHER-PROJECT-CONTENT'));
+  assert.equal(r.found, true);
+  assert.doesNotMatch(r.excerpt, /evil\.txt/);
+});
+
+test('F2 a parent human prompt that names another project makes the subagent excerpt mixed', async () => {
+  const m = mk();
+  const parent = session('pppppppp-9999');
+  parent.human(`look at ${path.join(m.home, 'company-repo', '.env')} too`, 0); parent.agent('abc123', 2);
+  write(path.join(m.store, 'proj', 'pppppppp-9999.jsonl'), parent.out);
+  const sub = session('pppppppp-9999', { sidechain: true });
+  sub.human('BRIEF', 3); sub.edit(m.file, LINE, 5);
+  write(path.join(m.store, 'proj', 'pppppppp-9999', 'subagents', 'agent-abc123.jsonl'), sub.out);
+  assert.deepEqual(await S.findAuthoring(args(m)), { found: false, reason: 'mixed' });
+});
+
+test('F3 a subagent edit that comes before its brief gives no-human, not an empty excerpt', async () => {
+  const m = mk();
+  const sub = session('pppppppp-9999', { sidechain: true });
+  sub.edit(m.file, LINE, 1); sub.human('LATE-BRIEF', 9);
+  write(path.join(m.store, 'proj', 'pppppppp-9999', 'subagents', 'agent-abc123.jsonl'), sub.out);
+  assert.deepEqual(await S.findAuthoring(args(m)), { found: false, reason: 'no-human' });
+  const none = session('pppppppp-8888', { sidechain: true });
+  none.edit(m.file, LINE, 1);
+  fs.rmSync(path.join(m.store, 'proj', 'pppppppp-9999'), { recursive: true });
+  write(path.join(m.store, 'proj', 'pppppppp-8888', 'subagents', 'agent-abc123.jsonl'), none.out);
+  assert.deepEqual(await S.findAuthoring(args(m)), { found: false, reason: 'no-human' });
+});
+
+test('F4 a symlinked alias folder does not link a subagent to the wrong parent', async () => {
+  const m = mk();
+  const real = session('real-parent');
+  real.human('REAL-PARENT-PROMPT', 0); real.agent('abc123', 2);
+  write(path.join(m.store, 'proj', 'real-parent.jsonl'), real.out);
+  const decoy = session('alias-parent');
+  decoy.human('DECOY-PROMPT', 0); decoy.agent('abc123', 2);
+  write(path.join(m.store, 'proj', 'alias-parent.jsonl'), decoy.out);
+  const sub = session('real-parent', { sidechain: true });
+  sub.human('BRIEF', 3); sub.edit(m.file, LINE, 5);
+  write(path.join(m.store, 'proj', 'real-parent', 'subagents', 'agent-abc123.jsonl'), sub.out);
+  fs.symlinkSync(path.join(m.store, 'proj', 'real-parent'), path.join(m.store, 'proj', 'alias-parent'));
+  const r = await S.findAuthoring(args(m));
+  assert.equal(r.found, true);
+  assert.equal(r.sessionId, 'real-parent');
+  assert.match(r.excerpt, /REAL-PARENT-PROMPT/);
+  assert.doesNotMatch(r.excerpt, /DECOY-PROMPT/);
+});
+
+test('F4 a parent whose entries carry another session id is not trusted', async () => {
+  const m = mk();
+  const parent = session('some-other-session');
+  parent.human('WRONG-PARENT-PROMPT', 0); parent.agent('abc123', 2);
+  write(path.join(m.store, 'proj', 'pppppppp-9999.jsonl'), parent.out);
+  const sub = session('pppppppp-9999', { sidechain: true });
+  sub.human('BRIEF', 3); sub.edit(m.file, LINE, 5);
+  write(path.join(m.store, 'proj', 'pppppppp-9999', 'subagents', 'agent-abc123.jsonl'), sub.out);
+  const r = await S.findAuthoring(args(m));
+  assert.equal(r.found, true);
+  assert.doesNotMatch(r.excerpt, /WRONG-PARENT-PROMPT/);
+});
+
+test('F5 a deadline passed mid-scan or right after the last file gives timeout', async () => {
+  const m = mk();
+  for (const sid of ['aaaaaaaa-1', 'bbbbbbbb-2', 'cccccccc-3']) {
+    const a = session(sid);
+    a.human('PROMPT', 0); a.edit(m.file, LINE, 2);
+    write(path.join(m.store, 'proj', `${sid}.jsonl`), a.out);
+  }
+  for (const [label, keep] of [['mid-scan', 3], ['after last', 1]]) {
+    if (label === 'after last') for (const sid of ['bbbbbbbb-2', 'cccccccc-3']) fs.rmSync(path.join(m.store, 'proj', `${sid}.jsonl`));
+    let t = 1000;
+    const r = await withReads(async (orig) => {
+      let n = 0;
+      fs.promises.readFile = async (...x) => { const b = await orig.apply(fs.promises, x); if (++n >= 1) t = 5000; return b; };
+      return S.findAuthoring(args(m, { now: () => t, deadline: 2000 }));
+    });
+    assert.deepEqual(r, { found: false, reason: 'timeout' }, `${label} ${keep}`);
+  }
+});
+
+test('F5 an unreadable file is skipped without throwing', { skip: typeof process.getuid === 'function' && process.getuid() === 0 }, async () => {
+  const m = mk();
+  const a = session('aaaaaaaa-1111');
+  a.human('PROMPT', 0); a.edit(m.file, LINE, 2);
+  write(path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl'), a.out);
+  const bad = path.join(m.store, 'proj', 'zzzz-locked.jsonl');
+  fs.writeFileSync(bad, LINE);
+  fs.chmodSync(bad, 0);
+  try { assert.equal((await S.findAuthoring(args(m))).found, true); } finally { fs.chmodSync(bad, 0o600); }
+});
+
+test('F5 the deadline is checked while collecting files', async () => {
+  const m = mk();
+  const a = session('aaaaaaaa-1111');
+  a.human('PROMPT', 0); a.edit(m.file, LINE, 2);
+  write(path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl'), a.out);
+  let calls = 0;
+  // 첫 확인(시작)은 통과, 그 뒤로는 마감 지남 — 수집 중에 걸려야 한다
+  const r = await S.findAuthoring(args(m, { deadline: 2000, now: () => (++calls <= 1 ? 1000 : 5000) }));
+  assert.deepEqual(r, { found: false, reason: 'timeout' });
+});
+
+test('F6 files over the size cap are skipped and counted, not read', async () => {
+  const m = mk();
+  const a = session('aaaaaaaa-1111');
+  a.human('PROMPT', 0); a.edit(m.file, LINE, 2);
+  write(path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl'), a.out);
+  const stats = {};
+  const r = await S.findAuthoring(args(m, { maxFileBytes: 10, stats }));
+  assert.deepEqual(r, { found: false, reason: 'not-found' });
+  assert.equal(stats.skipped, 1);
+  // 기본 상한: 희소 파일 65MiB 는 읽지 않는다
+  const big = path.join(m.store, 'proj', 'big.jsonl');
+  fs.closeSync(fs.openSync(big, 'w')); fs.truncateSync(big, 65 * 1024 * 1024);
+  const st2 = {};
+  let bigReads = 0;
+  await withReads(async (orig) => {
+    fs.promises.readFile = async (p, ...x) => { if (String(p) === big) bigReads++; return orig.call(fs.promises, p, ...x); };
+    assert.equal((await S.findAuthoring(args(m, { stats: st2 }))).found, true);
+  });
+  assert.equal(bigReads, 0);
+  assert.equal(st2.skipped, 1);
+});
+
+test('F6 at most 4 files are read at once', async () => {
+  const m = mk();
+  for (let i = 0; i < 12; i++) write(path.join(m.store, 'proj', `s${i}.jsonl`), [{ type: 'user', message: { content: 'x' } }]);
+  let live = 0;
+  let peak = 0;
+  await withReads(async (orig) => {
+    fs.promises.readFile = async (...x) => { live++; peak = Math.max(peak, live); await new Promise((r) => setTimeout(r, 15)); try { return await orig.apply(fs.promises, x); } finally { live--; } };
+    await S.findAuthoring(args(m));
+  });
+  assert.ok(peak >= 2 && peak <= 4, `peak ${peak}`);
+});
+
+test('F7 a file reached by a symlink to it and by its (symlinked-store) path is read once', async () => {
+  const m = mk();
+  const a = session('aaaaaaaa-1111');
+  a.human('PROMPT', 0); a.edit(m.file, LINE, 2);
+  const f = path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl');
+  write(f, a.out);
+  const viaLink = path.join(m.base, 'storelink');
+  fs.symlinkSync(m.store, viaLink);
+  fs.symlinkSync(f, path.join(m.store, 'proj', 'a-alias.jsonl'));   // 실제 경로를 가리키는 링크
+  const seen = [];
+  await withReads(async (orig) => {
+    fs.promises.readFile = async (p, ...x) => { seen.push(String(p)); return orig.call(fs.promises, p, ...x); };
+    await S.findAuthoring(args(m, { stores: [viaLink] }));
+  });
+  assert.equal(seen.length, 1);
+});
+
+test('F7 equal times are broken by realpath ascending, whatever finishes first', async () => {
+  const m = mk();
+  for (const sid of ['aaaaaaaa-1', 'bbbbbbbb-2']) {
+    const a = session(sid);
+    a.human(`PROMPT-${sid}`, 0); a.edit(m.file, LINE, 2);
+    write(path.join(m.store, 'proj', `${sid}.jsonl`), a.out);
+  }
+  const r = await withReads(async (orig) => {
+    fs.promises.readFile = async (p, ...x) => { if (String(p).includes('aaaaaaaa')) await new Promise((k) => setTimeout(k, 60)); return orig.call(fs.promises, p, ...x); };
+    return S.findAuthoring(args(m));
+  });
+  assert.equal(r.sessionId, 'aaaaaaaa-1');
+});
+
+test('F4 a subagent whose own entries name another session is not tied to the folder parent', async () => {
+  const m = mk();
+  const parent = session('pppppppp-9999');
+  parent.human('FOLDER-PARENT-PROMPT', 0); parent.agent('abc123', 2);
+  write(path.join(m.store, 'proj', 'pppppppp-9999.jsonl'), parent.out);
+  const sub = session('other-sub-session', { sidechain: true });
+  sub.human('BRIEF', 3); sub.edit(m.file, LINE, 5);
+  write(path.join(m.store, 'proj', 'pppppppp-9999', 'subagents', 'agent-abc123.jsonl'), sub.out);
+  const r = await S.findAuthoring(args(m));
+  assert.equal(r.found, true);
+  assert.equal(r.sessionId, 'other-sub-session');
+  assert.doesNotMatch(r.excerpt, /FOLDER-PARENT-PROMPT/);
+});
+
+test('F5 a deadline that passes while the parent file is being read gives timeout', async () => {
+  const m = mk();
+  const parent = session('pppppppp-9999');
+  parent.human('PARENT', 0); parent.agent('abc123', 2);
+  write(path.join(m.store, 'proj', 'pppppppp-9999.jsonl'), parent.out);
+  const sub = session('pppppppp-9999', { sidechain: true });
+  sub.human('BRIEF', 3); sub.edit(m.file, LINE, 5);
+  write(path.join(m.store, 'proj', 'pppppppp-9999', 'subagents', 'agent-abc123.jsonl'), sub.out);
+  let t = 1000;
+  const r = await withReads(async (orig) => {
+    fs.promises.readFile = async (p, ...x) => { const b = await orig.call(fs.promises, p, ...x); if (String(p).endsWith('pppppppp-9999.jsonl')) t = 5000; return b; };
+    return S.findAuthoring(args(m, { now: () => t, deadline: 2000 }));
+  });
+  assert.deepEqual(r, { found: false, reason: 'timeout' });
+});
