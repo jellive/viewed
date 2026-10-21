@@ -453,3 +453,22 @@ test('claude gets the app env by default', async () => {
   if (want.CLAUDE_CONFIG_DIR === '') delete want.CLAUDE_CONFIG_DIR;
   assert.deepEqual(calls.runClaude[0].env, want);
 });
+
+test('the job abort signal reaches claudeVersion, and idle() resolves only after the job has settled', async () => {
+  let sig, release;
+  const { d } = deps({ claudeVersion: (bin, ms, signal) => { sig = signal; return new Promise((res) => { release = res; signal.addEventListener('abort', () => res(null), { once: true }); }); } });
+  const ask = createAsk(d);
+  await ask.idle();   // 아무것도 없으면 바로 풀린다
+  const id = 'q-idle';
+  const p = ask.start(req({ id }));
+  let idled = false;
+  const idle = ask.idle().then(() => { idled = true; });
+  while (!sig) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(sig.aborted, false);
+  ask.cancelAll();
+  assert.equal(sig.aborted, true);
+  assert.deepEqual(await p, { ok: false, error: 'cancelled' });
+  await idle;
+  assert.equal(idled, true);
+  void release;
+});

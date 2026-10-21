@@ -208,6 +208,22 @@ test('claudeVersion has a group deadline: a SIGTERM-ignoring binary gives null i
   } finally { reap(f); if (env0 === undefined) delete process.env.REC; else process.env.REC = env0; }
 });
 
+test('claudeVersion aborts promptly when its signal fires, killing the version process', async () => {
+  const f = fake('echo $$ > "$REC/self"\nsleep 30');
+  const env0 = process.env.REC; process.env.REC = f.rec;
+  const ac = new AbortController();
+  try {
+    const p = C.claudeVersion(f.bin, 5000, ac.signal);
+    assert.equal(await until(() => readPid(path.join(f.rec, 'self')), 3000), true);
+    const pid = readPid(path.join(f.rec, 'self'));
+    const t0 = Date.now();
+    ac.abort();
+    assert.equal(await p, null);
+    assert.ok(Date.now() - t0 < 2500, 'resolved long before the 5 s version timeout');
+    assert.equal(await until(() => !alive(pid), 500), true, 'version process gone');
+  } finally { reap(f); if (env0 === undefined) delete process.env.REC; else process.env.REC = env0; }
+});
+
 test('readResult does not take substrings for login problems', () => {
   assert.equal(C.readResult('', 'upstream timeout after 4010ms').error, 'failed');
   assert.equal(C.readResult('{"is_error":true,"result":"catalog index is corrupt"}', '').error, 'failed');

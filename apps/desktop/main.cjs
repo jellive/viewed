@@ -130,4 +130,13 @@ if (gotLock) app.whenReady().then(() => {
   win.on('closed', () => asker.cancelAll());
   win.loadFile(indexHtml);
 });
+// 종료 전에 진행 중인 질문의 자식 프로세스 정리(SIGTERM → 2 s 뒤 SIGKILL)가 끝나기를 기다린다. 상한 3 s
+let quitting = false;
+app.on('before-quit', (e) => {
+  if (quitting || !asker.active()) return;
+  quitting = true;
+  e.preventDefault();
+  asker.cancelAll();
+  Promise.race([asker.idle(), new Promise((r) => setTimeout(r, 3000))]).then(() => app.quit(), () => app.quit());
+});
 app.on('window-all-closed', () => app.quit());

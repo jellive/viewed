@@ -51,8 +51,8 @@ function cleanEnv(env) {
 }
 
 // runClaude 와 같은 방식(빈 임시 폴더·프로세스 그룹·SIGTERM→SIGKILL)으로 --version 을 읽는다
-async function claudeVersion(bin, timeoutMs = VERSION_TIMEOUT_MS) {
-  const r = await runClaude({ bin, args: ['--version'], stdin: '', timeoutMs, signal: new AbortController().signal, env: cleanEnv(process.env) });
+async function claudeVersion(bin, timeoutMs = VERSION_TIMEOUT_MS, signal) {
+  const r = await runClaude({ bin, args: ['--version'], stdin: '', timeoutMs, signal: signal || new AbortController().signal, env: cleanEnv(process.env) });
   if (!r.ok) return null;
   const m = /\d+\.\d+\.\d+/.exec(r.stdout);
   return m ? m[0] : null;

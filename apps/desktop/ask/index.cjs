@@ -158,7 +158,7 @@ function createAsk(deps) {
     if (!bin) throw new Stop({ ok: false, error: 'not-installed' });
     let ver = versions.get(bin);
     if (ver === undefined) {
-      ver = await within(() => deps.claudeVersion(bin, Math.min(VERSION_TIMEOUT_MS, left())));
+      ver = await within(() => deps.claudeVersion(bin, Math.min(VERSION_TIMEOUT_MS, left()), job.ac.signal));
       if (!ver) { if (late()) throw TIMEOUT; throw new Stop({ ok: false, error: 'not-installed' }); }
       versions.set(bin, ver);
     }
@@ -201,8 +201,18 @@ function createAsk(deps) {
     return { ok: true, answer: res.answer, source, account: deps.accountEmail(env, realHome) };
   }
 
+  // 진행 중인 start 호출(대기 포함)이 하나도 없을 때 풀리는 약속 — 종료 전에 자식 프로세스 정리를 기다리는 데 쓴다
+  let inflight = 0;
+  let idleWaiters = [];
+  const idle = () => (inflight === 0 ? Promise.resolve() : new Promise((res) => idleWaiters.push(res)));
   async function start(r) {
     if (!valid(r) || jobs.has(r.id)) return { ok: false, error: 'invalid' };
+    inflight++;
+    try { return await startJob(r); } finally {
+      if (--inflight === 0) { const w = idleWaiters; idleWaiters = []; for (const f of w) f(); }
+    }
+  }
+  async function startJob(r) {
     const job = { ac: new AbortController(), wake: null };
     jobs.set(r.id, job);
     progress(r.id, 'queued');
@@ -225,7 +235,7 @@ function createAsk(deps) {
     }
   }
 
-  return { start, cancel, cancelAll };
+  return { start, cancel, cancelAll, idle, active: () => inflight > 0 };
 }
 
 module.exports = { createAsk };
