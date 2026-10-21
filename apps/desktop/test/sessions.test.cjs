@@ -140,14 +140,14 @@ test('two store paths that resolve to one folder are read once', async () => {
   const stores = S.sessionStores({ CLAUDE_CONFIG_DIR: cfg }, m.home);
   assert.deepEqual(stores, [m.store]);
   // 저장소를 두 경로로 직접 줘도 파일은 한 번만 읽는다
-  const orig = fs.promises.readFile;
   const seen = [];
-  fs.promises.readFile = async (p, ...rest) => { seen.push(String(p)); return orig.call(fs.promises, p, ...rest); };
-  try {
+  await withOpen({ onOpen: (p) => { seen.push(p); } }, async () => {
     const r = await S.findAuthoring(args(m, { stores: [m.store, path.join(cfg, 'projects')] }));
     assert.equal(r.found, true);
-  } finally { fs.promises.readFile = orig; }
-  assert.equal(seen.filter((p) => p.endsWith('aaaaaaaa-1111.jsonl')).length, 1);
+  });
+  // 훑기는 파일마다 거르기 1번 + 후보 파일 1번 읽는다 — 같은 파일이 두 경로로 두 번 읽히면 4번이 된다
+  assert.equal(new Set(seen.filter((p) => p.endsWith('aaaaaaaa-1111.jsonl'))).size, 1);
+  assert.ok(seen.filter((p) => p.endsWith('aaaaaaaa-1111.jsonl')).length <= 3);
 });
 
 test('sessionStores ignores an empty CLAUDE_CONFIG_DIR and missing folders', () => {
@@ -189,12 +189,10 @@ test('a short line gives short-line without reading', async () => {
   const a = session('aaaaaaaa-1111');
   a.human('PROMPT', 0); a.edit(m.file, 'return;', 2);
   write(path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl'), a.out);
-  const orig = fs.promises.readFile;
   let reads = 0;
-  fs.promises.readFile = async (...x) => { reads++; return orig.apply(fs.promises, x); };
-  try {
+  await withOpen({ onOpen: () => { reads++; } }, async () => {
     assert.deepEqual(await S.findAuthoring(args(m, { text: '  return;  ' })), { found: false, reason: 'short-line' });
-  } finally { fs.promises.readFile = orig; }
+  });
   assert.equal(reads, 0);
 });
 
@@ -236,9 +234,17 @@ const readTool = (sess, file, content, at) => {
   sess.out.push({ type: 'assistant', timestamp: iso(at), sessionId: sess.out[0].sessionId, cwd: '/x', message: { role: 'assistant', content: [{ type: 'tool_use', id: tid, name: 'Read', input: { file_path: file } }] } });
   sess.out.push({ type: 'user', timestamp: iso(at + 1), sessionId: sess.out[0].sessionId, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: tid, content }] } });
 };
-const withReads = async (fn) => {
-  const orig = fs.promises.readFile;
-  try { return await fn(orig); } finally { fs.promises.readFile = orig; }
+// 파일을 여는/닫는 순간에 끼어든다 — 기록 읽기는 fs.promises.open 으로만 한다(스트리밍)
+const withOpen = async ({ onOpen, onClose } = {}, fn) => {
+  const orig = fs.promises.open;
+  fs.promises.open = async (p, ...x) => {
+    if (onOpen) await onOpen(String(p));
+    const fh = await orig.call(fs.promises, p, ...x);
+    const close = fh.close.bind(fh);
+    fh.close = async () => { try { return await close(); } finally { if (onClose) await onClose(String(p)); } };
+    return fh;
+  };
+  try { return await fn(); } finally { fs.promises.open = orig; }
 };
 
 test('F1 a Read through an in-repo symlink to another project never reaches the excerpt', async () => {
@@ -321,16 +327,15 @@ test('F5 a deadline passed mid-scan or right after the last file gives timeout',
     a.human('PROMPT', 0); a.edit(m.file, LINE, 2);
     write(path.join(m.store, 'proj', `${sid}.jsonl`), a.out);
   }
-  for (const [label, keep] of [['mid-scan', 3], ['after last', 1]]) {
-    if (label === 'after last') for (const sid of ['bbbbbbbb-2', 'cccccccc-3']) fs.rmSync(path.join(m.store, 'proj', `${sid}.jsonl`));
-    let t = 1000;
-    const r = await withReads(async (orig) => {
-      let n = 0;
-      fs.promises.readFile = async (...x) => { const b = await orig.apply(fs.promises, x); if (++n >= 1) t = 5000; return b; };
-      return S.findAuthoring(args(m, { now: () => t, deadline: 2000 }));
-    });
-    assert.deepEqual(r, { found: false, reason: 'timeout' }, `${label} ${keep}`);
-  }
+  let t = 1000;
+  // 첫 파일을 연 뒤 시계가 마감을 넘는다
+  let r = await withOpen({ onOpen: () => { t = 5000; } }, () => S.findAuthoring(args(m, { now: () => t, deadline: 2000 })));
+  assert.deepEqual(r, { found: false, reason: 'timeout' }, 'mid-scan');
+  for (const sid of ['bbbbbbbb-2', 'cccccccc-3']) fs.rmSync(path.join(m.store, 'proj', `${sid}.jsonl`));
+  t = 1000;
+  // 마지막 파일을 다 읽고 닫는 순간 마감을 넘는다(읽기 중에는 아직 아님)
+  r = await withOpen({ onClose: () => { t = 5000; } }, () => S.findAuthoring(args(m, { now: () => t, deadline: 2000 })));
+  assert.deepEqual(r, { found: false, reason: 'timeout' }, 'after last');
 });
 
 test('F5 an unreadable file is skipped without throwing', { skip: typeof process.getuid === 'function' && process.getuid() === 0 }, async () => {
@@ -355,37 +360,13 @@ test('F5 the deadline is checked while collecting files', async () => {
   assert.deepEqual(r, { found: false, reason: 'timeout' });
 });
 
-test('F6 files over the size cap are skipped and counted, not read', async () => {
-  const m = mk();
-  const a = session('aaaaaaaa-1111');
-  a.human('PROMPT', 0); a.edit(m.file, LINE, 2);
-  write(path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl'), a.out);
-  const stats = {};
-  const r = await S.findAuthoring(args(m, { maxFileBytes: 10, stats }));
-  assert.deepEqual(r, { found: false, reason: 'not-found' });
-  assert.equal(stats.skipped, 1);
-  // 기본 상한: 희소 파일 65MiB 는 읽지 않는다
-  const big = path.join(m.store, 'proj', 'big.jsonl');
-  fs.closeSync(fs.openSync(big, 'w')); fs.truncateSync(big, 65 * 1024 * 1024);
-  const st2 = {};
-  let bigReads = 0;
-  await withReads(async (orig) => {
-    fs.promises.readFile = async (p, ...x) => { if (String(p) === big) bigReads++; return orig.call(fs.promises, p, ...x); };
-    assert.equal((await S.findAuthoring(args(m, { stats: st2 }))).found, true);
-  });
-  assert.equal(bigReads, 0);
-  assert.equal(st2.skipped, 1);
-});
-
-test('F6 at most 4 files are read at once', async () => {
+test('F6 at most 4 files are open at once', async () => {
   const m = mk();
   for (let i = 0; i < 12; i++) write(path.join(m.store, 'proj', `s${i}.jsonl`), [{ type: 'user', message: { content: 'x' } }]);
   let live = 0;
   let peak = 0;
-  await withReads(async (orig) => {
-    fs.promises.readFile = async (...x) => { live++; peak = Math.max(peak, live); await new Promise((r) => setTimeout(r, 15)); try { return await orig.apply(fs.promises, x); } finally { live--; } };
-    await S.findAuthoring(args(m));
-  });
+  await withOpen({ onOpen: async () => { live++; peak = Math.max(peak, live); await new Promise((r) => setTimeout(r, 15)); }, onClose: () => { live--; } },
+    () => S.findAuthoring(args(m)));
   assert.ok(peak >= 2 && peak <= 4, `peak ${peak}`);
 });
 
@@ -399,11 +380,9 @@ test('F7 a file reached by a symlink to it and by its (symlinked-store) path is 
   fs.symlinkSync(m.store, viaLink);
   fs.symlinkSync(f, path.join(m.store, 'proj', 'a-alias.jsonl'));   // 실제 경로를 가리키는 링크
   const seen = [];
-  await withReads(async (orig) => {
-    fs.promises.readFile = async (p, ...x) => { seen.push(String(p)); return orig.call(fs.promises, p, ...x); };
-    await S.findAuthoring(args(m, { stores: [viaLink] }));
-  });
-  assert.equal(seen.length, 1);
+  await withOpen({ onOpen: (p) => { seen.push(p); } }, () => S.findAuthoring(args(m, { stores: [viaLink] })));
+  assert.equal(new Set(seen.map((x) => fs.realpathSync(x))).size, 1);   // 한 파일(실제 경로)만 연다
+  assert.ok(seen.length <= 3);           // 거르기 + 판정 + 창 읽기 — 같은 파일이 두 번 닿았다면 6
 });
 
 test('F7 equal times are broken by realpath ascending, whatever finishes first', async () => {
@@ -413,10 +392,7 @@ test('F7 equal times are broken by realpath ascending, whatever finishes first',
     a.human(`PROMPT-${sid}`, 0); a.edit(m.file, LINE, 2);
     write(path.join(m.store, 'proj', `${sid}.jsonl`), a.out);
   }
-  const r = await withReads(async (orig) => {
-    fs.promises.readFile = async (p, ...x) => { if (String(p).includes('aaaaaaaa')) await new Promise((k) => setTimeout(k, 60)); return orig.call(fs.promises, p, ...x); };
-    return S.findAuthoring(args(m));
-  });
+  const r = await withOpen({ onOpen: async (p) => { if (p.includes('aaaaaaaa')) await new Promise((k) => setTimeout(k, 60)); } }, () => S.findAuthoring(args(m)));
   assert.equal(r.sessionId, 'aaaaaaaa-1');
 });
 
@@ -443,9 +419,161 @@ test('F5 a deadline that passes while the parent file is being read gives timeou
   sub.human('BRIEF', 3); sub.edit(m.file, LINE, 5);
   write(path.join(m.store, 'proj', 'pppppppp-9999', 'subagents', 'agent-abc123.jsonl'), sub.out);
   let t = 1000;
-  const r = await withReads(async (orig) => {
-    fs.promises.readFile = async (p, ...x) => { const b = await orig.call(fs.promises, p, ...x); if (String(p).endsWith('pppppppp-9999.jsonl')) t = 5000; return b; };
-    return S.findAuthoring(args(m, { now: () => t, deadline: 2000 }));
-  });
+  let parentOpens = 0;   // 첫 번째는 훑기의 거르기, 두 번째가 부모 읽기
+  const r = await withOpen({ onOpen: (p) => { if (p.endsWith(`${path.sep}pppppppp-9999.jsonl`) && ++parentOpens === 2) t = 5000; } }, () => S.findAuthoring(args(m, { now: () => t, deadline: 2000 })));
+  assert.equal(parentOpens, 2);
   assert.deepEqual(r, { found: false, reason: 'timeout' });
+});
+
+// ---- fix round 2: bounded-memory streaming ----
+const filler = (sess, n, at0, text = 'filler') => { for (let i = 0; i < n; i++) sess.say(`${text} ${i}`, at0 + i); };
+const SMALL = { chunkBytes: 256, lineMax: 4096, windowLineMax: 2048 };
+
+test('P7 the newest writer wins even when its file is big (no size skipping)', async () => {
+  const m = mk();
+  const old = session('aaaaaaaa-1111');
+  old.human('OLD-PROMPT', 0); old.edit(m.file, LINE, 2);
+  write(path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl'), old.out);
+  const neu = session('bbbbbbbb-2222');
+  filler(neu, 400, 0);
+  neu.human('NEW-PROMPT', 1000); neu.edit(m.file, LINE, 1002);
+  filler(neu, 3000, 1100);
+  const f = path.join(m.store, 'proj', 'bbbbbbbb-2222.jsonl');
+  write(f, neu.out);
+  assert.ok(fs.statSync(f).size > 200000);
+  const stats = {};
+  const r = await S.findAuthoring(args(m, { ...SMALL, stats }));
+  assert.equal(r.found, true);
+  assert.equal(r.sessionId, 'bbbbbbbb-2222');
+  assert.match(r.excerpt, /NEW-PROMPT/);
+  assert.doesNotMatch(r.excerpt, /OLD-PROMPT/);
+  // 메모리: 한 번에 잡는 버퍼가 파일 크기에 비례하지 않는다
+  assert.ok(stats.peakBytes < fs.statSync(f).size / 3, `peak ${stats.peakBytes}`);
+});
+
+test('a needle that straddles a chunk boundary is found at every offset', async () => {
+  const m = mk();
+  for (let pad = 0; pad < 40; pad += 7) {
+    const a = session('aaaaaaaa-1111');
+    a.human('PROMPT', 0); a.say('x'.repeat(pad), 1); a.edit(m.file, LINE, 2);
+    write(path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl'), a.out);
+    for (const chunkBytes of [64, 97, 128]) {
+      const r = await S.findAuthoring(args(m, { chunkBytes, lineMax: 1 << 20, windowLineMax: 1 << 20 }));
+      assert.equal(r.found, true, `pad ${pad} chunk ${chunkBytes}`);
+    }
+  }
+});
+
+test('a parent bigger than any window is still linked, with bounded memory', async () => {
+  const m = mk();
+  const parent = session('pppppppp-9999');
+  filler(parent, 300, 0);
+  parent.human('PARENT-PROMPT', 400); parent.agent('abc123', 402);
+  filler(parent, 3000, 500);
+  const pf = path.join(m.store, 'proj', 'pppppppp-9999.jsonl');
+  write(pf, parent.out);
+  const sub = session('pppppppp-9999', { sidechain: true });
+  sub.human('BRIEF', 403); sub.edit(m.file, LINE, 405);
+  write(path.join(m.store, 'proj', 'pppppppp-9999', 'subagents', 'agent-abc123.jsonl'), sub.out);
+  const stats = {};
+  const r = await S.findAuthoring(args(m, { ...SMALL, stats }));
+  assert.equal(r.found, true);
+  assert.equal(r.subagent, true);
+  assert.match(r.excerpt, /PARENT-PROMPT/);
+  assert.ok(stats.peakBytes < fs.statSync(pf).size / 3, `peak ${stats.peakBytes}`);
+});
+
+test('a line over windowLineMax in the excerpt window gives mixed', async () => {
+  const m = mk();
+  const a = session('aaaaaaaa-1111');
+  a.human('PROMPT', 0); a.say('y'.repeat(3000), 1); a.edit(m.file, LINE, 2);
+  write(path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl'), a.out);
+  assert.deepEqual(await S.findAuthoring(args(m, SMALL)), { found: false, reason: 'mixed' });
+});
+
+test('a needle line over lineMax gives unreadable', async () => {
+  const m = mk();
+  const a = session('aaaaaaaa-1111');
+  a.human('PROMPT', 0); a.say(`${'z'.repeat(5000)} ${LINE}`, 1);
+  write(path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl'), a.out);
+  assert.deepEqual(await S.findAuthoring(args(m, SMALL)), { found: false, reason: 'unreadable' });
+  // 같은 길이라도 줄이 안 들어 있으면 그냥 못 찾은 것
+  const b = session('bbbbbbbb-2222');
+  b.human('PROMPT', 0); b.say('z'.repeat(5000), 1);
+  fs.rmSync(path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl'));
+  write(path.join(m.store, 'proj', 'bbbbbbbb-2222.jsonl'), b.out);
+  assert.deepEqual(await S.findAuthoring(args(m, SMALL)), { found: false, reason: 'not-found' });
+});
+
+test('a subagent id comes from the real path, not the alias it was reached by', async () => {
+  const m = mk();
+  const real = session('real-parent');
+  real.human('REAL-PARENT-PROMPT', 0); real.agent('abc123', 2);
+  write(path.join(m.store, 'proj', 'real-parent.jsonl'), real.out);
+  const sub = session('real-parent', { sidechain: true });
+  sub.human('BRIEF', 3); sub.edit(m.file, LINE, 5);
+  write(path.join(m.store, 'proj', 'real-parent', 'subagents', 'agent-abc123.jsonl'), sub.out);
+  const alias = path.join(m.base, 'alias-file.jsonl');   // 구조가 다른 이름의 링크로 닿아도
+  fs.symlinkSync(path.join(m.store, 'proj', 'real-parent', 'subagents', 'agent-abc123.jsonl'), alias);
+  const linkStore = path.join(m.base, 'linkstore');
+  fs.mkdirSync(linkStore);
+  fs.symlinkSync(alias, path.join(linkStore, 'x.jsonl'));
+  const r = await S.findAuthoring(args(m, { stores: [linkStore] }));
+  assert.equal(r.found, true);
+  assert.equal(r.subagent, true);
+  assert.match(r.excerpt, /REAL-PARENT-PROMPT/);
+});
+
+test('a needle that straddles a chunk boundary in every occurrence is still found (the cheap pre-pass handles it)', async () => {
+  const m = mk();
+  const build = (pad) => {
+    const a = session('aaaaaaaa-1111');
+    a.human('PROMPT', 0); a.say('x'.repeat(pad), 1); a.edit(m.file, LINE, 2);
+    return a.out.map((e) => JSON.stringify(e)).join('\n') + '\n';
+  };
+  const at = (buf, from) => Buffer.from(buf).indexOf(LINE, from);
+  const t0 = build(0);
+  const x0 = at(t0, 0);
+  const d = at(t0, x0 + 1) - x0;   // 같은 줄이 다시 나오는 곳까지(편집 입력 → 결과 패치)
+  assert.ok(d > LINE.length + 1);
+  const pad = ((d - 10 - (x0 % d)) % d + d) % d;
+  const file = path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl');
+  fs.writeFileSync(file, build(pad));
+  const raw = fs.readFileSync(file);
+  assert.equal((at(raw, 0) % d), d - 10);   // 첫 등장이 청크 경계(d 의 배수)를 가른다
+  const r = await S.findAuthoring(args(m, { chunkBytes: d, lineMax: 1 << 20, windowLineMax: 1 << 20 }));
+  assert.equal(r.found, true);
+});
+
+test('a window over windowTotalMax gives mixed', async () => {
+  const m = mk();
+  const a = session('aaaaaaaa-1111');
+  a.human('PROMPT', 0); a.edit(m.file, LINE, 2);
+  write(path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl'), a.out);
+  assert.deepEqual(await S.findAuthoring(args(m, { windowTotalMax: 50 })), { found: false, reason: 'mixed' });
+});
+
+test('an unreadable first user line means no brief is guessed from a later one', async () => {
+  const m = mk();
+  const sub = session('pppppppp-9999', { sidechain: true });
+  sub.human('B'.repeat(5000), 3); sub.human('SECOND-USER-LINE', 4); sub.edit(m.file, LINE, 5);
+  write(path.join(m.store, 'proj', 'pppppppp-9999', 'subagents', 'agent-abc123.jsonl'), sub.out);
+  assert.deepEqual(await S.findAuthoring(args(m, { ...SMALL, windowLineMax: 100000 })), { found: false, reason: 'no-human' });
+});
+
+test('an unreadable spawn result in the parent does not let a later mention pick another prompt', async () => {
+  const m = mk();
+  const parent = session('pppppppp-9999');
+  parent.human('HUMAN-ONE', 0);
+  const tid = 'toolu_big';
+  parent.out.push({ type: 'assistant', timestamp: iso(1), sessionId: 'pppppppp-9999', message: { role: 'assistant', content: [{ type: 'tool_use', id: tid, name: 'Agent', input: { prompt: 'x' } }] } });
+  parent.out.push({ type: 'user', timestamp: iso(2), sessionId: 'pppppppp-9999', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: tid, content: `${'q'.repeat(5000)}\nagentId: abc123 (x)` }] } });
+  parent.human('HUMAN-TWO', 3); parent.agent('abc123', 4);   // 다시 언급한 호출
+  write(path.join(m.store, 'proj', 'pppppppp-9999.jsonl'), parent.out);
+  const sub = session('pppppppp-9999', { sidechain: true });
+  sub.human('BRIEF', 5); sub.edit(m.file, LINE, 7);
+  write(path.join(m.store, 'proj', 'pppppppp-9999', 'subagents', 'agent-abc123.jsonl'), sub.out);
+  const r = await S.findAuthoring(args(m, { ...SMALL, windowLineMax: 100000 }));
+  assert.equal(r.found, true);
+  assert.doesNotMatch(r.excerpt, /HUMAN-/);
 });

@@ -6,7 +6,13 @@ const T = require('./transcripts.cjs');
 // 세션 기록은 읽기만 한다. 원칙: 틀린 세션보다 못 찾는 게 낫다 — 애매하면 found:false.
 
 const READ_POOL = 4;
-const MAX_FILE_BYTES = 64 * 1024 * 1024;   // 이보다 큰 기록은 건너뛴다(메모리) — 세고 보고한다
+// 기록은 통째로 읽지 않는다(수백 MiB 짜리가 있다). 청크로 흘려 읽고, 줄·창 크기에 상한을 둔다. 모두 a.* 로 덮을 수 있다
+const CHUNK = 4 * 1024 * 1024;
+const LINE_MAX = 16 * 1024 * 1024;         // 이보다 긴 줄은 파싱하지 않는다 — 줄에 찾는 글이 들어 있으면 'unreadable'
+const WINDOW_LINE_MAX = 1024 * 1024;       // 발췌 창 안에 이보다 긴 줄이 있으면 검사할 수 없으니 'mixed'
+const WINDOW_TOTAL_MAX = 32 * 1024 * 1024; // 창 전체 바이트 상한(넘으면 같은 이유로 'mixed')
+const LOOK = T.EXCERPT.lookback;
+const LATE = Symbol('late');
 const nonBlank = (s) => s.replace(/\s/g, '').length;
 
 const isDir = (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
@@ -82,21 +88,213 @@ async function collect(stores, late) {
   return files;
 }
 
+// --- 흘려 읽기 -----------------------------------------------------------------------------------------------------------
+
+const has = (buf, needles) => needles.some((n) => buf.indexOf(n) !== -1);
+const lastBytes = (buf, k) => (k <= 0 ? Buffer.alloc(0) : Buffer.from(buf.length > k ? buf.subarray(buf.length - k) : buf));
+const bump = (o, n) => { if (n > o.stats.peakBytes) o.stats.peakBytes = n; };
+
+// 0단계: 청크 경계를 걸치는 것까지 포함해 needle 이 한 번이라도 나오나. 메모리는 청크 하나. true | false | LATE
+async function prefilter(file, needles, o) {
+  const fh = await fs.promises.open(file, 'r');
+  try {
+    const buf = Buffer.allocUnsafe(o.chunk);
+    const nk = Math.max(...needles.map((n) => n.length)) - 1;
+    bump(o, o.chunk);
+    let carry = Buffer.alloc(0);
+    for (let pos = 0; ;) {
+      if (o.late()) return LATE;
+      const { bytesRead } = await fh.read(buf, 0, buf.length, pos);
+      if (bytesRead === 0) return false;
+      pos += bytesRead;
+      const view = buf.subarray(0, bytesRead);
+      if (has(view, needles)) return true;
+      if (carry.length && has(Buffer.concat([carry, view.subarray(0, Math.min(bytesRead, nk))]), needles)) return true;
+      carry = lastBytes(carry.length && bytesRead < nk ? Buffer.concat([carry, view]) : view, nk);
+    }
+  } finally { await fh.close(); }
+}
+
+// 줄 단위로 흘린다. onLine(idx, line, hit, off, len) — 동기. line 은 그 줄(개행 제외) 또는, lineMax 를 넘으면 null.
+// hit = 그 줄에 needle 이 들었나(청크 경계를 걸쳐도). off/len = 파일 안 바이트 위치. 끝까지 읽으면 undefined, 마감이면 LATE
+async function eachLine(file, needles, o, onLine) {
+  const fh = await fs.promises.open(file, 'r');
+  try {
+    const buf = Buffer.allocUnsafe(o.chunk);
+    const nk = Math.max(...needles.map((n) => n.length)) - 1;
+    let parts = [];
+    let partsLen = 0;
+    let lineLen = 0;
+    let lineOff = 0;
+    let started = false;
+    let hit = false;
+    let tail = Buffer.alloc(0);
+    let idx = 0;
+    const reset = () => { parts = []; partsLen = 0; lineLen = 0; started = false; hit = false; tail = Buffer.alloc(0); idx++; };
+    const emit = (piece) => {
+      const over = lineLen > o.lineMax;
+      const line = over ? null : (parts.length ? Buffer.concat([...parts, piece]) : piece);
+      if (line) bump(o, o.chunk + 2 * line.length);
+      onLine(idx, line, hit, lineOff, lineLen);
+      reset();
+    };
+    for (let pos = 0; ;) {
+      if (o.late()) return LATE;
+      const { bytesRead } = await fh.read(buf, 0, buf.length, pos);
+      if (bytesRead === 0) break;
+      const view = buf.subarray(0, bytesRead);
+      let start = 0;
+      while (start < bytesRead) {
+        const nl = view.indexOf(10, start);
+        const end = nl === -1 ? bytesRead : nl;
+        const piece = view.subarray(start, end);
+        if (!started) { started = true; lineOff = pos + start; hit = has(piece, needles); }
+        else if (!hit) hit = has(piece, needles) || (tail.length > 0 && has(Buffer.concat([tail, piece.subarray(0, nk)]), needles));
+        lineLen += piece.length;
+        if (nl !== -1) { emit(piece); start = nl + 1; continue; }
+        // 줄이 다음 청크로 이어진다
+        tail = lastBytes(tail.length && piece.length < nk ? Buffer.concat([tail, piece]) : piece, nk);
+        if (lineLen <= o.lineMax) { parts.push(Buffer.from(piece)); partsLen += piece.length; bump(o, o.chunk + partsLen); } else parts = [];
+        start = bytesRead;
+      }
+      pos += bytesRead;
+    }
+    if (started) emit(Buffer.alloc(0));   // 개행 없이 끝난 마지막 줄 — 모은 조각이 줄 전체다
+  } finally { await fh.close(); }
+}
+
+async function readRange(file, start, len, o) {
+  const fh = await fs.promises.open(file, 'r');
+  try {
+    const b = Buffer.allocUnsafe(len);
+    bump(o, len);
+    let got = 0;
+    while (got < len) {
+      const { bytesRead } = await fh.read(b, got, len - got, start + got);
+      if (bytesRead === 0) break;
+      got += bytesRead;
+    }
+    return b.subarray(0, got);
+  } finally { await fh.close(); }
+}
+
+// 창(바이트 범위)을 읽어 줄마다 windowLineMax 를 지키는지 본다. 어기면 null(검사할 수 없다)
+async function readWindow(file, start, end, o) {
+  if (end - start > o.windowTotalMax) return null;
+  const b = await readRange(file, start, end - start, o);
+  for (let p = 0; p < b.length;) {
+    const nl = b.indexOf(10, p);
+    const e = nl === -1 ? b.length : nl;
+    if (e - p > o.windowLineMax) return null;
+    p = e + 1;
+  }
+  return T.parseJsonl(b.toString('utf8'));
+}
+
+const tryParse = (line) => { try { const e = JSON.parse(line.toString('utf8')); return e && typeof e === 'object' && !Array.isArray(e) ? e : null; } catch { return null; } };
+const WRITE_NAMES = new Set(['Edit', 'MultiEdit', 'Write']);
+const contentItems = (e) => (e && e.message && Array.isArray(e.message.content) ? e.message.content : []);
+const isWriteUse = (e) => e.type === 'assistant' && contentItems(e).some((x) => x && x.type === 'tool_use' && WRITE_NAMES.has(x.name));
+const BRIEF_MARK = Buffer.from('"type":"user"');
+const AGENT_MARK = Buffer.from('"name":"Agent"');
+
+// 한 파일의 1단계: 줄을 흘리며 찾는 글이 든 줄만 파싱해 findWrite 에 넘긴다(줄 번호 _i 를 보존).
+// 반환: { cand, unreadable, brief } | LATE. cand = { at, editIdx, win, resEnd }
+async function judgeFile(p, key, needles, q, resolve, o) {
+  const isSub = T.subagentId(key) !== null;
+  const small = [];
+  const ring = new Float64Array(LOOK);
+  let unreadable = false;
+  let brief = null;
+  let briefLost = false;
+  const r = await eachLine(p, needles, o, (idx, line, hit, off, len) => {
+    let e = null;
+    if (isSub && brief === null && !briefLost) {
+      if (line === null) briefLost = true;   // 첫 user 글일 수 있는 줄을 못 읽었다 — 다음 user 글을 브리프로 삼지 않는다
+      else if (line.indexOf(BRIEF_MARK) !== -1) {
+        e = tryParse(line);
+        if (e && isBrief(e)) brief = { e, idx, len };
+      }
+    }
+    if (hit) {
+      if (line === null) unreadable = true;
+      else {
+        e = e || tryParse(line);
+        const relevant = e && (isWriteUse(e) || (e.type === 'user' && e.toolUseResult && typeof e.toolUseResult === 'object'));
+        if (relevant) {
+          e._i = idx; e._off = off; e._len = len;
+          if (e.type === 'assistant') { const s0 = Math.max(0, idx - LOOK); e._win = { startIdx: s0, startOff: idx === 0 ? 0 : ring[s0 % LOOK] }; }
+          small.push(e);
+        }
+      }
+    }
+    ring[idx % LOOK] = off;
+  });
+  if (r === LATE) return LATE;
+  const found = T.findWrite(small, q, resolve);
+  let cand = null;
+  if (found) {
+    const use = small[found.index];
+    const res = small.find((e) => e.type === 'user' && contentItems(e).some((x) => x && x.type === 'tool_result' && x.tool_use_id === found.toolUseId));
+    if (use && use._win && res) cand = { at: found.at, editIdx: use._i, win: use._win, resEnd: res._off + res._len };
+  }
+  return { cand, unreadable, brief: brief && { ...brief }, briefLost };
+}
+
+// 서브에이전트의 부모 세션 파일에서 그 에이전트를 띄운 호출 앞의 사람 메시지. 못 찾거나 못 믿으면 null (브리프와 편집 앞 구간만 쓴다).
+// 검증: 읽은 기록들의 sessionId 가 전부 parentId 이고 하나 이상 있어야 한다. 창에 windowLineMax 를 넘는 줄이 있으면 그 앞 사람 메시지를 믿을 수 없어 null.
+// 반환: entry | null | LATE
+async function parentPrompt(file, aid, parentId, o) {
+  const id = Buffer.from(aid);
+  if (await prefilter(file, [id], o) !== true) return null;
+  const small = [];
+  const ring = new Float64Array(LOOK);
+  let lost = false;
+  const r = await eachLine(file, [id], o, (idx, line, hit, off, len) => {
+    if (line === null) { if (hit) lost = true; ring[idx % LOOK] = off; return; }
+    let e = null;
+    if (line.indexOf(AGENT_MARK) !== -1) {
+      e = tryParse(line);
+      if (e && e.type === 'assistant') {
+        const uses = contentItems(e).filter((x) => x && x.type === 'tool_use' && x.name === 'Agent' && typeof x.id === 'string');
+        if (uses.length) {
+          const s0 = Math.max(0, idx - LOOK);
+          small.push({ type: 'assistant', sessionId: e.sessionId, _i: idx, _off: off, _win: { startIdx: s0, startOff: idx === 0 ? 0 : ring[s0 % LOOK] },
+            message: { content: uses.map((x) => ({ type: 'tool_use', id: x.id, name: 'Agent' })) } });
+        }
+      }
+    }
+    if (hit) {
+      e = e && e.type === 'user' ? e : tryParse(line);
+      if (e && e.type === 'user') { e._i = idx; small.push(e); }
+    }
+    ring[idx % LOOK] = off;
+  });
+  if (r === LATE) return LATE;
+  if (lost) return null;
+  small.sort((x, y) => x._i - y._i);
+  const spawn = T.findSpawn(small, aid);
+  if (spawn === null) return null;
+  const use = small[spawn];
+  const win = await readWindow(file, use._win.startOff, use._off, o);
+  if (o.late()) return LATE;
+  if (win === null) return null;
+  if (!onlySession([...small.filter((e) => e.type === 'assistant' || e._i >= 0), ...win], parentId)) return null;
+  const h = humanBefore(win, win.length - 1, LOOK);
+  return h === -1 ? null : win[h];
+}
+
 // 편집(to) 앞 limit 기록 안의 가장 가까운 사람 메시지 index. 없으면 -1
 function humanBefore(entries, to, limit) {
   for (let i = to; i >= 0 && i > to - limit; i--) if (T.isHumanPrompt(entries[i])) return i;
   return -1;
 }
 
-// 서브에이전트 기록의 첫 user 글(컨트롤러 브리프)
-function briefIndex(entries) {
-  return entries.findIndex((e) => e && e.type === 'user' && e.isSidechain === true && e.isMeta !== true && e.message
-    && (typeof e.message.content === 'string' ? e.message.content.trim()
-      : Array.isArray(e.message.content) && !e.message.content.some((x) => x && x.type === 'tool_result')
-        && e.message.content.some((x) => x && x.type === 'text' && typeof x.text === 'string' && x.text.trim())));
-}
-
-const readEntries = async (file) => T.parseJsonl((await fs.promises.readFile(file)).toString('utf8'));
+// 서브에이전트 기록의 첫 user 글(컨트롤러 브리프)인가
+const isBrief = (e) => !!e && e.type === 'user' && e.isSidechain === true && e.isMeta !== true && !!e.message
+  && (typeof e.message.content === 'string' ? !!e.message.content.trim()
+    : Array.isArray(e.message.content) && !e.message.content.some((x) => x && x.type === 'tool_result')
+      && e.message.content.some((x) => x && x.type === 'text' && typeof x.text === 'string' && x.text.trim()));
 
 function label(sid, at, subagent) {
   const d = new Date(at);
@@ -112,14 +310,14 @@ const onlySession = (entries, want) => {
 };
 
 // a = { stores, text, side, files, roots, until, home, allowDirs, deadline /* epoch ms */,
-//       now?, maxFileBytes?, stats? /* 채워 준다: { files, skipped } */ }
+//       now?, stats? /* 채워 준다: { files, peakBytes } */, chunkBytes?, lineMax?, windowLineMax?, windowTotalMax? }
+// 결과 reason: short-line | not-found | mixed | no-human | timeout | unreadable
 async function findAuthoring(a) {
   const now = typeof a.now === 'function' ? a.now : Date.now;
   const late = () => now() > a.deadline;
-  const cap = Number.isFinite(a.maxFileBytes) ? a.maxFileBytes : MAX_FILE_BYTES;
   const stats = a.stats && typeof a.stats === 'object' ? a.stats : {};
   stats.files = 0;
-  stats.skipped = 0;
+  stats.peakBytes = 0;
   const timeout = { found: false, reason: 'timeout' };
   const text = typeof a.text === 'string' ? a.text.trim() : '';
   if (nonBlank(text) < T.EXCERPT.minChars) return { found: false, reason: 'short-line' };
@@ -127,13 +325,19 @@ async function findAuthoring(a) {
 
   const raw = Buffer.from(text);
   const escaped = Buffer.from(JSON.stringify(text).slice(1, -1));
+  const needles = raw.equals(escaped) ? [raw] : [raw, escaped];
+  const nmax = Math.max(raw.length, escaped.length);
+  const num = (v, d) => (Number.isFinite(v) && v > 0 ? v : d);
+  const o = { late, stats, chunk: Math.max(num(a.chunkBytes, CHUNK), nmax + 1), lineMax: num(a.lineMax, LINE_MAX),
+    windowLineMax: num(a.windowLineMax, WINDOW_LINE_MAX), windowTotalMax: num(a.windowTotalMax, WINDOW_TOTAL_MAX) };
   const memo = new Map();
   const resolve = (p) => { let r = memo.get(p); if (r === undefined) { r = resolvePath(p); memo.set(p, r); } return r; };
   const q = { text, side: a.side, files: (a.files || []).map((f) => (path.isAbsolute(f) ? resolve(f) : f)), until: a.until };
 
   const files = await collect(a.stores || [], late);
   if (late()) return timeout;
-  let best = null;   // { file, key, entries, found }
+  let best = null;   // { file, key, ...cand, brief }
+  let unreadable = false;
   let next = 0;
   let timedOut = false;
   const worker = async () => {
@@ -143,65 +347,69 @@ async function findAuthoring(a) {
       if (late()) { timedOut = true; return; }
       const { p, key } = files[i];
       try {
-        const st = await fs.promises.stat(p);
-        if (st.size > cap) { stats.skipped++; continue; }
-        const buf = await fs.promises.readFile(p);
+        const hit = await prefilter(p, needles, o);
         stats.files++;
-        if (!buf.includes(raw) && !buf.includes(escaped)) continue;
-        const entries = T.parseJsonl(buf.toString('utf8'));
-        const found = T.findWrite(entries, q, resolve);
+        if (hit === LATE) { timedOut = true; return; }
+        if (!hit) continue;
+        const r = await judgeFile(p, key, needles, q, resolve, o);
+        if (r === LATE) { timedOut = true; return; }
+        if (r.unreadable) unreadable = true;
+        const c = r.cand;
         // 같은 시각이면 realpath 가 앞선 쪽 — 읽기가 끝난 순서에 결과가 달라지지 않게
-        if (found && (!best || found.at > best.found.at || (found.at === best.found.at && key < best.key))) best = { file: p, key, entries, found };
+        if (c && (!best || c.at > best.at || (c.at === best.at && key < best.key))) best = { file: p, key, ...c, brief: r.brief, briefLost: r.briefLost };
       } catch { /* 못 읽는 파일은 건너뛴다 — 질문을 실패시키지 않는다 */ }
       if (late()) { timedOut = true; return; }
     }
   };
   await Promise.all(Array.from({ length: Math.min(READ_POOL, files.length) }, worker));
   if (timedOut || late()) return timeout;
+  if (unreadable) return { found: false, reason: 'unreadable' };   // 찾는 글이 든 줄을 못 읽었다 — 틀린 세션을 고르느니 안 고른다
   if (!best) return { found: false, reason: 'not-found' };
 
-  const { file, key, entries, found } = best;
-  const aid = T.subagentId(file);
+  const { key, editIdx, win } = best;
+  const aid = T.subagentId(key);
   const ctx = { roots: a.roots, home: a.home, allowDirs: a.allowDirs, resolvePath: resolve };
+  let entries;
+  try { entries = await readWindow(key, win.startOff, best.resEnd, o); } catch { return { found: false, reason: 'not-found' }; }
+  if (late()) return timeout;
+  if (entries === null) return { found: false, reason: 'mixed' };   // 창에 검사할 수 없는 줄이 있다
+  const to0 = entries.findIndex((e) => e._i === editIdx - win.startIdx);
+  if (to0 === -1) return { found: false, reason: 'not-found' };
   let sessionId;
   let list;
   let from;
   let to;
   if (aid === null) {
-    sessionId = path.basename(file, '.jsonl');
-    from = humanBefore(entries, found.index, T.EXCERPT.lookback);
+    sessionId = path.basename(key, '.jsonl');
+    from = humanBefore(entries, to0, LOOK);
     if (from === -1) return { found: false, reason: 'no-human' };
     list = entries;
-    to = found.index;
+    to = to0;
   } else {
-    const b = briefIndex(entries);
-    if (b === -1 || b > found.index) return { found: false, reason: 'no-human' };
-    list = entries.slice(b);
-    to = found.index - b;
+    const b = best.brief;
+    if (!b || b.idx > editIdx) return { found: false, reason: 'no-human' };
+    if (b.len > o.windowLineMax) return { found: false, reason: 'mixed' };
+    const inWin = b.idx >= win.startIdx ? entries.findIndex((e) => e._i === b.idx - win.startIdx) : -1;
+    list = inWin !== -1 ? entries.slice(inWin) : [b.e, ...entries];
+    to = to0 - Math.max(inWin, 0) + (inWin !== -1 ? 0 : 1);
     from = 0;
     // 부모는 서브에이전트 파일의 realpath 에서 찾는다: <프로젝트>/<부모 세션>/subagents/agent-<id>.jsonl → <프로젝트>/<부모 세션>.jsonl.
-    // 별칭 폴더 이름이 아니라 실제 폴더이고, 양쪽 기록의 sessionId 가 그 id 와 같을 때만 부모로 받는다
+    // 별칭 폴더 이름이 아니라 실제 폴더이고, 읽은 기록들의 sessionId 가 그 id 와 같을 때만 부모로 받는다
     const parentDir = path.dirname(path.dirname(key));
     const parentId = path.basename(parentDir);
-    const own = [...new Set(entries.map((e) => e && e.sessionId).filter((x) => typeof x === 'string'))];
+    const own = [...new Set([b.e, ...entries].map((e) => e && e.sessionId).filter((x) => typeof x === 'string'))];
     sessionId = own.length === 1 ? own[0] : parentId;
-    if (T.subagentId(key) === aid && onlySession(entries, parentId)) {
-      try {
-        const parent = await readEntries(`${parentDir}.jsonl`);
-        if (onlySession(parent, parentId)) {
-          sessionId = parentId;
-          const spawn = T.findSpawn(parent, aid);
-          const h = spawn === null ? -1 : humanBefore(parent, spawn, T.EXCERPT.lookback);
-          if (h !== -1) { list = [parent[h], ...list]; to += 1; }
-        }
-      } catch { /* 부모를 못 읽으면 브리프와 편집 앞 구간만 */ }
+    if (onlySession([b.e, ...entries], parentId)) {
+      let prompt = null;
+      try { prompt = await parentPrompt(`${parentDir}.jsonl`, aid, parentId, o); } catch { /* 부모를 못 읽으면 브리프와 편집 앞 구간만 */ }
+      if (prompt === LATE || late()) return timeout;
+      if (prompt) { sessionId = parentId; list = [prompt, ...list]; to += 1; }
     }
   }
-  if (late()) return timeout;
-  const r = T.buildExcerpt(list, from, to, { ...ctx, title: label(sessionId, found.at, aid !== null) });
+  const r = T.buildExcerpt(list, from, to, { ...ctx, title: label(sessionId, best.at, aid !== null) });
   if (r.mixed) return { found: false, reason: 'mixed' };
   if (late()) return timeout;
-  return { found: true, sessionId, at: found.at, subagent: aid !== null, excerpt: r.text };
+  return { found: true, sessionId, at: best.at, subagent: aid !== null, excerpt: r.text };
 }
 
 module.exports = { sessionStores, allowDirs, resolvePath, findAuthoring };
