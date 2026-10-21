@@ -15,9 +15,9 @@ function env() {
   return { ...e, GIT_OPTIONAL_LOCKS: '0', GIT_NO_LAZY_FETCH: '1', GIT_TERMINAL_PROMPT: '0' };
 }
 
-function git(repo, args) {
+function git(repo, args, { timeoutMs = 60_000 } = {}) {
   return new Promise((resolve, reject) => {
-    execFile('git', ['-C', repo, ...BASE, ...args], { env: env(), maxBuffer: 64 << 20, timeout: 60_000, encoding: 'utf8' }, (err, stdout, stderr) => {
+    execFile('git', ['-C', repo, ...BASE, ...args], { env: env(), maxBuffer: 64 << 20, timeout: timeoutMs, encoding: 'utf8' }, (err, stdout, stderr) => {
       if (err) reject(new Error(`git ${args[0]} failed: ${(stderr || err.message).trim().slice(0, 300)}`));
       else resolve(stdout);
     });
@@ -61,6 +61,57 @@ async function info(repo) {
   return { refs, defaultBase: REF.test(head) ? head : null, current: REF.test(current) ? current : null, remote };
 }
 
+// 레포 안의 상대 경로만. 옵션·절대 경로·상위 이동·제어 문자를 git 에 못 넘기게 한다
+function checkPath(p) {
+  if (typeof p !== 'string' || p === '' || p.startsWith('/') || p.startsWith('-') || /[\0\n\r]/.test(p) || p.split('/').includes('..')) throw new Error('bad path');
+  return p;
+}
+const lineNo = (n) => { if (!Number.isInteger(n) || n < 1) throw new Error('bad line'); return n; };
+const trimNl = (s) => s.replace(/\n$/, '');
+
+// 렌더러에 노출하지 않는 main 내부 전용 — repo:git IPC 는 ops 만 본다. 모두 읽기 전용, textconv·ext-diff 끔
+const askGit = {
+  worktrees: async (repo) => {
+    const out = await git(repo, ['worktree', 'list', '--porcelain']);
+    const dirs = out.split('\n').filter((l) => l.startsWith('worktree ')).map((l) => l.slice(9));
+    return Promise.all(dirs.map((d) => fs.realpath(d).catch(() => d)));
+  },
+  isCommit: async (repo, x) => {
+    if (typeof x !== 'string' || !OID.test(x)) return false;
+    return (await git(repo, ['cat-file', '-t', x]).then((s) => s.trim(), () => null)) === 'commit';
+  },
+  // 그 커밋 시점의 파일 내용. 없거나 blob 이 아니면 null
+  fileAt: async (repo, commit, p, o) => {
+    const spec = `${oid(commit)}:${checkPath(p)}`;
+    const id = await git(repo, ['rev-parse', '--verify', '--end-of-options', spec], o).then((s) => s.trim(), () => null);
+    if (!id) return null;
+    if ((await git(repo, ['cat-file', '-t', id], o).then((s) => s.trim(), () => null)) !== 'blob') return null;
+    return git(repo, ['cat-file', 'blob', id], o);
+  },
+  blameLine: async (repo, commit, p, line, o) => {
+    const out = await git(repo, ['blame', '--porcelain', '--no-textconv', '-L', `${lineNo(line)},${line}`, oid(commit), '--', checkPath(p)], o).catch(() => null);
+    if (out === null) return null;
+    const sha = out.split('\n', 1)[0].split(' ')[0];
+    const time = /^committer-time (\d+)$/m.exec(out);
+    const summary = /^summary (.*)$/m.exec(out);
+    if (!OID.test(sha) || !time) return null;
+    return { sha, committerTime: Number(time[1]) * 1000, summary: summary ? summary[1] : '' };
+  },
+  logLine: async (repo, commit, p, line, o) => {
+    const out = await git(repo, ['log', '-L', `${lineNo(line)},${line}:${checkPath(p)}`, oid(commit), '-n', '3', '-s', '--no-textconv', '--no-ext-diff', '--format=%H%x09%ad%x09%B'], o);
+    return out.slice(0, 8000);
+  },
+  // mergeBase..head 에서 text 의 개수를 바꾼 가장 최근 커밋(지운 커밋 후보)
+  deletingCommit: async (repo, mergeBase, head, p, text, o) => {
+    if (typeof text !== 'string' || text === '' || text.includes('\0')) throw new Error('bad text');
+    const out = await git(repo, ['log', `-S${text}`, '--no-textconv', '--no-ext-diff', '--format=%H%x09%ct%x09%s', `${oid(mergeBase)}..${oid(head)}`, '--', checkPath(p)], o);
+    const first = trimNl(out).split('\n', 1)[0];
+    if (!first) return null;
+    const [sha, ct, ...rest] = first.split('\t');
+    return OID.test(sha) ? { sha, committerTime: Number(ct) * 1000, summary: rest.join('\t') } : null;
+  },
+};
+
 const ops = {
   resolve: (repo, r) => git(repo, ['rev-parse', '--verify', '--end-of-options', `${ref(r)}^{commit}`]).then((s) => s.trim()),
   mergeBase: (repo, a, b) => git(repo, ['merge-base', oid(a), oid(b)]).then((s) => s.trim()),
@@ -74,4 +125,4 @@ const ops = {
   },
 };
 
-module.exports = { createRepos, info, ops };
+module.exports = { createRepos, info, ops, askGit, checkPath };
