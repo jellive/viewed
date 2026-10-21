@@ -88,10 +88,10 @@ ipcMain.handle('repo:pick', async (e) => {
 });
 ipcMain.handle('repo:list', (e) => { assertSender(e); return repos.list(); });
 ipcMain.handle('repo:info', async (e, repo) => { assertSender(e); return info(await repos.allowed(repo)); });
-ipcMain.handle('repo:git', async (e, repo, op, a, b) => {
+ipcMain.handle('repo:git', async (e, repo, op, a, b, c) => {
   assertSender(e);
   if (!Object.hasOwn(ops, op)) throw new Error('unknown git op');
-  return ops[op](await repos.allowed(repo), a, b);
+  return ops[op](await repos.allowed(repo), a, b, c);
 });
 
 // 코드 줄에 대한 질문 — Claude Code CLI 를 도구 없이 한 번 돌린다. 창이 다시 불리거나 죽거나 닫히면 진행 중인 질문은 전부 취소한다

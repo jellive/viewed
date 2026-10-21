@@ -61,7 +61,9 @@ async function info(repo) {
   const head = await git(repo, ['symbolic-ref', '-q', 'refs/remotes/origin/HEAD']).then((s) => s.trim(), () => '');
   const remote = await git(repo, ['remote', 'get-url', 'origin']).then((s) => s.trim(), () => null);
   const current = await git(repo, ['symbolic-ref', '-q', 'HEAD']).then((s) => s.trim(), () => '');
-  return { refs, defaultBase: REF.test(head) ? head : null, current: REF.test(current) ? current : null, remote };
+  const cfg = (k) => git(repo, ['config', '--get', k]).then((v) => v.replace(/\n$/, ''), () => '');   // 없으면 git 이 1 로 끝난다
+  const user = { name: await cfg('user.name'), email: await cfg('user.email') };
+  return { refs, defaultBase: REF.test(head) ? head : null, current: REF.test(current) ? current : null, remote, user };
 }
 
 // 레포 안의 상대 경로만. 옵션·절대 경로·상위 이동·제어 문자를 git 에 못 넘기게 한다
@@ -117,6 +119,39 @@ const askGit = {
   },
 };
 
+// log 한 번의 -z 출력 → 경로별 작성자. 커밋은 \x01 로, 필드·경로는 NUL 로 나뉜다(머지 --cc 는 파일이 없는 커밋도 있다)
+function collectAuthors(out, files) {
+  for (const chunk of out.split('\x01').slice(1)) {
+    const [name, email, ...rest] = chunk.split('\0');
+    for (const f of rest.map((x) => x.replace(/^\n/, '')).filter((x) => x !== '')) {
+      const list = files[f] ?? (files[f] = []);
+      if (!list.some(([n, e]) => n === name && e === email)) list.push([name, email]);
+    }
+  }
+}
+
+// blame --porcelain: 커밋의 메타는 처음 나올 때만 있다. 경계 커밋(범위 밖) 줄은 null
+function parseBlame(out) {
+  const meta = new Map();
+  const result = [];
+  let cur = null, final = 0;
+  for (const l of out.split('\n')) {
+    if (l.startsWith('\t')) {
+      const m = meta.get(cur);
+      result[final - 1] = m && !m.boundary && m.name !== undefined ? [m.name, m.email] : null;
+      continue;
+    }
+    const h = /^([0-9a-f]{40,64}) \d+ (\d+)(?: \d+)?$/.exec(l);
+    if (h) { cur = h[1]; final = Number(h[2]); if (!meta.has(cur)) meta.set(cur, { boundary: false }); continue; }
+    const m = meta.get(cur);
+    if (!m) continue;
+    if (l.startsWith('author ')) m.name = l.slice(7);
+    else if (l.startsWith('author-mail ')) m.email = l.slice(12).replace(/^</, '').replace(/>$/, '');
+    else if (l === 'boundary') m.boundary = true;
+  }
+  return Array.from(result, (x) => x ?? null);   // 빈 칸 없이
+}
+
 const ops = {
   resolve: (repo, r) => git(repo, ['rev-parse', '--verify', '--end-of-options', `${ref(r)}^{commit}`]).then((s) => s.trim()),
   mergeBase: (repo, a, b) => git(repo, ['merge-base', oid(a), oid(b)]).then((s) => s.trim()),
@@ -127,6 +162,26 @@ const ops = {
     const type = await git(repo, ['cat-file', '-t', oid(a)]).then((s) => s.trim(), () => null);
     if (type !== 'blob') return null;
     return git(repo, ['cat-file', 'blob', a]);
+  },
+  // mergeBase..head 에서 경로를 바꾼 작성자(.mailmap 적용). 머지 커밋은 --cc 로 충돌을 푼 사람만 잡힌다
+  authors: async (repo, mergeBase, head) => {
+    const range = `${oid(mergeBase)}..${oid(head)}`;
+    const fmt = '--format=%x01%aN%x00%aE';
+    const o = { timeoutMs: 10_000 };
+    const [plain, merges] = await Promise.all([
+      git(repo, ['log', '--no-merges', '-M', '-z', '--name-only', '--no-show-signature', '--no-textconv', '--no-ext-diff', fmt, range], o),
+      git(repo, ['log', '--merges', '--cc', '-z', '--name-only', '--no-show-signature', '--no-textconv', '--no-ext-diff', fmt, range], o),
+    ]);
+    const files = {};
+    collectAuthors(plain, files);
+    collectAuthors(merges, files);
+    return JSON.stringify({ files });
+  },
+  // head 파일의 줄별 작성자 — 인덱스 n-1 이 줄 n. mergeBase 이전(경계) 줄과 실패는 null
+  blameAuthors: async (repo, head, p, mergeBase) => {
+    const range = `${oid(mergeBase)}..${oid(head)}`;
+    const out = await git(repo, ['blame', '--porcelain', '--no-textconv', range, '--', checkPath(p)], { timeoutMs: 10_000 }).catch(soft);
+    return JSON.stringify(out === null ? null : parseBlame(out));
   },
 };
 

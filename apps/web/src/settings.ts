@@ -8,8 +8,8 @@ declare global {
   interface DesktopGit {
     pick(): Promise<string | null>;
     list(): Promise<string[]>;
-    info(repo: string): Promise<{ refs: string[]; defaultBase: string | null; current: string | null; remote: string | null }>;
-    run(repo: string, op: 'resolve' | 'mergeBase' | 'rawDiff' | 'patchDiff' | 'blob', a: string, b?: string): Promise<string | null>;
+    info(repo: string): Promise<{ refs: string[]; defaultBase: string | null; current: string | null; remote: string | null; user: { name: string; email: string } }>;
+    run(repo: string, op: 'resolve' | 'mergeBase' | 'rawDiff' | 'patchDiff' | 'blob' | 'authors' | 'blameAuthors', a: string, b?: string, c?: string): Promise<string | null>;
   }
   interface Window { viewedDesktop?: { getSecret(name: string): Promise<string | null>; setSecret(name: string, value: string): Promise<void>; git?: DesktopGit; ask?: DesktopAsk } }
 }

@@ -3,8 +3,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { makeRepo, git } = require('./helpers.cjs');
-const { askGit, checkPath, ops } = require('../local-git.cjs');
+const { makeRepo, makeOthersRepo, git } = require('./helpers.cjs');
+const { askGit, checkPath, ops, info } = require('../local-git.cjs');
 
 const rev = (d, r) => git(d, 'rev-parse', r).trim();
 
@@ -84,8 +84,8 @@ test('repo textconv and external diff config never run a program', async () => {
   assert.equal(fs.existsSync(mark2), false, 'external diff ran');
 });
 
-test('repo:git still exposes only the old ops', () => {
-  assert.deepEqual(Object.keys(ops), ['resolve', 'mergeBase', 'rawDiff', 'patchDiff', 'blob']);
+test('repo:git exposes only the known ops', () => {
+  assert.deepEqual(Object.keys(ops), ['resolve', 'mergeBase', 'rawDiff', 'patchDiff', 'blob', 'authors', 'blameAuthors']);
 });
 
 test('log.showSignature and gpg.program never run for logLine and deletingCommit', async () => {
@@ -164,4 +164,69 @@ test('worktrees splits on NUL, keeps newline paths intact, and returns realpaths
   fs.writeFileSync(path.join(d, '.git', 'worktrees', 'wt2', 'gitdir'), `${viaLink}/.git\n`);
   const list = await askGit.worktrees(d);
   assert.deepEqual([...list].sort(), [d, odd, path.join(tmp, 'wt2')].sort());
+});
+
+const ALICE = ['alice', 'a@example.test'];
+const BOB = ['bob', 'b@example.test'];
+
+test('authors lists non-merge authors per path and adds merge-resolution authors', async () => {
+  const d = makeOthersRepo();
+  const { files } = JSON.parse(await ops.authors(d, rev(d, 'main'), rev(d, 'HEAD')));
+  assert.deepEqual(files['b.ts'], [BOB]);
+  assert.deepEqual(files['폴더 a/파일.ts'], [BOB]);
+  assert.ok(files['conflict.ts'].some(([n]) => n === 'alice'), JSON.stringify(files['conflict.ts']));
+  assert.deepEqual(files['mix.ts'].slice().sort(), [ALICE, BOB]);
+  assert.equal(new Set(files['mix.ts'].map((x) => x.join())).size, files['mix.ts'].length);
+});
+
+test('authors keeps the rename target path', async () => {
+  const d = makeOthersRepo();
+  const { files } = JSON.parse(await ops.authors(d, rev(d, 'main'), rev(d, 'HEAD')));
+  assert.deepEqual(files['new.ts'], [BOB]);
+});
+
+test('authors and blameAuthors use the same mailmapped identity', async () => {
+  const d = makeOthersRepo();
+  const mb = rev(d, 'main'), head = rev(d, 'HEAD');
+  const { files } = JSON.parse(await ops.authors(d, mb, head));
+  const lines = JSON.parse(await ops.blameAuthors(d, head, 'mix.ts', mb));
+  assert.deepEqual(lines[3], BOB);   // b-line 은 b2@example.test 로 커밋됐다
+  assert.ok(files['mix.ts'].some(([, e]) => e === lines[3][1]));
+});
+
+test('blameAuthors returns null for boundary lines and the author for branch lines', async () => {
+  const d = makeOthersRepo();
+  const lines = JSON.parse(await ops.blameAuthors(d, rev(d, 'HEAD'), 'mix.ts', rev(d, 'main')));
+  assert.deepEqual(lines, [null, null, ALICE, BOB]);
+});
+
+test('blameAuthors returns null for a path missing at head', async () => {
+  const d = makeOthersRepo();
+  assert.equal(JSON.parse(await ops.blameAuthors(d, rev(d, 'HEAD'), 'nope.ts', rev(d, 'main'))), null);
+});
+
+test('authors and blameAuthors refuse bad oids and paths', async () => {
+  const d = makeOthersRepo();
+  const mb = rev(d, 'main'), head = rev(d, 'HEAD');
+  await assert.rejects(ops.authors(d, 'main', head), /bad object id/);
+  await assert.rejects(ops.authors(d, mb, '--all'), /bad object id/);
+  await assert.rejects(ops.blameAuthors(d, 'HEAD', 'mix.ts', mb), /bad object id/);
+  await assert.rejects(ops.blameAuthors(d, head, 'mix.ts', 'x'), /bad object id/);
+  await assert.rejects(ops.blameAuthors(d, head, '../x', mb), /bad path/);
+  await assert.rejects(ops.blameAuthors(d, head, '-x', mb), /bad path/);
+});
+
+test('info returns git user name and email', async () => {
+  const d = makeRepo();
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'viewed-home-'));
+  const saved = { HOME: process.env.HOME, XDG: process.env.XDG_CONFIG_HOME, G: process.env.GIT_CONFIG_GLOBAL, S: process.env.GIT_CONFIG_NOSYSTEM };
+  process.env.HOME = empty; process.env.XDG_CONFIG_HOME = empty; process.env.GIT_CONFIG_NOSYSTEM = '1';
+  try {
+    assert.deepEqual((await info(d)).user, { name: '', email: '' });
+    git(d, 'config', 'user.name', 'carol'); git(d, 'config', 'user.email', 'c@example.test');
+    assert.deepEqual((await info(d)).user, { name: 'carol', email: 'c@example.test' });
+  } finally {
+    process.env.HOME = saved.HOME;
+    for (const [k, v] of [['XDG_CONFIG_HOME', saved.XDG], ['GIT_CONFIG_NOSYSTEM', saved.S]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
 });
