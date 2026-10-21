@@ -12,6 +12,7 @@ const INJECTED = ['<command-name>', '<command-message>', '<command-args>', '<loc
   '<bash-input>', '<bash-stdout>', '<bash-stderr>', '<task-notification>', '<user-prompt-submit-hook>'];
 const AGENT_ID = /^[A-Za-z0-9_-]+$/;
 const MASK = '[가림]';
+const GAP = '…(중략)…';   // 발췌에서 사람 메시지와 편집 직전 구간 사이를 건너뛴 자리
 
 // 줄마다 JSON.parse. 깨진 줄·객체가 아닌 줄은 건너뛴다. _i = 파일 안 줄 순번(0부터)
 function parseJsonl(text) {
@@ -34,15 +35,21 @@ const items = (e) => { const c = e && e.message && e.message.content; return Arr
 const textOf = (c) => typeof c === 'string' ? c
   : Array.isArray(c) ? c.filter((x) => x && x.type === 'text' && typeof x.text === 'string').map((x) => x.text).join('\n') : '';
 
-// user 기록 중 '글'인 것(사람 메시지 또는 서브에이전트 브리프). tool_result·isMeta·자동 삽입 꼬리표는 null
+// 사람 글에 끼워 넣은 <system-reminder>…</system-reminder> 토막 — 판정·렌더 전에 뗀다(사람이 친 글이 아니다)
+const REMINDER = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
+// 사용자 기록으로 남지만 사람이 친 글이 아닌 것 — 중단 표시
+const NOT_TYPED = ['[Request interrupted by user'];
+
+// user 기록 중 '글'인 것(사람 메시지 또는 서브에이전트 브리프). tool_result·isMeta·압축 요약·자동 삽입 꼬리표·중단 표시는 null.
+// 돌려주는 글은 <system-reminder> 토막을 뗀 것이다
 function promptText(e) {
-  if (!e || e.type !== 'user' || e.isMeta === true || !e.message) return null;
+  if (!e || e.type !== 'user' || e.isMeta === true || e.isCompactSummary === true || !e.message) return null;
   const c = e.message.content;
   if (Array.isArray(c) && c.some((x) => x && x.type === 'tool_result')) return null;
-  const t = textOf(c);
+  const t = textOf(c).replace(REMINDER, '');
   if (!t.trim()) return null;
   const head = t.trimStart();
-  return INJECTED.some((tag) => head.startsWith(tag)) ? null : t;
+  return INJECTED.some((tag) => head.startsWith(tag)) || NOT_TYPED.some((tag) => head.startsWith(tag)) ? null : t.trim();
 }
 
 // spec §6 '사람이 친 메시지'. 서브에이전트 쪽(isSidechain) user 기록은 컨트롤러가 보낸 브리프라 사람 메시지가 아니다
@@ -384,6 +391,7 @@ function buildExcerpt(entries, from, to, ctx) {
   for (let i = lo; i <= hi; i++) {
     const e = list[i];
     if (!e) continue;
+    if (e.type === 'gap') { blocks.push({ kind: 'gap', keep: true, cap: 100, text: GAP }); continue; }   // 렌더하지 않은 가운데(sessions.cjs)
     const when = clock(e.timestamp);
     if (e.type === 'user') {
       const t = promptText(e);   // tool_result 는 그 도구 블록에 붙는다. isMeta·자동 삽입은 뺀다
@@ -436,4 +444,4 @@ function buildExcerpt(entries, from, to, ctx) {
   return { text: title ? `${title}\n${text}` : text };
 }
 
-module.exports = { EXCERPT, parseJsonl, isHumanPrompt, insideAny, findWrite, subagentId, findSpawn, buildExcerpt, scrubSecrets };
+module.exports = { EXCERPT, GAP, parseJsonl, isHumanPrompt, insideAny, findWrite, subagentId, findSpawn, buildExcerpt, scrubSecrets };

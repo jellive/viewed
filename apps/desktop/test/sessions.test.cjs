@@ -107,12 +107,12 @@ test('a subagent whose parent file is missing still gives its brief', async () =
   assert.match(r.excerpt, /SUBAGENT-BRIEF/);
 });
 
-test('an edit with no human message in the last 300 records gives no-human', async () => {
+test('an edit with no human message in the last 5000 records gives no-human', async () => {
   const m = mk();
   const a = session('aaaaaaaa-1111');
   a.human('FAR-PROMPT', 0);
-  for (let i = 0; i < 305; i++) a.say(`filler ${i}`, 1 + i);
-  a.edit(m.file, LINE, 400);
+  for (let i = 0; i < 5005; i++) a.say(`filler ${i}`, 1 + i);
+  a.edit(m.file, LINE, 6000);
   write(path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl'), a.out);
   assert.deepEqual(await S.findAuthoring(args(m)), { found: false, reason: 'no-human' });
 });
@@ -711,4 +711,67 @@ test('A a worktree file that symlinks into another repo never makes that repo\'s
   const ok = await S.findAuthoring(args(m, both));
   assert.equal(ok.found, true);
   assert.equal(ok.sessionId, 'bbbbbbbb-2222');
+});
+
+// 긴 메인 세션: 사람 메시지가 편집보다 300기록 넘게 앞이고 그 사이에 작업 알림이 끼어 있다
+const notify = (sess, n, at0) => {
+  const sid = sess.out[0].sessionId;
+  for (let i = 0; i < n; i++) {
+    sess.out.push({ type: 'user', timestamp: iso(at0 + i), sessionId: sid, message: { role: 'user', content: `<task-notification>\n<task-id>t${i}</task-id>\n<status>completed</status>\n</task-notification>` } });
+    sess.say(`noted ${i}`, at0 + i);
+  }
+};
+
+test('D2 a human prompt 474 records back is found; the excerpt is that prompt, a gap marker, then the last 300 records', async () => {
+  const m = mk();
+  const a = session('aaaaaaaa-1111');
+  a.human('<system-reminder>ctx</system-reminder>REAL-HUMAN-PROMPT why', 0);
+  filler(a, 21, 1, 'EARLY-MIDDLE');
+  notify(a, 226, 100);   // 452 기록
+  a.edit(m.file, LINE, 1000);
+  assert.equal(a.out.length - 2, 474);   // 사람 메시지는 편집 호출보다 474 기록 앞
+  write(path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl'), a.out);
+  const r = await S.findAuthoring(args(m));
+  assert.equal(r.found, true, JSON.stringify(r));
+  const x = r.excerpt;
+  const iP = x.indexOf('REAL-HUMAN-PROMPT'), iGap = x.indexOf('…(중략)…'), iEdit = x.indexOf(LINE);
+  assert.ok(iP > 0 && iGap > iP && iEdit > iGap, x.slice(0, 300));
+  assert.doesNotMatch(x, /EARLY-MIDDLE/);       // 가운데는 렌더하지 않는다
+  assert.doesNotMatch(x, /task-notification|system-reminder/);
+  assert.match(x, /noted 225/);                 // 편집 직전 구간은 남는다
+  // 가운데의 긴 줄은 렌더하지도 검사하지도 않는다. 창 안의 긴 줄은 여전히 mixed
+  const b = session('aaaaaaaa-1111');
+  b.human('REAL-HUMAN-PROMPT', 0); b.say('y'.repeat(3000), 1); filler(b, 400, 2); b.edit(m.file, LINE, 1000);
+  write(path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl'), b.out);
+  const rb = await S.findAuthoring(args(m, SMALL));
+  assert.equal(rb.found, true, JSON.stringify(rb));
+  assert.match(rb.excerpt, /REAL-HUMAN-PROMPT[\s\S]*…\(중략\)…/);
+  const c = session('aaaaaaaa-1111');
+  c.human('REAL-HUMAN-PROMPT', 0); filler(c, 400, 1); c.say('y'.repeat(3000), 500); c.edit(m.file, LINE, 1000);
+  write(path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl'), c.out);
+  assert.deepEqual(await S.findAuthoring(args(m, SMALL)), { found: false, reason: 'mixed' });
+});
+
+test('D2 a prompt inside the 300-record window gets no gap marker', async () => {
+  const m = mk();
+  const a = session('aaaaaaaa-1111');
+  a.human('NEAR-PROMPT', 0); filler(a, 250, 1); a.edit(m.file, LINE, 1000);
+  write(path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl'), a.out);
+  const r = await S.findAuthoring(args(m));
+  assert.equal(r.found, true);
+  assert.match(r.excerpt, /NEAR-PROMPT/);
+  assert.doesNotMatch(r.excerpt, /중략/);
+});
+
+test('D2 the parent prompt is searched up to 5000 records before the Agent call', async () => {
+  const m = mk();
+  const parent = session('pppppppp-9999');
+  parent.human('FAR-PARENT-PROMPT', 0); notify(parent, 300, 1); parent.agent('abc123', 1000);
+  write(path.join(m.store, 'proj', 'pppppppp-9999.jsonl'), parent.out);
+  const sub = session('pppppppp-9999', { sidechain: true });
+  sub.human('BRIEF', 1002); sub.edit(m.file, LINE, 1004);
+  write(path.join(m.store, 'proj', 'pppppppp-9999', 'subagents', 'agent-abc123.jsonl'), sub.out);
+  const r = await S.findAuthoring(args(m));
+  assert.equal(r.found, true);
+  assert.match(r.excerpt, /FAR-PARENT-PROMPT[\s\S]*BRIEF/);
 });

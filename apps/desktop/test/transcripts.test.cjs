@@ -662,3 +662,26 @@ test('C a later close quote is refused only when it opens another key value, so 
   // 닫는 따옴표 후보가 다음 키의 여는 따옴표면 여전히 거부한다
   gone('password="AAA1 token= "BBB2"', ['AAA1', 'BBB2']);
 });
+
+test('D1 system reminders are stripped from human text; task notifications, interruptions and compact summaries are not human', () => {
+  const t = tx();
+  const mixed = t.human('<system-reminder>\nrules /home/u/other/x.ts\n</system-reminder>\n왜 이렇게 바꿨어?\n<system-reminder>tail</system-reminder>');
+  const arr = t.human('<system-reminder>a</system-reminder>배열 질문', { array: true });
+  const onlyRem = t.human('<system-reminder>a</system-reminder>\n  <system-reminder>b</system-reminder>  ');
+  const note = t.human('<task-notification>\n<task-id>x</task-id>\n</task-notification>');
+  const remThenNote = t.human('<system-reminder>a</system-reminder><task-notification>done</task-notification>');
+  const intr = t.human('[Request interrupted by user for tool use]');
+  const compact = t.entries[t.human('This session is being continued from a previous conversation...')];
+  compact.isCompactSummary = true;
+  const yes = (i) => T.isHumanPrompt(t.entries[i]);
+  assert.equal(yes(mixed), true);
+  assert.equal(yes(arr), true);
+  for (const i of [onlyRem, note, remThenNote, intr]) assert.equal(yes(i), false, JSON.stringify(t.entries[i]));
+  assert.equal(T.isHumanPrompt(compact), false);
+  // 렌더에도 꼬리표 안의 글은 나오지 않는다 — 그래서 꼬리표 안의 다른 레포 경로로 섞인 구간이 되지도 않는다
+  const e = t.edit(F, 'a();', LINE);
+  const r = T.buildExcerpt(t.entries, mixed, e, CTX);
+  assert.ok(r.text, JSON.stringify(r));
+  assert.ok(r.text.includes('왜 이렇게 바꿨어?') && !r.text.includes('system-reminder') && !r.text.includes('rules') && !r.text.includes('tail'), r.text);
+  assert.ok(!r.text.includes('task-notification') && !r.text.includes('Request interrupted') && !r.text.includes('continued from'), r.text);
+});
