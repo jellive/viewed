@@ -390,7 +390,13 @@ async function findAuthoring(a) {
     windowLineMax: num(a.windowLineMax, WINDOW_LINE_MAX), windowTotalMax: num(a.windowTotalMax, WINDOW_TOTAL_MAX) };
   const memo = new Map();
   const resolve = (p) => { let r = memo.get(p); if (r === undefined) { r = resolvePath(p); memo.set(p, r); } return r; };
-  const q = { text, side: a.side, files: (a.files || []).map((f) => (path.isAbsolute(f) ? resolve(f) : f)), until: a.until };
+  // 후보 파일은 realpath 가 루트(realpath) 안인 것만 — 워크트리의 파일이 다른 레포로 가는 심볼릭 링크면 그 레포의 편집이 후보가 된다.
+  // 대상 파일이 어느 루트에도 안 들어가면 찾지 않는다(mixed)
+  const roots = (a.roots || []).filter((r) => typeof r === 'string' && path.isAbsolute(r)).map(resolve);
+  const given = (a.files || []).filter((f) => typeof f === 'string' && path.isAbsolute(f));
+  const targets = given.map(resolve).filter((f) => T.insideAny(f, roots));
+  if (given.length && !targets.length) return { found: false, reason: 'mixed' };
+  const q = { text, side: a.side, files: targets, until: a.until };
 
   const files = await collect(a.stores || [], late);
   if (late()) return timeout;

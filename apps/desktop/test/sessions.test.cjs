@@ -685,3 +685,30 @@ test('M1 parent: a long line before the human prompt is ignored, one after it dr
   mkParent(false);
   assert.doesNotMatch((await S.findAuthoring(args(m, SMALL))).excerpt, /PARENT-PROMPT/);
 });
+
+test('A a worktree file that symlinks into another repo never makes that repo\'s session the candidate', async () => {
+  const m = mk();
+  const wt = path.join(m.home, 'repo-wt');
+  const other = path.join(m.home, 'other-repo');
+  fs.mkdirSync(path.join(wt, 'src'), { recursive: true });
+  fs.mkdirSync(other);
+  fs.writeFileSync(path.join(other, 'x.ts'), `${LINE}\n`);
+  fs.writeFileSync(m.file, `${LINE}\n`);
+  fs.symlinkSync(path.join(other, 'x.ts'), path.join(wt, 'src', 'a.ts'));
+  const a = session('oooooooo-7777');
+  a.human('OTHER-REPO-PROMPT', 0); a.edit(path.join(other, 'x.ts'), LINE, 2);
+  write(path.join(m.store, 'proj', 'oooooooo-7777.jsonl'), a.out);
+  const both = { files: [m.file, path.join(wt, 'src', 'a.ts')], roots: [m.repo, wt] };
+  const r = await S.findAuthoring(args(m, both));
+  assert.equal(r.found, false, JSON.stringify(r));
+  assert.equal(r.reason, 'not-found');
+  // 대상 파일이 어느 루트에도 안 들어가면(전부 밖으로 풀리면) 찾지 않고 mixed
+  assert.deepEqual(await S.findAuthoring(args(m, { files: [path.join(wt, 'src', 'a.ts')], roots: [m.repo, wt] })), { found: false, reason: 'mixed' });
+  // 같은 레포의 진짜 편집은 여전히 찾는다
+  const b = session('bbbbbbbb-2222');
+  b.human('OWN-PROMPT', 10); b.edit(m.file, LINE, 12);
+  write(path.join(m.store, 'proj', 'bbbbbbbb-2222.jsonl'), b.out);
+  const ok = await S.findAuthoring(args(m, both));
+  assert.equal(ok.found, true);
+  assert.equal(ok.sessionId, 'bbbbbbbb-2222');
+});
