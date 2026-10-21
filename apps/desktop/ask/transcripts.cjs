@@ -175,13 +175,57 @@ const SECRETS = [
   /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
 ];
 // 이름=값 · 이름: 값 · "이름":"값". 비교(==)·화살표(=>)는 값이 아니다.
-// 따옴표 값은 닫는 따옴표까지 — 줄을 넘어도 4000자 안이면 거기까지, 닫는 따옴표가 없거나 더 멀면 그 줄 끝까지
-const KV = /((?:password|passwd|secret|token|api[-_.]?key)[A-Za-z0-9_.-]*["']?\s*(?::|=(?![=>]))\s*)("(?:(?:[^"\\]|\\[\s\S]){0,4000}"|[^"\n]*)|'(?:(?:[^'\\]|\\[\s\S]){0,4000}'|[^'\n]*)|`(?:(?:[^`\\]|\\[\s\S]){0,4000}`|[^`\n]*)|[^\s"'`,;]+)/gi;
+const KV_KEY = /(?:password|passwd|secret|token|api[-_.]?key)[A-Za-z0-9_.-]*["']?\s*(?::|=(?![=>]))\s*/gi;
+const KV_KEY_INSIDE = new RegExp(KV_KEY.source, 'i');   // 따옴표 값 안에 다른 키가 있나
+const KV_BARE = /[^\s"'`,;]+/y;
+const KV_SPAN = 4000;
+
+// 따옴표 값의 닫는 따옴표 자리(역슬래시 이스케이프는 건너뛴다). 4000자 안에 없으면 -1
+function closeQuote(s, from, q) {
+  const limit = Math.min(s.length, from + KV_SPAN + 1);
+  for (let i = from; i < limit; i++) {
+    const c = s[i];
+    if (c === '\\') i++;
+    else if (c === q) return i;
+  }
+  return -1;
+}
+
+// 따옴표 값은 닫는 따옴표까지 — 단 그 사이에 다른 비밀 키가 없고 4000자 안일 때만(줄을 넘어도 된다). 아니면(다음 비밀의 여는 따옴표를
+// 닫는 것으로 삼지 않게) 그 줄 끝까지 가리고 다음 줄부터 다시 본다. 같은 줄에서도 사이에 키가 있으면 줄 끝까지다. 이스케이프된 따옴표는 닫는 것이 아니다
+function scrubKV(s) {
+  let out = '';
+  let pos = 0;
+  KV_KEY.lastIndex = 0;
+  for (let m = KV_KEY.exec(s); m; m = KV_KEY.exec(s)) {
+    const vStart = m.index + m[0].length;
+    const q = s[vStart];
+    let vEnd;
+    let rep;
+    if (q === '"' || q === "'" || q === '`') {
+      const close = closeQuote(s, vStart + 1, q);
+      const body = close === -1 ? null : s.slice(vStart + 1, close);
+      if (body !== null && !KV_KEY_INSIDE.test(body)) vEnd = close + 1;
+      else { const nl = s.indexOf('\n', vStart + 1); vEnd = nl === -1 ? s.length : nl; }
+      rep = q + MASK + q;
+    } else {
+      KV_BARE.lastIndex = vStart;
+      const b = KV_BARE.exec(s);
+      if (!b) continue;   // 값이 없다
+      vEnd = vStart + b[0].length;
+      rep = MASK;
+    }
+    out += s.slice(pos, vStart) + rep;
+    pos = vEnd;
+    KV_KEY.lastIndex = vEnd;
+  }
+  return out + s.slice(pos);
+}
 
 function scrubSecrets(s) {
   let out = String(s);
   for (const re of SECRETS) out = out.replace(re, MASK);
-  return out.replace(KV, (_, k, v) => (/^["'`]/.test(v) ? k + v[0] + MASK + v[0] : k + MASK));
+  return scrubKV(out);
 }
 
 // 이 앱은 macOS 전용 — 기본 파일 시스템이 대소문자·유니코드 정규화를 가리지 않으니 비교는 NFC 소문자로
@@ -198,7 +242,7 @@ const TOKEN_MAX = 4096;        // 토막마다 앞 4096자만 본다
 
 // 글을 받아 "P·허용 폴더 밖의 홈 아래 경로가 있나"를 답하는 판정기. 홈을 모르면 판정할 수 없으니 늘 true.
 // ① 시작: 접은(NFC 소문자) 글에서 홈·~/·$HOME/·${HOME}/·"$HOME"/·"${HOME}"/ 이 나오는 모든 자리(앞 글자와 상관없이), 왼쪽부터.
-// ② 범위: 시작 바로 앞이 따옴표면 같은 줄의 닫는 따옴표까지, 아니면 첫 공백·"·` 까지. 공백 너머로 잇지 않는다 — 단 알려진
+// ② 범위: 시작 바로 앞이 따옴표이고 같은 줄 4096자 안에 닫는 따옴표가 있으면 거기까지, 아니면 첫 공백·"·` 까지. 공백 너머로 잇지 않는다 — 단 알려진
 //    루트·허용 폴더(공백이 들어 있을 수 있다)로 시작하면 그 경로 전체가 첫 부분이고 그 뒤부터 같은 규칙. 토막마다 앞 4096자.
 //    끝의 .,;:!?)]}>' 만 뗀다 — 가운데 글자는 경로의 일부다.
 //    시작은 앞 토막 안에 있어도 전부 따로 본다(…/viewed/bin:/home/u/other/bin). 토막 끝은 미리 한 번 재 두어 다시 훑지 않는다.
@@ -249,11 +293,14 @@ function pathJudge(ctx, resolve) {
       const limit = Math.min(n, (k === 0 ? at : body) + TOKEN_MAX);
       const q = at > 0 ? low[at - 1] : '';
       let from = body;
-      let end;
+      let end = -1;
       if (q && QUOTES.includes(q)) {
-        end = body;   // 같은 줄의 닫는 따옴표까지 — 따옴표 종류마다 훑는 구간이 겹치지 않아 합해서 선형이다
-        while (end < limit && low[end] !== q && low[end] !== '\n') end++;
-      } else {
+        // 같은 줄, 4096자 안에 닫는 따옴표가 있을 때만 거기까지가 한 경로다. 훑는 구간은 따옴표 종류마다 겹치지 않거나 4096자라 합해서 선형이다
+        let p = body;
+        while (p < limit && low[p] !== q && low[p] !== '\n') p++;
+        if (p < limit && low[p] === q) end = p;
+      }
+      if (end === -1) {   // 따옴표가 없거나 안 닫혔다 — 공백·"·` 까지. 안 닫힌 따옴표로 공백 너머의 '..' 을 끌어오지 않는다
         const rel = rels.find((r) => low.startsWith(r, body) && boundary(body + r.length));
         if (rel) from = body + rel.length;
         end = Math.min(from < n ? nextStop[from] : n, limit);
@@ -305,11 +352,23 @@ function renderInput(name, inp) {
   return Object.keys(rest).length ? JSON.stringify(rest) : '';
 }
 
+// 같은 경로는 한 번만 푼다(한 발췌 안에서) — realpath 는 경로 언급마다 불리니 같은 파일이 천 번 나오면 천 번이 된다. 실패도 기억한다
+function memoize(fn) {
+  const seen = new Map();
+  return (p) => {
+    let r = seen.get(p);
+    if (!r) { try { r = { v: fn(p) }; } catch (e) { r = { e }; } seen.set(p, r); }
+    if ('e' in r) throw r.e;
+    return r.v;
+  };
+}
+
 // entries[from..to] 를 블록으로 거른다(spec §6 발췌). to 의 편집처럼 범위 안 도구의 결과는 범위 뒤에 있어도 같이 붙인다.
 // ctx = { roots, home, allowDirs, resolvePath?, title? } — resolvePath 는 findWrite 와 같은 것을 넘긴다(/tmp ↔ /private/tmp)
 function buildExcerpt(entries, from, to, ctx) {
   const c = ctx || {};
-  const resolve = typeof c.resolvePath === 'function' ? c.resolvePath : path.normalize;
+  const given = typeof c.resolvePath === 'function' ? memoize(c.resolvePath) : null;
+  const resolve = given || path.normalize;
   const roots = Array.isArray(c.roots) ? c.roots : [];
   const list = Array.isArray(entries) ? entries : [];
   const res = results(list);
@@ -346,7 +405,7 @@ function buildExcerpt(entries, from, to, ctx) {
   }
   // 섞인 구간: 남긴 글 전체(자르기 전)와 머리 줄에서 P 밖의 홈 경로가 보이면 세션 근거 전체를 뺀다
   const rawTitle = typeof c.title === 'string' && c.title ? c.title : null;
-  const foreign = pathJudge(c, typeof c.resolvePath === 'function' ? c.resolvePath : null);   // 기본(정규화만)은 토막이 이미 정규화돼 있어 부를 것이 없다
+  const foreign = pathJudge(c, given);   // 기본(정규화만)은 토막이 이미 정규화돼 있어 부를 것이 없다
   if (blocks.some((b) => foreign(b.text)) || (rawTitle !== null && foreign(rawTitle))) return { mixed: true };
 
   const parts = blocks.map((b) => ({ keep: b.keep, text: cut(scrubSecrets(b.text), b.cap) }));

@@ -343,6 +343,22 @@ test('a path token is never joined with the next word', () => {
   assert.deepEqual(runSay(`${mac}/other /../viewed/a.js`, ctx, `${mac}/viewed/src/a.ts`), { mixed: true });
 });
 
+test('an unclosed quote does not join the path with the next word', () => {
+  // 닫는 따옴표가 같은 줄에 없으면 따옴표 범위가 아니다 — 공백 너머의 '..' 이 밖 경로를 지우지 못한다
+  for (const bad of ['diff "/home/u/other/.env ./../../../x', 'cp "/home/u/other/.env src/../../../../../home/u/viewed/.env', '"/home/u/other /../viewed/a.js',
+    "x='/home/u/other /../viewed/a.js", 'x="a"/home/u/other /../viewed/a.js', 'see "/home/u/other/.env\n/../viewed/a.js"',
+    `"/home/u/other ${'x'.repeat(4100)}/../../viewed/a"`]) {   // 닫는 따옴표가 4096자 너머면 따옴표 범위가 아니다 — 그 안의 '..' 이 밖 경로를 못 지운다
+    assert.deepEqual(runSay(bad), { mixed: true }, bad);
+  }
+  // 닫는 따옴표가 같은 줄에 있으면 그 안이 한 경로다(공백 든 루트) · 따옴표 범위가 아니어도 레포 안 경로는 남는다
+  const ctx = { roots: [R, '/home/u/my repo'], home: '/home/u', allowDirs: [] };
+  for (const ok of ['in "/home/u/my repo/b.ts" now', 'x="a"/home/u/viewed/src/a.ts', '"/home/u/viewed/a.ts /home/u/viewed/b.ts"', "x='/home/u/viewed/a.ts"]) {
+    const r = runSay(ok, ctx);
+    assert.equal(r.mixed, undefined, ok);
+    assert.ok(r.text.includes(ok), ok);
+  }
+});
+
 test('characters after a root inside one token make it a different path', () => {
   for (const bad of ['/home/u/viewed(1)/.env', '/home/u/viewed,old/.env', '/home/u/viewed[old]/.env', '/home/u/viewed;x/.env', "/home/u/viewed'x/.env",
     '"/home/u/viewed client copy/.env"', '"/home/u/viewed(company)/.env"']) {
@@ -379,6 +395,13 @@ test('the foreign-path check runs in linear time', () => {
     const ms = performance.now() - t0;
     assert.ok(ms < 200, `${name}: ${ms.toFixed(1)}ms`);
   }
+  // 가리기도 선형이고, 2000개 값이 하나도 안 남는다(발췌는 블록을 1500자에서 자르니 가리기 함수에 직접 건다)
+  const t0 = performance.now();
+  const masked = T.scrubSecrets(cases['many secrets with unclosed quotes']);
+  const ms = performance.now() - t0;
+  assert.ok(ms < 200, `scrub 2000 unclosed secrets: ${ms.toFixed(1)}ms`);
+  assert.ok(!masked.includes('a'.repeat(50)), masked.slice(0, 200));
+  assert.equal((masked.match(/\[가림\]/g) || []).length, 2000);
 });
 
 test('every path start is judged, even inside an earlier token', () => {
@@ -416,6 +439,23 @@ test('the resolver gets the text as written, and a home with a space is read who
   const ctx = { roots: ['/home/u x/viewed'], home: '/home/u x', allowDirs: [] };
   assert.deepEqual(runSay('see /home/u x/other/.env', ctx, '/home/u x/viewed/a.ts'), { mixed: true });
   assert.equal(runSay('see /home/u x/viewed/b.ts', ctx, '/home/u x/viewed/a.ts').mixed, undefined);
+});
+
+test('the resolver is asked once per distinct path within one excerpt', () => {
+  // 같은 경로가 1000번 나와도(글 속 언급 + 도구 대상) realpath 는 한 번
+  const count = (fn) => { const seen = new Map(); return { seen, resolvePath: (p) => { seen.set(p, (seen.get(p) || 0) + 1); return fn(p); } }; };
+  const same = count((p) => path.posix.normalize(p));
+  const r = runSay(Array.from({ length: 1000 }, () => F).join(' '), { ...CTX, resolvePath: same.resolvePath });
+  assert.equal(r.mixed, undefined);
+  assert.deepEqual([...same.seen.entries()], [[F, 1]]);
+  // 못 푸는 경로(ENOENT)도 한 번만 묻는다
+  const failing = count(() => { throw new Error('ENOENT'); });
+  const r2 = runSay(Array.from({ length: 1000 }, () => `${R}/missing.ts`).join(' '), { ...CTX, resolvePath: failing.resolvePath });
+  assert.equal(r2.mixed, undefined);
+  assert.deepEqual([...failing.seen.entries()].sort(), [[F, 1], [`${R}/missing.ts`, 1]].sort());
+  // 캐시는 호출마다 새로 — 다른 호출에서는 다시 묻는다
+  runSay(F, { ...CTX, resolvePath: same.resolvePath });
+  assert.equal(same.seen.get(F), 2);
 });
 
 test('a foreign path in any kept block kind drops the excerpt', () => {
@@ -492,6 +532,31 @@ test('secrets are masked', () => {
   const e = t.edit(F, 'a();', `const k = "${aws}";`);
   const r = T.buildExcerpt(t.entries, f, e, CTX);
   assert.ok(!r.text.includes(ghp) && !r.text.includes(aws) && r.text.includes('[가림]'));
+});
+
+test('a quoted secret value never swallows the next secret key, and an escaped quote does not end the mask', () => {
+  // 다음 비밀의 여는 따옴표를 닫는 따옴표로 삼으면 그 사이 값이 그대로 남는다 — 줄을 넘는 닫기는 사이에 다른 키가 없을 때만
+  const gone = (input, values, keep = []) => {
+    const out = T.scrubSecrets(input);
+    for (const v of values) assert.ok(!out.includes(v), `${JSON.stringify(input)} left ${v}: ${out}`);
+    for (const k of keep) assert.ok(out.includes(k), `${JSON.stringify(input)} lost ${k}: ${out}`);
+    return out;
+  };
+  gone('password="AAA1\npassword="BBB2\npassword="CCC3\npassword="DDD4', ['AAA1', 'BBB2', 'CCC3', 'DDD4']);
+  gone('password="AAA1 password="BBB2 password="CCC3', ['AAA1', 'BBB2', 'CCC3']);   // 같은 줄에서도 다음 키의 따옴표를 닫는 것으로 삼지 않는다
+  gone('password="abc1\ntoken="xyz2"', ['abc1', 'xyz2']);
+  gone('password: "abc1\nsecret: "def2"', ['abc1', 'def2']);
+  gone("api_key='k1\napiKey='k2' rest", ['k1', 'k2'], [' rest']);
+  // 이스케이프된 따옴표는 닫는 따옴표가 아니다 — 그 뒤도 줄 끝까지 가린다
+  gone('password="abc\\"def', ['abc', 'def']);
+  gone("password='it\\'s secret", ['it', 's secret']);
+  assert.equal(gone('password="zq\\\\" tail', ['zq'], [' tail']), 'password="[가림]" tail');   // 역슬래시 자체를 이스케이프한 뒤의 따옴표는 닫는 것이다
+  // 줄을 넘는 닫기는 사이에 키가 없고 4000자 안일 때만 — 그때는 거기까지 통째로
+  gone('token="line one\nline two" rest\nsecret=plain', ['line one', 'line two', 'plain'], ['" rest']);
+  assert.equal(gone('password="alpha beta gamma" x', ['alpha', 'beta', 'gamma']), 'password="[가림]" x');
+  gone('password=`first part\nsecond part` after', ['first part', 'second part'], ['` after']);
+  // 줄 끝까지 가린 뒤에는 다음 줄부터 다시 본다 — 다음 줄의 평문 값도 가린다
+  gone('password="open\nDB_PASSWORD=hunter22\ntoken="v9"', ['open', 'hunter22', 'v9'], ['DB_PASSWORD=[가림]', 'token="[가림]"']);
 });
 
 test('caps keep the human prompt and drop the oldest blocks', () => {
