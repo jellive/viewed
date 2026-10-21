@@ -11,7 +11,6 @@ const STDOUT_MAX = 1024 * 1024;
 const STDERR_MAX = 64 * 1024;
 const KILL_GRACE_MS = 2000;
 const VERSION_TIMEOUT_MS = 5000;
-const DEFAULT_TIMEOUT_MS = 120000;
 
 // 명시적인 인증 문구만 로그인 문제로 본다 — 부분 문자열("4010ms", "catalog")에 걸리지 않게 단어 경계를 둔다
 const LOGIN_RE = /\bnot logged in\b|\bplease (run \/?login|log ?in|login)\b|\binvalid api key\b|\bauthenticat(e|ion) (failed|error|required)\b|\b401\b.*\b(unauthori[sz]ed|auth)/i;
@@ -76,11 +75,13 @@ function buildArgs(instruction, systemPrompt) {
     '--no-session-persistence', '--max-turns', '2', '--append-system-prompt', systemPrompt];
 }
 
-// env 를 안 주면 cleanEnv(process.env), timeoutMs 가 잘못되면 120초. 셸 없이, 새 빈 임시 폴더에서, 프로세스 그룹 리더로 돌린다. 마감·취소·한도 초과면 그룹에 SIGTERM, 2초 뒤 SIGKILL.
+// env 를 안 주면 cleanEnv(process.env), 셸 없이, 새 빈 임시 폴더에서, 프로세스 그룹 리더로 돌린다. 마감·취소·한도 초과면 그룹에 SIGTERM, 2초 뒤 SIGKILL.
 // 종료코드는 보지 않는다 — 판정은 readResult 가 stdout JSON·stderr 로 한다. 'close' 뒤에야 cwd 를 지우고 돌려준다(슬롯 반납 시점)
 function runClaude(a) {
   const env = a.env || cleanEnv(process.env);
-  const timeoutMs = Number.isFinite(a.timeoutMs) && a.timeoutMs > 0 ? a.timeoutMs : DEFAULT_TIMEOUT_MS;
+  // 남은 마감 시간이 없거나 잘못됐으면 이미 지난 것이다 — 띄우지 않는다
+  const timeoutMs = a.timeoutMs;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return Promise.resolve({ ok: false, error: 'timeout' });
   return new Promise((resolve) => {
     if (a.signal && a.signal.aborted) return resolve({ ok: false, error: 'cancelled' });
     let cwd;

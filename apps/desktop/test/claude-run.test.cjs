@@ -217,17 +217,22 @@ test('readResult does not take substrings for login problems', () => {
   }
 });
 
-test('runClaude defaults env to cleanEnv(process.env) and a missing timeoutMs does not fire at once', async () => {
+test('runClaude defaults env to cleanEnv(process.env)', async () => {
   const f = fake('echo "GD=${GIT_DIR-unset} H=${HOME-unset}"');
   const prev = process.env.GIT_DIR; process.env.GIT_DIR = '/nope';
   try {
-    const r = await C.runClaude({ bin: f.bin, args: [], stdin: '', signal: new AbortController().signal });
+    const r = await C.runClaude({ bin: f.bin, args: [], stdin: '', signal: new AbortController().signal, timeoutMs: 10000 });
     assert.equal(r.ok, true);
     assert.match(r.stdout, /GD=unset/);
     assert.doesNotMatch(r.stdout, /H=unset/);
-    for (const t of [undefined, NaN, 0, -5]) {
-      const g = await C.runClaude({ bin: f.bin, args: [], stdin: '', signal: new AbortController().signal, timeoutMs: t });
-      assert.equal(g.ok, true, `timeoutMs=${t}`);
-    }
   } finally { if (prev === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = prev; }
+});
+
+test('a missing or non-positive timeoutMs means the deadline is gone: timeout without spawning', async () => {
+  const f = fake('touch "$REC/ran"');
+  for (const t of [undefined, NaN, 0, -1]) {
+    const r = await C.runClaude({ ...base(f), timeoutMs: t });
+    assert.deepEqual([r.ok, r.error], [false, 'timeout'], `timeoutMs=${t}`);
+  }
+  assert.equal(fs.existsSync(path.join(f.rec, 'ran')), false);
 });
