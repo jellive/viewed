@@ -33,12 +33,18 @@ function session(sid, o = {}) {
     out.push({ type: 'assistant', timestamp: iso(at), sessionId: sid, cwd: '/x', ...side, message: { role: 'assistant', content: [{ type: 'tool_use', id: tid, name: 'Edit', input: { file_path: file, old_string: 'let x;', new_string: line } }] } });
     out.push({ type: 'user', timestamp: iso(at + 1), sessionId: sid, ...side, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: tid, content: 'updated' }] }, toolUseResult: turOf(line) });
   };
+  // 입력과 결과 패치를 따로 정한다 — 입력에 그 줄 글이 없어도 되는 편집(부분 줄 치환·Write 갱신)을 흉내 낸다
+  const use = (name, input, tur, at, o = {}) => {
+    const tid = `toolu_${sid}_${++id}`;
+    out.push({ type: 'assistant', timestamp: iso(at), sessionId: sid, cwd: '/x', ...side, message: { role: 'assistant', content: [{ type: 'tool_use', id: tid, name, input }] } });
+    out.push({ type: 'user', timestamp: iso(at + 1), sessionId: sid, ...side, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: tid, content: o.big || 'updated' }] }, toolUseResult: tur });
+  };
   const agent = (agentId, at) => {
     const tid = `toolu_${sid}_${++id}`;
     out.push({ type: 'assistant', timestamp: iso(at), sessionId: sid, message: { role: 'assistant', content: [{ type: 'tool_use', id: tid, name: 'Agent', input: { prompt: 'x' } }] } });
     out.push({ type: 'user', timestamp: iso(at + 1), sessionId: sid, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: tid, content: `done\nagentId: ${agentId} (use SendMessage)` }] } });
   };
-  return { out, human, say, edit, agent };
+  return { out, human, say, edit, agent, use };
 }
 const write = (file, entries, extra = '') => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -147,7 +153,7 @@ test('two store paths that resolve to one folder are read once', async () => {
   });
   // 훑기는 파일마다 거르기 1번 + 후보 파일 1번 읽는다 — 같은 파일이 두 경로로 두 번 읽히면 4번이 된다
   assert.equal(new Set(seen.filter((p) => p.endsWith('aaaaaaaa-1111.jsonl'))).size, 1);
-  assert.ok(seen.filter((p) => p.endsWith('aaaaaaaa-1111.jsonl')).length <= 3);
+  assert.ok(seen.filter((p) => p.endsWith('aaaaaaaa-1111.jsonl')).length <= 4);
 });
 
 test('sessionStores ignores an empty CLAUDE_CONFIG_DIR and missing folders', () => {
@@ -382,7 +388,7 @@ test('F7 a file reached by a symlink to it and by its (symlinked-store) path is 
   const seen = [];
   await withOpen({ onOpen: (p) => { seen.push(p); } }, () => S.findAuthoring(args(m, { stores: [viaLink] })));
   assert.equal(new Set(seen.map((x) => fs.realpathSync(x))).size, 1);   // 한 파일(실제 경로)만 연다
-  assert.ok(seen.length <= 3);           // 거르기 + 판정 + 창 읽기 — 같은 파일이 두 번 닿았다면 6
+  assert.ok(seen.length <= 4);           // 거르기 + 판정 + 줄 훑기 + 범위 읽기 — 같은 파일이 두 번 닿았다면 8
 });
 
 test('F7 equal times are broken by realpath ascending, whatever finishes first', async () => {
@@ -576,4 +582,106 @@ test('an unreadable spawn result in the parent does not let a later mention pick
   const r = await S.findAuthoring(args(m, { ...SMALL, windowLineMax: 100000 }));
   assert.equal(r.found, true);
   assert.doesNotMatch(r.excerpt, /HUMAN-/);
+});
+
+// ---- fix round 3: pairing by id, not by needle ----
+const patch = (...lines) => [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines }];
+const partial = (a, file, at) => a.use('Edit', { file_path: file, old_string: 'answer = 0;', new_string: 'answer = compute();' },
+  { originalFile: 'x', structuredPatch: patch('-const answer = 0;', `+${LINE}`) }, at);
+
+test('P1 a partial-line Edit (the input lacks the full line) is the writer', async () => {
+  const m = mk();
+  const a = session('aaaaaaaa-1111');
+  a.human('PARTIAL-PROMPT', 0); partial(a, m.file, 2);
+  write(path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl'), a.out);
+  const r = await S.findAuthoring(args(m));
+  assert.equal(r.found, true);
+  assert.match(r.excerpt, /PARTIAL-PROMPT/);
+});
+
+test('P2 an older full-line writer loses to a newer partial-line writer', async () => {
+  const m = mk();
+  const old = session('aaaaaaaa-1111');
+  old.human('OLD-PROMPT', 0); old.edit(m.file, LINE, 2);
+  write(path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl'), old.out);
+  const neu = session('bbbbbbbb-2222');
+  neu.human('NEW-PROMPT', 100); partial(neu, m.file, 102);
+  write(path.join(m.store, 'proj', 'bbbbbbbb-2222.jsonl'), neu.out);
+  const r = await S.findAuthoring(args(m));
+  assert.equal(r.sessionId, 'bbbbbbbb-2222');
+  assert.doesNotMatch(r.excerpt, /OLD-PROMPT/);
+});
+
+test('P3 an L-side Write update whose content no longer holds the deleted line is the writer', async () => {
+  const m = mk();
+  const a = session('aaaaaaaa-1111');
+  a.human('L-WRITE-PROMPT', 0);
+  a.use('Write', { file_path: m.file, content: 'something else entirely\n' },
+    { type: 'update', content: 'something else entirely\n', originalFile: `${LINE}\n`, structuredPatch: patch(`-${LINE}`, '+something else entirely') }, 2);
+  write(path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl'), a.out);
+  const r = await S.findAuthoring(args(m, { side: 'L' }));
+  assert.equal(r.found, true);
+  assert.match(r.excerpt, /L-WRITE-PROMPT/);
+});
+
+test('P4 an L-side partial Edit is the writer', async () => {
+  const m = mk();
+  const a = session('aaaaaaaa-1111');
+  a.human('L-EDIT-PROMPT', 0);
+  a.use('Edit', { file_path: m.file, old_string: 'compute();', new_string: '1;' },
+    { originalFile: 'x', structuredPatch: patch(`-${LINE}`, '+const answer = 1;') }, 2);
+  write(path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl'), a.out);
+  const r = await S.findAuthoring(args(m, { side: 'L' }));
+  assert.equal(r.found, true);
+});
+
+test('N2 kept state stays small when many Edit results carry a big originalFile that holds the line', async () => {
+  const m = mk();
+  const a = session('aaaaaaaa-1111');
+  const bigFile = `${LINE}\n`.repeat(Math.ceil(200 * 1024 / (LINE.length + 1)));
+  for (let i = 0; i < 200; i++) {
+    a.use('Edit', { file_path: m.file, old_string: `v${i}`, new_string: `w${i}` },
+      { originalFile: bigFile, structuredPatch: patch(`-v${i}`, `+w${i}`) }, 1 + i * 2);
+  }
+  a.human('PROMPT', 999); a.edit(m.file, LINE, 1000);
+  const f = path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl');
+  write(f, a.out);
+  assert.ok(fs.statSync(f).size > 30 * 1024 * 1024);
+  const stats = {};
+  const r = await S.findAuthoring(args(m, { stats }));
+  assert.equal(r.found, true);
+  assert.ok(stats.keptBytes > 0 && stats.keptBytes <= 64 * 1024, `kept ${stats.keptBytes}`);
+});
+
+test('M1 an oversize line older than the human prompt no longer fails the window; one after it still does', async () => {
+  const m = mk();
+  const a = session('aaaaaaaa-1111');
+  a.say('y'.repeat(3000), 0); a.human('PROMPT-AFTER-BIG', 1); a.edit(m.file, LINE, 2);
+  write(path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl'), a.out);
+  const r = await S.findAuthoring(args(m, SMALL));
+  assert.equal(r.found, true);
+  assert.match(r.excerpt, /PROMPT-AFTER-BIG/);
+  const b = session('aaaaaaaa-1111');
+  b.human('PROMPT', 0); b.say('y'.repeat(3000), 1); b.edit(m.file, LINE, 2);
+  write(path.join(m.store, 'proj', 'aaaaaaaa-1111.jsonl'), b.out);
+  assert.deepEqual(await S.findAuthoring(args(m, SMALL)), { found: false, reason: 'mixed' });
+});
+
+test('M1 parent: a long line before the human prompt is ignored, one after it drops the prompt', async () => {
+  const m = mk();
+  const mkParent = (bigBefore) => {
+    const parent = session('pppppppp-9999');
+    if (bigBefore) parent.say('y'.repeat(3000), 0);
+    parent.human('PARENT-PROMPT', 1);
+    if (!bigBefore) parent.say('y'.repeat(3000), 2);
+    parent.agent('abc123', 3);
+    write(path.join(m.store, 'proj', 'pppppppp-9999.jsonl'), parent.out);
+  };
+  const sub = session('pppppppp-9999', { sidechain: true });
+  sub.human('BRIEF', 5); sub.edit(m.file, LINE, 7);
+  write(path.join(m.store, 'proj', 'pppppppp-9999', 'subagents', 'agent-abc123.jsonl'), sub.out);
+  mkParent(true);
+  assert.match((await S.findAuthoring(args(m, SMALL))).excerpt, /PARENT-PROMPT/);
+  mkParent(false);
+  assert.doesNotMatch((await S.findAuthoring(args(m, SMALL))).excerpt, /PARENT-PROMPT/);
 });

@@ -117,11 +117,12 @@ async function prefilter(file, needles, o) {
 
 // 줄 단위로 흘린다. onLine(idx, line, hit, off, len) — 동기. line 은 그 줄(개행 제외) 또는, lineMax 를 넘으면 null.
 // hit = 그 줄에 needle 이 들었나(청크 경계를 걸쳐도). off/len = 파일 안 바이트 위치. 끝까지 읽으면 undefined, 마감이면 LATE
-async function eachLine(file, needles, o, onLine) {
+async function eachLine(file, needles, o, onLine, range) {
   const fh = await fs.promises.open(file, 'r');
   try {
     const buf = Buffer.allocUnsafe(o.chunk);
-    const nk = Math.max(...needles.map((n) => n.length)) - 1;
+    const nk = needles.length ? Math.max(...needles.map((n) => n.length)) - 1 : 0;
+    const lim = range ? range.end : Infinity;   // range = { start, end } 바이트 범위만 흘린다(줄 번호는 범위 안에서 0부터)
     let parts = [];
     let partsLen = 0;
     let lineLen = 0;
@@ -138,9 +139,11 @@ async function eachLine(file, needles, o, onLine) {
       onLine(idx, line, hit, lineOff, lineLen);
       reset();
     };
-    for (let pos = 0; ;) {
+    for (let pos = range ? range.start : 0; ;) {
       if (o.late()) return LATE;
-      const { bytesRead } = await fh.read(buf, 0, buf.length, pos);
+      const want = Math.min(buf.length, lim - pos);
+      if (want <= 0) break;
+      const { bytesRead } = await fh.read(buf, 0, want, pos);
       if (bytesRead === 0) break;
       const view = buf.subarray(0, bytesRead);
       let start = 0;
@@ -178,35 +181,73 @@ async function readRange(file, start, len, o) {
   } finally { await fh.close(); }
 }
 
-// 창(바이트 범위)을 읽어 줄마다 windowLineMax 를 지키는지 본다. 어기면 null(검사할 수 없다)
-async function readWindow(file, start, end, o) {
-  if (end - start > o.windowTotalMax) return null;
-  const b = await readRange(file, start, end - start, o);
-  for (let p = 0; p < b.length;) {
-    const nl = b.indexOf(10, p);
-    const e = nl === -1 ? b.length : nl;
-    if (e - p > o.windowLineMax) return null;
-    p = e + 1;
-  }
-  return T.parseJsonl(b.toString('utf8'));
+// 범위 [start,end) 의 줄 목록(내용은 안 들고 있는다): { rel, off, len, over, human }. human = 사람이 친 메시지(windowLineMax 이하 줄만 파싱해 판정)
+async function lineMeta(file, start, end, o) {
+  const lines = [];
+  const r = await eachLine(file, [], o, (idx, line, hit, off, len) => {
+    const over = line === null || len > o.windowLineMax;
+    let human = false;
+    if (!over && line.indexOf(BRIEF_MARK) !== -1) { const e = tryParse(line); human = !!e && T.isHumanPrompt(e); }
+    lines.push({ rel: idx, off, len, over, human });
+  }, { start, end });
+  return r === LATE ? LATE : lines;
+}
+
+// 렌더할 범위 [fromOff, end) 를 읽어 파싱한다. 총 바이트가 windowTotalMax 를 넘으면 null
+async function readEntries(file, fromOff, end, o) {
+  if (end - fromOff > o.windowTotalMax) return null;
+  return T.parseJsonl((await readRange(file, fromOff, end - fromOff, o)).toString('utf8'));
 }
 
 const tryParse = (line) => { try { const e = JSON.parse(line.toString('utf8')); return e && typeof e === 'object' && !Array.isArray(e) ? e : null; } catch { return null; } };
 const WRITE_NAMES = new Set(['Edit', 'MultiEdit', 'Write']);
 const contentItems = (e) => (e && e.message && Array.isArray(e.message.content) ? e.message.content : []);
-const isWriteUse = (e) => e.type === 'assistant' && contentItems(e).some((x) => x && x.type === 'tool_use' && WRITE_NAMES.has(x.name));
 const BRIEF_MARK = Buffer.from('"type":"user"');
 const AGENT_MARK = Buffer.from('"name":"Agent"');
+const RESULT_MARK = Buffer.from('"type":"tool_result"');
+const WRITE_MARKS = ['Edit', 'MultiEdit', 'Write'].map((n) => Buffer.from(`"name":"${n}"`));
+const ERR_MARKS = [Buffer.from('"is_error":true'), Buffer.from('<tool_use_error>')];
+const textOfContent = (c) => (typeof c === 'string' ? c
+  : Array.isArray(c) ? c.filter((x) => x && x.type === 'text' && typeof x.text === 'string').map((x) => x.text).join('\n') : '');
 
-// 한 파일의 1단계: 줄을 흘리며 찾는 글이 든 줄만 파싱해 findWrite 에 넘긴다(줄 번호 _i 를 보존).
+// 결과의 toolUseResult 를 findWrite 가 쓰는 만큼만 남긴다: 그 줄(want)과 같은 '+'/'-' 줄(과 hunk 번호), Write 새 파일은 맞는 줄만.
+// 두 번째 값 = 맞는 줄이 있었나. 객체가 아니면 [undefined, false]
+function stripTur(tur, want) {
+  if (!tur || typeof tur !== 'object' || Array.isArray(tur)) return [undefined, false];
+  const out = { type: tur.type };
+  let any = false;
+  if (Array.isArray(tur.structuredPatch)) {
+    out.structuredPatch = tur.structuredPatch.map((h) => {
+      if (!h || !Array.isArray(h.lines)) return { lines: null };   // findWrite 가 모양이 이상하다고 보게 그대로 둔다
+      const lines = h.lines.filter((l) => typeof l === 'string' && (l[0] === '+' || l[0] === '-') && l.slice(1).trim() === want);
+      if (lines.length) any = true;
+      return { oldStart: h.oldStart, oldLines: h.oldLines, newStart: h.newStart, newLines: h.newLines, lines };
+    });
+  }
+  if (tur.type === 'create' && typeof tur.content === 'string') {
+    const lines = tur.content.split('\n').filter((l) => l.trim() === want);
+    if (lines.length) any = true;
+    out.content = lines.join('\n');
+  }
+  return [out, any];
+}
+
+// 한 파일의 1단계: 줄을 흘리며 findWrite 에 필요한 것만 남긴다(줄 번호 _i 보존).
+//  - 쓰기 도구(Edit·MultiEdit·Write) 호출 줄은 찾는 글이 입력에 있든 없든 전부 — 입력은 버리고 id·file_path 만. 부분 줄 치환이나 Write 갱신은 입력에 줄이 없다
+//  - 결과 줄은 남긴 호출의 것이고(찾는 글이 있거나 오류) 쓴 줄이 맞거나 오류일 때만 — 조각만 남긴다. 나머지(Read 결과·큰 originalFile)는 버린다
 // 반환: { cand, unreadable, brief } | LATE. cand = { at, editIdx, win, resEnd }
 async function judgeFile(p, key, needles, q, resolve, o) {
   const isSub = T.subagentId(key) !== null;
+  const want = q.text;
   const small = [];
+  const wins = new Map();   // 호출 줄 번호 → { startIdx, startOff }
+  const keptIds = new Set();
   const ring = new Float64Array(LOOK);
   let unreadable = false;
   let brief = null;
   let briefLost = false;
+  let kept = 0;
+  const keep = (e, extra) => { small.push(e); kept += JSON.stringify(e).length + extra; if (kept > o.stats.keptBytes) o.stats.keptBytes = kept; };
   const r = await eachLine(p, needles, o, (idx, line, hit, off, len) => {
     let e = null;
     if (isSub && brief === null && !briefLost) {
@@ -216,16 +257,30 @@ async function judgeFile(p, key, needles, q, resolve, o) {
         if (e && isBrief(e)) brief = { e, idx, len };
       }
     }
-    if (hit) {
-      if (line === null) unreadable = true;
-      else {
-        e = e || tryParse(line);
-        const relevant = e && (isWriteUse(e) || (e.type === 'user' && e.toolUseResult && typeof e.toolUseResult === 'object'));
-        if (relevant) {
-          e._i = idx; e._off = off; e._len = len;
-          if (e.type === 'assistant') { const s0 = Math.max(0, idx - LOOK); e._win = { startIdx: s0, startOff: idx === 0 ? 0 : ring[s0 % LOOK] }; }
-          small.push(e);
-        }
+    if (line === null) { if (hit) unreadable = true; }
+    else if (WRITE_MARKS.some((m) => line.indexOf(m) !== -1)) {
+      e = e || tryParse(line);
+      const uses = e && e.type === 'assistant'
+        ? contentItems(e).filter((x) => x && x.type === 'tool_use' && WRITE_NAMES.has(x.name) && typeof x.id === 'string' && x.input && typeof x.input.file_path === 'string') : [];
+      if (uses.length) {
+        const s0 = Math.max(0, idx - LOOK);
+        wins.set(idx, { startIdx: s0, startOff: idx === 0 ? 0 : ring[s0 % LOOK] });
+        for (const x of uses) keptIds.add(x.id);
+        keep({ type: 'assistant', message: { content: uses.map((x) => ({ type: 'tool_use', id: x.id, name: x.name, input: { file_path: x.input.file_path } })) }, _i: idx }, 48);
+      }
+    } else if (keptIds.size && line.indexOf(RESULT_MARK) !== -1 && (hit || ERR_MARKS.some((m) => line.indexOf(m) !== -1))) {
+      e = e || tryParse(line);
+      const items = e && e.type === 'user' ? contentItems(e).filter((x) => x && x.type === 'tool_result' && typeof x.tool_use_id === 'string') : [];
+      if (items.some((x) => keptIds.has(x.tool_use_id))) {
+        let err = false;
+        const content = items.map((x) => {
+          const t = textOfContent(x.content);
+          const bad = x.is_error === true || t.trimStart().startsWith('<tool_use_error>');
+          err = err || bad;
+          return { type: 'tool_result', tool_use_id: x.tool_use_id, ...(x.is_error === true ? { is_error: true } : {}), ...(bad && t.trimStart().startsWith('<tool_use_error>') ? { content: t.slice(0, 200) } : {}) };
+        });
+        const [tur, matches] = stripTur(e.toolUseResult, want);
+        if (err || matches) keep({ type: 'user', timestamp: e.timestamp, message: { content }, ...(tur ? { toolUseResult: tur } : {}), _i: idx, _off: off, _len: len }, 0);
       }
     }
     ring[idx % LOOK] = off;
@@ -235,14 +290,16 @@ async function judgeFile(p, key, needles, q, resolve, o) {
   let cand = null;
   if (found) {
     const use = small[found.index];
-    const res = small.find((e) => e.type === 'user' && contentItems(e).some((x) => x && x.type === 'tool_result' && x.tool_use_id === found.toolUseId));
-    if (use && use._win && res) cand = { at: found.at, editIdx: use._i, win: use._win, resEnd: res._off + res._len };
+    const res = small.find((e) => e.type === 'user' && contentItems(e).some((x) => x.tool_use_id === found.toolUseId));
+    const win = use && wins.get(use._i);
+    if (win && res) cand = { at: found.at, editIdx: use._i, win, resEnd: res._off + res._len };
   }
   return { cand, unreadable, brief: brief && { ...brief }, briefLost };
 }
 
 // 서브에이전트의 부모 세션 파일에서 그 에이전트를 띄운 호출 앞의 사람 메시지. 못 찾거나 못 믿으면 null (브리프와 편집 앞 구간만 쓴다).
-// 검증: 읽은 기록들의 sessionId 가 전부 parentId 이고 하나 이상 있어야 한다. 창에 windowLineMax 를 넘는 줄이 있으면 그 앞 사람 메시지를 믿을 수 없어 null.
+// 검증: 읽은 기록들의 sessionId 가 전부 parentId 이고 하나 이상 있어야 한다.
+// 찾은 사람 메시지 뒤(호출 앞)에 windowLineMax 를 넘는 줄이 있으면 그것이 더 새 사람 메시지일 수 있어 null. 그 메시지보다 앞의 긴 줄은 상관없다.
 // 반환: entry | null | LATE
 async function parentPrompt(file, aid, parentId, o) {
   const id = Buffer.from(aid);
@@ -276,18 +333,18 @@ async function parentPrompt(file, aid, parentId, o) {
   const spawn = T.findSpawn(small, aid);
   if (spawn === null) return null;
   const use = small[spawn];
-  const win = await readWindow(file, use._win.startOff, use._off, o);
+  const meta = await lineMeta(file, use._win.startOff, use._off, o);
+  if (meta === LATE || o.late()) return LATE;
+  let h = -1;
+  for (let i = meta.length - 1; i >= 0; i--) if (meta[i].human) { h = i; break; }
+  if (h === -1 || meta.slice(h + 1).some((l) => l.over)) return null;
+  const hl = meta[h];
+  const got = await readEntries(file, hl.off, hl.off + hl.len, o);
   if (o.late()) return LATE;
-  if (win === null) return null;
-  if (!onlySession([...small.filter((e) => e.type === 'assistant' || e._i >= 0), ...win], parentId)) return null;
-  const h = humanBefore(win, win.length - 1, LOOK);
-  return h === -1 ? null : win[h];
-}
-
-// 편집(to) 앞 limit 기록 안의 가장 가까운 사람 메시지 index. 없으면 -1
-function humanBefore(entries, to, limit) {
-  for (let i = to; i >= 0 && i > to - limit; i--) if (T.isHumanPrompt(entries[i])) return i;
-  return -1;
+  const prompt = got && got.find((e) => T.isHumanPrompt(e));
+  if (!prompt) return null;
+  if (!onlySession([...small, prompt], parentId)) return null;
+  return prompt;
 }
 
 // 서브에이전트 기록의 첫 user 글(컨트롤러 브리프)인가
@@ -318,6 +375,7 @@ async function findAuthoring(a) {
   const stats = a.stats && typeof a.stats === 'object' ? a.stats : {};
   stats.files = 0;
   stats.peakBytes = 0;
+  stats.keptBytes = 0;
   const timeout = { found: false, reason: 'timeout' };
   const text = typeof a.text === 'string' ? a.text.trim() : '';
   if (nonBlank(text) < T.EXCERPT.minChars) return { found: false, reason: 'short-line' };
@@ -369,30 +427,42 @@ async function findAuthoring(a) {
   const { key, editIdx, win } = best;
   const aid = T.subagentId(key);
   const ctx = { roots: a.roots, home: a.home, allowDirs: a.allowDirs, resolvePath: resolve };
+  // 렌더할 범위: 사람 메시지(서브에이전트는 브리프)부터 편집 결과까지. 그 앞의 줄은 렌더되지 않으니 길어도 상관없고, 범위 안의 긴 줄은 검사할 수 없어 mixed
+  let meta;
+  try { meta = await lineMeta(key, win.startOff, best.resEnd, o); } catch { return { found: false, reason: 'not-found' }; }
+  if (meta === LATE || late()) return timeout;
+  const editRel = editIdx - win.startIdx;
+  const b = best.brief;
+  let startRel = -1;
+  if (aid === null) {
+    for (const l of meta) if (l.human && l.rel <= editRel) startRel = l.rel;
+    if (startRel === -1) return { found: false, reason: 'no-human' };
+  } else {
+    if (!b || b.idx > editIdx) return { found: false, reason: 'no-human' };
+    if (b.len > o.windowLineMax) return { found: false, reason: 'mixed' };
+    startRel = b.idx >= win.startIdx ? b.idx - win.startIdx : 0;
+  }
+  const startLine = meta.find((l) => l.rel === startRel);
+  if (!startLine) return { found: false, reason: 'not-found' };
+  if (meta.some((l) => l.rel >= startRel && l.over)) return { found: false, reason: 'mixed' };
   let entries;
-  try { entries = await readWindow(key, win.startOff, best.resEnd, o); } catch { return { found: false, reason: 'not-found' }; }
+  try { entries = await readEntries(key, startLine.off, best.resEnd, o); } catch { return { found: false, reason: 'not-found' }; }
   if (late()) return timeout;
-  if (entries === null) return { found: false, reason: 'mixed' };   // 창에 검사할 수 없는 줄이 있다
-  const to0 = entries.findIndex((e) => e._i === editIdx - win.startIdx);
+  if (entries === null) return { found: false, reason: 'mixed' };   // 창이 windowTotalMax 를 넘는다
+  const to0 = entries.findIndex((e) => e._i === editRel - startRel);
   if (to0 === -1) return { found: false, reason: 'not-found' };
   let sessionId;
   let list;
-  let from;
+  let from = 0;
   let to;
   if (aid === null) {
     sessionId = path.basename(key, '.jsonl');
-    from = humanBefore(entries, to0, LOOK);
-    if (from === -1) return { found: false, reason: 'no-human' };
     list = entries;
     to = to0;
   } else {
-    const b = best.brief;
-    if (!b || b.idx > editIdx) return { found: false, reason: 'no-human' };
-    if (b.len > o.windowLineMax) return { found: false, reason: 'mixed' };
-    const inWin = b.idx >= win.startIdx ? entries.findIndex((e) => e._i === b.idx - win.startIdx) : -1;
-    list = inWin !== -1 ? entries.slice(inWin) : [b.e, ...entries];
-    to = to0 - Math.max(inWin, 0) + (inWin !== -1 ? 0 : 1);
-    from = 0;
+    const inWin = b.idx >= win.startIdx;   // 브리프가 범위 첫 줄이면 그대로, 앞이면 따로 붙인다
+    list = inWin ? entries : [b.e, ...entries];
+    to = inWin ? to0 : to0 + 1;
     // 부모는 서브에이전트 파일의 realpath 에서 찾는다: <프로젝트>/<부모 세션>/subagents/agent-<id>.jsonl → <프로젝트>/<부모 세션>.jsonl.
     // 별칭 폴더 이름이 아니라 실제 폴더이고, 읽은 기록들의 sessionId 가 그 id 와 같을 때만 부모로 받는다
     const parentDir = path.dirname(path.dirname(key));
