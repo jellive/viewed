@@ -24,7 +24,9 @@ const pickNext = (app: ElectronApplication, p: string) =>
 // userData 를 넘기면 그 앱 데이터로 다시 띄운다 — 설정은 이미 저장돼 있다
 async function launch(repo: string, reuse?: string): Promise<{ app: ElectronApplication; win: Page; github: string[]; userData: string }> {
   const userData = reuse ?? mkdtempSync(join(tmpdir(), 'viewed-'));
-  const app = await electron.launch({ args: ['.', '--lang=en-US', `--user-data-dir=${userData}`], cwd: join(__dirname, '..') });
+  const app = await electron.launch({ args: ['.', '--lang=en-US', `--user-data-dir=${userData}`], cwd: join(__dirname, '..'),
+    // 이 기기의 전역 git 신원(~/.gitconfig)이 테스트 레포 작성자('t')를 '남'으로 만들지 않게 — 신원이 없으면 전부 내 것이다
+    env: { ...process.env, HOME: mkdtempSync(join(tmpdir(), 'viewed-home-')), XDG_CONFIG_HOME: '' } });
   await pickNext(app, repo);
   const win = await app.firstWindow();
   const github: string[] = [];   // 기기 저장 + 로컬 폴더면 GitHub 에 한 건도 안 가야 한다
@@ -478,5 +480,27 @@ test('R4: a recent review of a folder that is not in the folder list is not show
   await expect(win.getByTestId('progress')).toHaveText('0 / 2');   // 마지막 리뷰가 열렸다 — 폴더 목록을 받은 뒤
   await expect(win.getByTestId('recent-item').locator('span')).toHaveText([`${basename(a)} · feat ← main`]);
   expect((await storedHistory(win))[1]).toMatchObject({ repo: '/nowhere/ghost' });   // 기록에는 남아 있다
+  await app.close();
+});
+
+test('others-only files collapse with a real repo, and others\' added lines get the other tint', async () => {
+  const { makeOthersRepo } = require('../test/helpers.cjs') as { makeOthersRepo: () => string };
+  const repo = makeOthersRepo();
+  execFileSync('git', ['-C', repo, 'config', 'user.name', 'alice']);
+  execFileSync('git', ['-C', repo, 'config', 'user.email', 'a@example.test']);
+  const { app, win } = await launch(repo);
+  await win.getByTestId('local-add').click();
+  await openLocal(win);
+  const b = win.getByTestId('file-row').filter({ hasText: 'b.ts' });
+  await expect(b.getByTestId('file-others')).toBeVisible();
+  await expect(b).toHaveAttribute('data-others', '1');
+  await expect(b.getByTestId('file-check')).toBeChecked();
+  await expect(b.getByTestId('file-check')).toBeDisabled();
+  const mix = win.getByTestId('file-row').filter({ hasText: 'mix.ts' });
+  await expect(mix.getByTestId('file-others')).toHaveCount(0);
+  await expect(mix.getByTestId('diff')).toContainText('+b-line');
+  await expect(mix.locator('.ln.add.other')).toHaveCount(1);
+  await expect(mix.locator('.ln.add.other')).toContainText('b-line');
+  await expect(mix.locator('.ln.add').filter({ hasText: 'a-line' })).not.toHaveClass(/other/);
   await app.close();
 });
