@@ -8,7 +8,7 @@ const oid = (c: string) => c.repeat(40);
 const HEAD = oid('f'), MB = oid('e');
 
 // 데스크톱 브리지를 흉내 낸다(recent.spec.ts 의 fakeDesktop 모양) — git 은 고정 diff 하나, ask 는 요청을 쌓고 테스트가 답을 낸다
-async function fakeLocal(page: Page, o: { rename?: boolean; accounts?: boolean } = {}) {
+async function fakeLocal(page: Page, o: { rename?: boolean; accounts?: boolean; noMergeBase?: boolean } = {}) {
   await page.addInitScript((o) => {
     localStorage.setItem('viewed.settings', JSON.stringify({ accounts: o.accounts ? [{ label: 'personal', token: '' }] : [], gistAccount: '', gistId: '', secret: '', deviceId: 'mac', storage: 'device' }));
     const oid = (c: string) => c.repeat(40);
@@ -31,7 +31,7 @@ async function fakeLocal(page: Page, o: { rename?: boolean; accounts?: boolean }
         list: async () => ['/r/a'],
         info: async () => ({ refs: ['refs/heads/feat', 'refs/heads/main'], defaultBase: null, current: 'refs/heads/feat', remote: null }),
         run: async (_repo: string, op: string, ref: string) => op === 'resolve' ? oid(ref === 'refs/heads/feat' ? 'f' : 'd')
-          : op === 'mergeBase' ? oid('e') : op === 'rawDiff' ? raw : op === 'patchDiff' ? patch : null,
+          : op === 'mergeBase' ? (o.noMergeBase ? null : oid('e')) : op === 'rawDiff' ? raw : op === 'patchDiff' ? patch : null,
       },
       ask: {
         start: (req: { id: string }) => new Promise((res) => { w.__asks.push(req); waiting[req.id] = res; }),
@@ -77,6 +77,9 @@ test('a + on a local review asks that line and shows the answer under it with so
   await expect(thread.getByTestId('thread-source')).toHaveText('From the session log · e5f37e58 · 10-15 14:14');
   await expect(thread.getByTestId('thread-account')).toHaveText('Asked as you@example.com');
   await expect(thread).toContainText('why?');
+  // 진행 표시가 사라져도 답이 온 것을 화면 낭독기에 알린다
+  await expect(thread.getByTestId('thread-live')).toHaveText('Answer arrived.');
+  await expect(thread.getByTestId('thread-live')).toHaveAttribute('aria-live', 'polite');
 });
 
 test('a deleted line of a renamed file asks the merge-base side with the previous path', async ({ page }) => {
@@ -141,6 +144,7 @@ test('Esc in an empty input closes the thread, and a second + on the same line f
   await page.getByTestId('thread-input').fill('');
   await page.getByTestId('thread-input').press('Escape');
   await expect(page.getByTestId('thread')).toHaveCount(0);
+  await expect(ln.getByTestId('ask-btn')).toBeFocused();   // 닫으면 그 줄의 + 로 돌아간다
 });
 
 test('cancel removes the progress and a late answer is dropped', async ({ page }) => {
@@ -210,8 +214,11 @@ test('an error result shows its message and a retry', async ({ page }) => {
   await fakeLocal(page);
   await openLocal(page);
   await ask(page, 'add', 'new', 'why?');
-  await answer(page, { ok: false, error: 'login', message: 'Not logged in' });
-  await expect(page.getByTestId('thread-error')).toContainText('Not logged in');
+  // 아는 사유는 앱 언어 문구로(데스크톱 문구는 한국어 고정이다)
+  await answer(page, { ok: false, error: 'login', message: '로그인 필요' });
+  await expect(page.getByTestId('thread-error')).toContainText('Claude Code is not logged in.');
+  await expect(page.getByTestId('thread-error')).not.toContainText('로그인 필요');
+  await expect(page.getByTestId('thread-live')).toHaveText('Claude Code is not logged in.');
   await page.getByTestId('thread-error').getByRole('button').click();
   await expect(page.getByTestId('thread-error')).toHaveCount(0);
   const all = await asks(page);
@@ -220,4 +227,32 @@ test('an error result shows its message and a retry', async ({ page }) => {
   expect(all[1].id).not.toBe(all[0].id);
   await answer(page, ok('fine now'));
   await expect(page.getByTestId('thread-answer')).toHaveText('fine now');
+});
+
+test('a failed result without a known reason shows the desktop message', async ({ page }) => {
+  await fakeLocal(page);
+  await openLocal(page);
+  await ask(page, 'add', 'new', 'why?');
+  await answer(page, { ok: false, error: 'failed', message: 'exit 3' });
+  await expect(page.getByTestId('thread-error')).toContainText('exit 3');
+});
+
+test('without a merge base, deleted lines have no +', async ({ page }) => {
+  await fakeLocal(page, { noMergeBase: true });
+  await openLocal(page);
+  await expect(page.locator('.ln.del')).toHaveCount(1);
+  await expect(page.locator('.ln.del').getByTestId('ask-btn')).toHaveCount(0);
+  await expect(page.locator('.ln.add').getByTestId('ask-btn')).toHaveCount(1);
+});
+
+test.describe('on a phone-sized touch screen', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  // iOS 는 16px 보다 작은 입력칸에 포커스하면 화면을 확대한다
+  test('the thread input is at least 16px', async ({ page }) => {
+    await fakeLocal(page);
+    await openLocal(page);
+    await line(page, 'add', 'new').getByTestId('ask-btn').click();
+    const size = await page.getByTestId('thread-input').evaluate((e) => parseFloat(getComputedStyle(e).fontSize));
+    expect(size).toBeGreaterThanOrEqual(16);
+  });
 });

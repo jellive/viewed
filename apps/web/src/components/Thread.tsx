@@ -23,6 +23,17 @@ export function Thread({ data, onSend, onCancel, onClose, onFocused }: { data: T
     onFocused();
   }, [data.want]);
   const { pending, failed } = data;
+  const root = useRef<HTMLDivElement>(null);
+  // 데스크톱 문구는 한국어 고정이라 아는 사유는 앱 언어로, 'failed' 만 데스크톱이 준 사유를 보인다
+  const errText = failed && (failed.error === 'failed' && failed.message ? failed.message : t.askError[failed.error]);
+  // 진행 표시는 끝나면 사라지므로, 스레드마다 하나 남는 알림 자리에서 단계·답 도착·실패를 읽어 준다
+  const live = pending ? t.askStage[pending.stage] : errText || (data.turns.length ? t.askArrived : '');
+  const close = () => {
+    // 닫으면 스레드가 사라지므로 그 줄의 + 로 포커스를 돌려준다
+    const btn = root.current?.previousElementSibling?.querySelector<HTMLButtonElement>('.ask-btn');
+    onClose();
+    btn?.focus();
+  };
   const submit = () => {
     const q = draft.trim();
     if (!q || pending) return;
@@ -31,7 +42,8 @@ export function Thread({ data, onSend, onCancel, onClose, onFocused }: { data: T
   };
   const question = (q: string) => <p className="thread-q"><b>{t.askYou}</b> {q}</p>;
   return (
-    <div data-testid="thread" className="thread">
+    <div data-testid="thread" className="thread" ref={root}>
+      <span data-testid="thread-live" className="sr-only" role="status" aria-live="polite">{live}</span>
       {data.turns.map((x, i) => (
         <div key={i} className="turn">
           {question(x.q)}
@@ -47,7 +59,7 @@ export function Thread({ data, onSend, onCancel, onClose, onFocused }: { data: T
       {pending && (
         <div className="turn">
           {question(pending.q)}
-          <div className="thread-progress" role="status">
+          <div className="thread-progress">
             <span className="spin" aria-hidden="true" />
             <span>{t.askStage[pending.stage]}</span>
             <button type="button" data-testid="thread-cancel" onClick={onCancel}>{t.askCancel}</button>
@@ -58,7 +70,7 @@ export function Thread({ data, onSend, onCancel, onClose, onFocused }: { data: T
         <div className="turn">
           {question(failed.q)}
           <div data-testid="thread-error" role="alert" className="thread-error">
-            <span>{failed.message || t.askError[failed.error]}</span>
+            <span>{errText}</span>
             <button type="button" onClick={() => onSend(failed.q)}>{t.askRetry}</button>
           </div>
         </div>
@@ -69,7 +81,7 @@ export function Thread({ data, onSend, onCancel, onClose, onFocused }: { data: T
           placeholder={data.turns.length ? t.askFollowUp : t.askPlaceholder}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Escape' && draft === '') { e.preventDefault(); onClose(); }
+            if (e.key === 'Escape' && draft === '') { e.preventDefault(); close(); }
             // 한글 조합 중의 Enter 는 글자를 확정할 뿐이다. Shift+Enter 는 줄바꿈
             else if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); }
           }} />

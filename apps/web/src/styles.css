@@ -291,3 +291,6 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   font: inherit; color: inherit; background: var(--canvas); border: 1px solid var(--border); border-radius: 6px;
 }
 .thread-form textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+/* 위 font: inherit 가 전역 16px 규칙보다 구체적이라 여기서 다시 — iOS 포커스 확대 방지 */
+@media (max-width: 639px), (pointer: coarse) { .thread-form textarea { font-size: 16px; } }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
