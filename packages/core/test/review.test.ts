@@ -231,3 +231,29 @@ describe('buildReview — block judgment after a rebase or merge (spec §5)', ()
     expect(b).not.toEqual(a);
   });
 });
+
+describe('buildReview others', () => {
+  it('counts others-only files as viewed with no record', async () => {
+    const r = await buildReview(snap([fa, fb]), {}, S, new Map([['a.ts', ['Bob']]]));
+    expect(r.items[0]).toMatchObject({ state: 'viewed', others: ['Bob'] });
+    expect(r.items[0].newBlocks).toBeUndefined();
+    expect(r.items[1].state).toBe('unread');
+    expect(r.viewedCount).toBe(1);
+  });
+  it('completes when all files are others', async () => {
+    const r = await buildReview(snap([fa]), {}, S, new Map([['a.ts', ['Bob']]]));
+    expect(r.complete).toBe(true);
+  });
+  it('others wins over a stale record', async () => {
+    const key = await recordKey(S, 'acme', 'widget', 'feat', 'a.ts');
+    const st: DeviceState = { [key]: { fp: 'old', blob: 'a0', head: 'h1', at: 't', viewed: true } };
+    const r = await buildReview(snap([fa]), st, S, new Map([['a.ts', ['Bob']]]));
+    expect(r.items[0]).toMatchObject({ state: 'viewed', others: ['Bob'] });
+    expect(r.items[0].carried).toBeUndefined();
+  });
+  it('no others argument is unchanged', async () => {
+    const r = await buildReview(snap([fa]), {}, S);
+    expect(r.items[0].others).toBeUndefined();
+    expect(r.items[0].state).toBe('unread');
+  });
+});

@@ -21,5 +21,6 @@ export type FileState = 'viewed' | 'unread' | 'changed-since-viewed';
 export interface ReviewItem {
   file: ChangedFile; key: string; fp: string; meta: string; blocks?: string[]; base?: string;
   state: FileState; record?: ViewRecord; newBlocks?: number[]; carried?: 'same' | 'shrunk'; dropped?: number;
+  others?: string[];   // 남의 커밋만 닿은 파일이라 확인한 것으로 친다 — 남 작성자 이름
 }
 export interface Review { items: ReviewItem[]; viewedCount: number; total: number; incomplete: boolean; complete: boolean }

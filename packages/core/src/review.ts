@@ -16,7 +16,8 @@ async function sigsFor(secret: string, fp: string, patch: string): Promise<strin
   return s;
 }
 
-export async function buildReview(snap: Snapshot, state: DeviceState, secret: string): Promise<Review> {
+export async function buildReview(snap: Snapshot, state: DeviceState, secret: string,
+  others?: ReadonlyMap<string, string[]>): Promise<Review> {
   const items: ReviewItem[] = [];
   for (const file of snap.files) {
     const key = await recordKey(secret, snap.owner, snap.repo, snap.branch, file.path);
@@ -24,9 +25,11 @@ export async function buildReview(snap: Snapshot, state: DeviceState, secret: st
     const meta = await metaSig(file);
     const blocks = file.patch !== undefined ? await sigsFor(secret, fp, file.patch) : undefined;
     const record = state[key];
+    const names = others?.get(file.path);
     let st: FileState;
     let newBlocks: number[] | undefined, carried: ReviewItem['carried'], dropped: number | undefined;
-    if (!record || !record.viewed) st = 'unread';
+    if (names) st = 'viewed';   // 남의 표시가 기록보다 이긴다
+    else if (!record || !record.viewed) st = 'unread';
     else if (record.fp === fp) st = 'viewed';
     // 옛 기록·patch 없는 파일·상태/mode 변경은 블록으로 판정하지 않는다(spec §5)
     else if (!record.blocks || !blocks || record.meta !== meta) st = 'changed-since-viewed';
@@ -42,7 +45,7 @@ export async function buildReview(snap: Snapshot, state: DeviceState, secret: st
       else { st = 'changed-since-viewed'; newBlocks = miss; }
     }
     items.push({ file, key, fp, meta, ...(blocks ? { blocks } : {}), ...(snap.mergeBase ? { base: snap.mergeBase } : {}),
-      state: st, record, ...(newBlocks ? { newBlocks } : {}), ...(carried ? { carried } : {}), ...(dropped ? { dropped } : {}) });
+      state: st, record, ...(names ? { others: names } : {}), ...(newBlocks ? { newBlocks } : {}), ...(carried ? { carried } : {}), ...(dropped ? { dropped } : {}) });
   }
   const viewedCount = items.filter((i) => i.state === 'viewed').length;
   return { items, viewedCount, total: items.length, incomplete: snap.truncated,
