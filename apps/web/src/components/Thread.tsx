@@ -69,7 +69,7 @@ export function Thread({ data, onSend, onCancel, onClose, onFocused }: { data: T
       {failed && (
         <div className="turn">
           {question(failed.q)}
-          <div data-testid="thread-error" role="alert" className="thread-error">
+          <div data-testid="thread-error" className="thread-error">
             <span>{errText}</span>
             <button type="button" onClick={() => onSend(failed.q)}>{t.askRetry}</button>
           </div>

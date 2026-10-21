@@ -219,6 +219,7 @@ test('an error result shows its message and a retry', async ({ page }) => {
   await expect(page.getByTestId('thread-error')).toContainText('Claude Code is not logged in.');
   await expect(page.getByTestId('thread-error')).not.toContainText('로그인 필요');
   await expect(page.getByTestId('thread-live')).toHaveText('Claude Code is not logged in.');
+  await expect(page.getByTestId('thread-error')).not.toHaveAttribute('role', 'alert');   // 알림 자리 하나만 읽는다 — 두 번 읽히지 않게
   await page.getByTestId('thread-error').getByRole('button').click();
   await expect(page.getByTestId('thread-error')).toHaveCount(0);
   const all = await asks(page);
