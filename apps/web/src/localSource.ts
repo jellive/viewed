@@ -32,3 +32,15 @@ export async function localAuthors(repo: string, mergeBase: string, head: string
     return { files: j.files as Record<string, Author[]>, renames: j.renames as [string, string][] };
   } catch { return null; }
 }
+
+// head 의 줄마다 작성자 — 인덱스 n-1 이 head 줄 n. 경계·merge-base 이전 줄은 null. 실패·파싱 오류도 null(색을 안 입힌다)
+export async function localBlame(repo: string, head: string, path: string, mergeBase: string): Promise<(Author | null)[] | null> {
+  try {
+    const raw = await desktopGit()!.run(repo, 'blameAuthors', head, path, mergeBase);
+    if (!raw) return null;
+    const j = JSON.parse(raw) as unknown;
+    const pair = (x: unknown) => Array.isArray(x) && x.length === 2 && typeof x[0] === 'string' && typeof x[1] === 'string';
+    if (!Array.isArray(j) || !j.every((x) => x === null || pair(x))) return null;
+    return j as (Author | null)[];
+  } catch { return null; }
+}

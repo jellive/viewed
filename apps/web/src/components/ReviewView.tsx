@@ -6,6 +6,9 @@ import { DiffView } from './DiffView';
 import { SinceViewed } from './SinceViewed';
 import { t } from '../i18n';
 import { useThreads } from '../ask';
+import { useOtherLines, type BlameSrc } from '../lineAuthors';
+import type { DiffAsk, View } from '../ask';
+import type { ReviewItem } from '@viewed/core';
 
 export function ReviewView(a: { snap: Snapshot; merged: DeviceState; secret: string; store: SyncStore; readBlob: (sha: string) => Promise<string | null>; onRefresh: () => void; live: boolean; askRepo?: string; others?: ReadonlyMap<string, string[]>; isMe?: (a: Author) => boolean }) {
   const { review, toggle, sync } = useReview(a);
@@ -22,9 +25,18 @@ export function ReviewView(a: { snap: Snapshot; merged: DeviceState; secret: str
         {a.live && <span className="live">{t.live}</span>}
         <p data-testid="sync-status" className="sync" data-sync={sync}>{sync === 'error' ? t.syncFailed : sync === 'pending' ? t.saving : t.saved}</p>
       </div>
-      <FileList review={review} syncOk={sync === 'idle'} onToggle={toggle} renderDiff={(it) => it.file.patch === undefined || it.state !== 'changed-since-viewed'
-        ? <DiffView patch={it.file.patch} ask={forFile(it, 'full')} />
-        : <SinceViewed readBlob={a.readBlob} item={it} ask={(v) => forFile(it, v)} />} />
+      <FileList review={review} syncOk={sync === 'idle'} onToggle={toggle} renderDiff={(it) => (
+        <FileDiff item={it} readBlob={a.readBlob} forFile={forFile} src={a.askRepo && a.isMe && a.snap.mergeBase ? { repo: a.askRepo, head: a.snap.headSha, mergeBase: a.snap.mergeBase, isMe: a.isMe } : undefined} />
+      )} />
     </>
   );
+}
+
+// 펼쳐진 파일 하나 — 렌더될 때만 blame 을 부른다(접힌 파일은 이 컴포넌트가 없다). 지울 파일·patch 없는 파일은 blame 할 줄이 없다
+function FileDiff({ item: it, readBlob, forFile, src }: { item: ReviewItem; readBlob: (sha: string) => Promise<string | null>; forFile: (it: ReviewItem, v: View) => DiffAsk | undefined; src?: BlameSrc }) {
+  const has = it.file.patch !== undefined && it.file.status !== 'removed';
+  const others = useOtherLines(has ? src : undefined, it.file.path);
+  return it.file.patch === undefined || it.state !== 'changed-since-viewed'
+    ? <DiffView patch={it.file.patch} ask={forFile(it, 'full')} others={others} />
+    : <SinceViewed readBlob={readBlob} item={it} ask={(v) => forFile(it, v)} others={others} />;
 }

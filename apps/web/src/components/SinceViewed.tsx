@@ -17,7 +17,7 @@ function blocksView(item: ReviewItem): { patch: string; seen: ReadonlySet<number
 }
 
 // ask: 보기마다 좌표 규칙이 다르다(spec §5) — 블록 경로는 전체 diff 좌표('since-blocks'), blob 경로는 삭제 줄에 + 가 없다('since-blob')
-export function SinceViewed({ readBlob, item, ask }: { readBlob: (sha: string) => Promise<string | null>; item: ReviewItem; ask?: (view: View) => DiffAsk | undefined }) {
+export function SinceViewed({ readBlob, item, ask, others }: { readBlob: (sha: string) => Promise<string | null>; item: ReviewItem; ask?: (view: View) => DiffAsk | undefined; others?: ReadonlySet<number> }) {
   const [tab, setTab] = useState<'since' | 'full'>('since');
   const [s, setS] = useState<S>({ kind: 'loading' });
   const byBlocks = blocksView(item);
@@ -43,10 +43,10 @@ export function SinceViewed({ readBlob, item, ask }: { readBlob: (sha: string) =
 
   const shown: S = byBlocks !== null ? { kind: 'ok', patch: byBlocks.patch } : s;
   if (shown.kind === 'unavailable')
-    return <div><p data-testid="since-unavailable" className="note">{t.sinceUnavailable}</p><DiffView patch={item.file.patch} ask={ask?.('full')} /></div>;
+    return <div><p data-testid="since-unavailable" className="note">{t.sinceUnavailable}</p><DiffView patch={item.file.patch} ask={ask?.('full')} others={others} /></div>;
   if (shown.kind === 'same')
-    return <div><p data-testid="since-same-content" className="note">{t.sinceSame}</p><DiffView patch={item.file.patch} ask={ask?.('full')} /></div>;
-  if (shown.kind === 'error') return <div><p data-testid="since-error" role="alert" className="flash err">{shown.msg}</p><DiffView patch={item.file.patch} ask={ask?.('full')} /></div>;
+    return <div><p data-testid="since-same-content" className="note">{t.sinceSame}</p><DiffView patch={item.file.patch} ask={ask?.('full')} others={others} /></div>;
+  if (shown.kind === 'error') return <div><p data-testid="since-error" role="alert" className="flash err">{shown.msg}</p><DiffView patch={item.file.patch} ask={ask?.('full')} others={others} /></div>;
   return (
     <div>
       {byBlocks !== null && tab === 'since' && <p data-testid="since-blocks" className="note">{t.sinceBlocks}</p>}
@@ -54,9 +54,9 @@ export function SinceViewed({ readBlob, item, ask }: { readBlob: (sha: string) =
         <button data-testid="since-tab" aria-pressed={tab === 'since'} onClick={() => setTab('since')}>{t.sinceTab}</button>
         <button data-testid="full-tab" aria-pressed={tab === 'full'} onClick={() => setTab('full')}>{t.fullTab}</button>
       </div>
-      {tab === 'full' ? <DiffView patch={item.file.patch} ask={ask?.('full')} />
+      {tab === 'full' ? <DiffView patch={item.file.patch} ask={ask?.('full')} others={others} />
         : shown.kind === 'loading' ? <p className="note">{t.loading}</p>
-        : <div data-testid="since-diff"><DiffView patch={shown.patch} seen={byBlocks?.seen} ask={ask?.(blocked ? 'since-blocks' : 'since-blob')} /></div>}
+        : <div data-testid="since-diff"><DiffView patch={shown.patch} seen={byBlocks?.seen} ask={ask?.(blocked ? 'since-blocks' : 'since-blob')} others={others} /></div>}
     </div>
   );
 }

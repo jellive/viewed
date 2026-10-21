@@ -30,7 +30,8 @@ function target(l: Line, ask?: DiffAsk): { side: Side; line: number } | null {
 
 // seen: patch 를 \n 으로 나눈 줄 번호 중 이미 확인한 블록의 줄 — 흐리게 그린다
 // ask: 있으면 줄마다 + 를 달고, 그 줄의 스레드를 줄 바로 다음에 그린다
-export function DiffView({ patch, seen, ask }: { patch?: string; seen?: ReadonlySet<number>; ask?: DiffAsk }) {
+// others: 남이 쓴 head 줄 번호 — 추가 줄만 바탕을 입힌다(삭제·문맥 줄은 아니다)
+export function DiffView({ patch, seen, ask, others }: { patch?: string; seen?: ReadonlySet<number>; ask?: DiffAsk; others?: ReadonlySet<number> }) {
   if (patch === undefined) return <p data-testid="no-patch" className="note">{t.noPatch}</p>;
   return (
     <pre data-testid="diff" className="diff">
@@ -39,7 +40,7 @@ export function DiffView({ patch, seen, ask }: { patch?: string; seen?: Readonly
         const key = at && ask!.keyOf(at.side, at.line);
         return (
           <Fragment key={i}>
-            <div className={`ln ${l.kind}${seen?.has(i) ? ' seen' : ''}`} data-o={l.o ?? ''} data-n={l.n ?? ''}>
+            <div className={`ln ${l.kind}${seen?.has(i) ? ' seen' : ''}${l.kind === 'add' && l.n !== undefined && others?.has(l.n) ? ' other' : ''}`} data-o={l.o ?? ''} data-n={l.n ?? ''}>
               {l.kind === 'hunk' || l.kind === 'meta'
                 ? <span className="code">{l.text}</span>
                 : <span className="code">

@@ -24,6 +24,8 @@
   --primary-hover: #1c8139;
   --others-bg: #eef2f8;   /* 남의 변경 — 회청 */
   --others-fg: #3d4b5c;
+  --other-line: #eef2f8;   /* 남이 추가한 줄 */
+  --other-fg: #3d4b5c;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   color-scheme: light;
@@ -54,6 +56,8 @@
     --primary-hover: #1c8139; /* 흰 글자 대비 4.94:1 */
     --others-bg: #1b2330;
     --others-fg: #a9b6c7;
+    --other-line: #1b2330;
+    --other-fg: #a9b6c7;
     color-scheme: dark;
   }
 }
@@ -183,6 +187,9 @@ button.primary:hover { background: var(--primary-hover); }
 .ln.add { background: var(--add-line); }
 .ln.add::before, .ln.add::after { background: var(--add-num); color: var(--fg); }
 .ln.add .mk { color: var(--add-word); }
+.ln.add.other { background: var(--other-line); color: var(--other-fg); }
+.ln.add.other::before, .ln.add.other::after { background: var(--other-line); color: var(--other-fg); }
+.ln.add.other .mk { color: var(--other-fg); }
 .ln.del { background: var(--del-line); }
 .ln.del::before, .ln.del::after { background: var(--del-num); color: var(--fg); }
 .ln.del .mk { color: var(--del-word); }
