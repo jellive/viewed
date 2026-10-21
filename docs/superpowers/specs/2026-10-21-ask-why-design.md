@@ -61,7 +61,7 @@ renderer 가 질문 id(`crypto.randomUUID()`)를 정하고 `ask:start` 를 부�
 
 **후보 = 그 줄을 "쓴" 편집 하나** (codex 2차 P1·빌더 Q2):
 - 도구는 `Edit`·`MultiEdit`(각 편집)·`Write` 만. `file_path` 가 **그 파일 자체**여야 한다 — P 의 한 경로 + 레포 기준 경로(L 줄은 `previousPath ?? path`)와 같은 파일.
-- R 줄: `new_string`(Write 는 `content`)에 그 줄이 들어 있고 `old_string` 에는 없다. L 줄: `old_string` 에 있고 `new_string` 에는 없다. 그 줄을 문맥으로만 품은 이웃 편집은 양쪽에 다 있으니 빠진다.
+- "썼다"는 입력(`old_string`·`new_string`)이 아니라 결과 기록의 `toolUseResult.structuredPatch`(실제로 바뀐 hunk, 줄은 ` `·`+`·`-` 로 시작)로 본다. R 줄: `+` 줄의 나머지를 trim 한 것이 그 줄과 같다(Write 새 파일 `type: 'create'` 는 패치가 비어 있으니 `content` 에 그 줄이 있으면). L 줄: `-` 줄의 나머지가 그 줄과 같다. 그 줄을 문맥으로만 품은 이웃 편집·그대로 둔 Write update(` ` 줄)와 부분 문자열 치환(`replace_all`)·MultiEdit 중간 상태(입력엔 있어도 순변화엔 없다)는 빠진다. `toolUseResult` 가 없거나 객체가 아니거나 `structuredPatch` 배열이 없으면(Write 새 파일 제외) 후보가 아니다. (실측 — 이 Mac 기록의 키만: Edit 결과 `structuredPatch`·`originalFile`, Write 결과 `type`·`structuredPatch`·`originalFile`·`content`. MultiEdit 는 못 봤다 — 같은 규칙.)
 - 그 `tool_use` 의 결과(`tool_result`)가 오류가 아니다(실패한 Edit 제외).
 - 시각 ≤ T. 여럿이면 가장 늦은 것.
 - **Bash·Grep·Agent 브리프 등은 후보가 아니다.** Bash 는 무엇을 고쳤는지 확정할 수 없어 경로 언급만으로 받으면 다른 레포 편집이 섞인다(codex 2차 P1). 그래서 Bash 로 쓴 줄은 세션 기록 없음이 된다 — §1 의 실측 예(`raw.pop()` 줄, Bash 안 python 치환)도 여기에 해당한다(§12).

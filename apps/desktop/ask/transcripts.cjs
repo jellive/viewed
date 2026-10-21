@@ -10,8 +10,10 @@ const FILE_TOOLS = new Set(['Read', 'Edit', 'MultiEdit', 'Write', 'Grep', 'Glob'
 // Claude Code 가 user 기록으로 끼워 넣는 꼬리표 — 사람이 친 글이 아니다
 const INJECTED = ['<command-name>', '<command-message>', '<command-args>', '<local-command-', '<system-reminder>',
   '<bash-input>', '<bash-stdout>', '<bash-stderr>', '<task-notification>', '<user-prompt-submit-hook>'];
-// 경로 이름에 이어지는 글자. 이게 뒤따르면 같은 이름이 아니다(/viewed 뒤의 -company)
-const CONT = /[\p{L}\p{N}._-]/u;
+// 이름 글자. '/' 나 '~' 앞에 이게 붙어 있으면 절대 경로의 시작이 아니다(a/b, ../x, 10/15)
+const CONT = /[\p{L}\p{M}\p{N}._-]/u;
+// 경로 토막을 끊는 글자. 공백은 따로 본다(다음 낱말에 '/' 가 있으면 경로가 이어진다)
+const PATH_STOP = /[\s"'`<>()[\]{},;|]/;
 const AGENT_ID = /^[A-Za-z0-9_-]+$/;
 const MASK = '[가림]';
 
@@ -86,20 +88,32 @@ function results(entries) {
   return m;
 }
 
-// 편집 도구 입력 → [{ old, neu }]. 모양이 다르면 빈 배열(후보 아님). Write 는 이전 내용을 모르니 old 는 빈 글
-function writes(name, input) {
-  if (!input || typeof input !== 'object') return [];
-  const pair = (o, n) => (typeof o === 'string' && typeof n === 'string' ? [{ old: o, neu: n }] : []);
-  if (name === 'Edit') return pair(input.old_string, input.new_string);
-  if (name === 'Write') return pair('', input.content);
-  if (name === 'MultiEdit' && Array.isArray(input.edits)) return input.edits.flatMap((x) => (x ? pair(x.old_string, x.new_string) : []));
-  return [];
+// 편집이 실제로 바꾼 줄 — 결과 기록의 toolUseResult.structuredPatch(hunk 의 lines 는 ' '·'+'·'-' 로 시작).
+// 입력(old_string·new_string)은 보지 않는다: 부분 문자열 치환·replace_all·MultiEdit 중간 상태는 입력만으로 순변화를 모른다.
+// Write 새 파일(type 'create')은 패치가 비어 있으니 content 전체가 더한 줄이다. 모양이 다르면 null — 후보가 아니다
+function changed(name, tur) {
+  if (!tur || typeof tur !== 'object' || Array.isArray(tur)) return null;
+  const sp = tur.structuredPatch;
+  if (name === 'Write' && tur.type === 'create' && (!Array.isArray(sp) || sp.length === 0)) {
+    return typeof tur.content === 'string' ? { add: tur.content.split('\n'), del: [] } : null;
+  }
+  if (!Array.isArray(sp)) return null;
+  const add = [];
+  const del = [];
+  for (const h of sp) {
+    if (!h || !Array.isArray(h.lines)) return null;
+    for (const l of h.lines) {
+      if (typeof l !== 'string') continue;
+      if (l[0] === '+') add.push(l.slice(1));
+      else if (l[0] === '-') del.push(l.slice(1));
+    }
+  }
+  return { add, del };
 }
 
-const hasLine = (s, want) => s.split('\n').some((l) => l.trim() === want);
 const longEnough = (t) => t.replace(/\s/g, '').length >= EXCERPT.minChars;
 
-// 그 줄을 "쓴" 편집 하나(spec §6 후보 조건). at = 편집이 끝난 시각(결과 기록) — 권한 대기 중 커밋이 끼어들어도 늦은 쪽으로 잰다
+// 그 줄을 "쓴" 편집 하나(spec §6 후보 조건). at = 결과 기록 시각(편집이 끝난 때) — 없거나 못 읽으면 후보가 아니다
 function findWrite(entries, q, resolvePath = path.normalize) {
   if (!Array.isArray(entries) || !q || typeof q.text !== 'string' || (q.side !== 'L' && q.side !== 'R')
     || !Array.isArray(q.files) || !Number.isFinite(q.until)) return null;
@@ -119,15 +133,11 @@ function findWrite(entries, q, resolvePath = path.normalize) {
       if (real === null || !files.has(real)) continue;
       const r = res.get(x.id);
       if (!r || r.err) continue;   // 결과가 없거나(중단) 실패한 편집
-      const times = [Date.parse(e.timestamp), r.at].filter(Number.isFinite);
-      if (!times.length) continue;
-      const at = Math.max(...times);
-      if (at > q.until) continue;
-      const wrote = writes(x.name, x.input).some(({ old, neu }) => {
-        const o = hasLine(old, want);
-        const n = hasLine(neu, want);
-        return q.side === 'R' ? n && !o : o && !n;
-      });
+      const at = r.at;
+      if (!Number.isFinite(at) || at > q.until) continue;
+      const ch = changed(x.name, r.tur);
+      if (!ch) continue;
+      const wrote = (q.side === 'R' ? ch.add : ch.del).some((l) => l.trim() === want);
       if (wrote && (!best || at >= best.at)) best = { index, at, toolUseId: x.id };
     }
   });
@@ -168,44 +178,69 @@ const SECRETS = [
   /\bgh[pousr]_[A-Za-z0-9]{36,}/g,
   /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
 ];
-// 이름=값 · 이름: 값 · "이름":"값". 비교(==)·화살표(=>)는 값이 아니다
-const KV = /((?:password|passwd|secret|token|api[-_.]?key)[A-Za-z0-9_.-]*["']?\s*(?::|=(?![=>]))\s*["']?)([^\s"'`,;]+)/gi;
+// 이름=값 · 이름: 값 · "이름":"값". 비교(==)·화살표(=>)는 값이 아니다.
+// 따옴표 값은 닫는 따옴표까지(없으면 줄 끝까지) — 공백 든 값이 첫 낱말만 가려지지 않게
+const KV = /((?:password|passwd|secret|token|api[-_.]?key)[A-Za-z0-9_.-]*["']?\s*(?::|=(?![=>]))\s*)("(?:[^"\\\n]|\\.)*"?|'(?:[^'\\\n]|\\.)*'?|`(?:[^`\\\n]|\\.)*`?|[^\s"'`,;]+)/gi;
 
 function scrubSecrets(s) {
   let out = String(s);
   for (const re of SECRETS) out = out.replace(re, MASK);
-  return out.replace(KV, (_, k) => k + MASK);
+  return out.replace(KV, (_, k, v) => (/^["'`]/.test(v) ? k + v[0] + MASK + v[0] : k + MASK));
 }
 
-// 남긴 글 속 홈 아래 절대 경로가 P(레포·워크트리)·허용 폴더 밖이면 true. 홈을 모르면 판정할 수 없으니 true
-function foreignPath(text, ctx, resolve) {
+// '/' 로 시작하는 경로 토막. 공백 뒤 낱말에 '/' 가 있으면 경로가 이어진다(/home/u/viewed copy/.env).
+// 끝의 문장 부호와 :줄:칸 은 뗀다 — '..' 은 경로라 남긴다
+function pathToken(text, i) {
+  const word = (k) => { while (k < text.length && !PATH_STOP.test(text[k])) k++; return k; };
+  let j = word(i);
+  for (;;) {
+    let k = j;
+    while (k < text.length && (text[k] === ' ' || text[k] === '\t')) k++;
+    if (k === j) break;
+    const m = word(k);
+    if (m === k || !text.slice(k, m).includes('/')) break;
+    j = m;
+  }
+  const tail = /([^./])[.,:;!?]+$/;
+  return text.slice(i, j).replace(tail, '$1').replace(/(?::\d+){1,2}$/, '').replace(tail, '$1');
+}
+
+// 이 앱은 macOS 전용 — 기본 파일 시스템이 대소문자·유니코드 정규화를 가리지 않으니 비교는 NFC 소문자로
+const fold = (s) => s.normalize('NFC').toLowerCase();
+const under = (p, r) => p === r || p.startsWith(r === '/' ? '/' : r + '/');
+
+// 글을 받아 "P·허용 폴더 밖의 홈 아래 경로가 있나"를 답하는 판정기. 홈을 모르면 판정할 수 없으니 늘 true.
+// 지름길 없음: 경로 토막마다 펼치고(~/·$HOME/·${HOME}/) 정규화('..' 처리)하고 resolve 한 뒤 경계 비교로만 본다
+function pathJudge(ctx, resolve) {
   const home = absNorm(ctx.home);
-  if (home === null || home === '/') return true;
-  const allowed = [...(ctx.roots || []), ...(ctx.allowDirs || [])].map(absNorm).filter((a) => a !== null);
-  // at 자리가 이름의 끝인가: 글 끝이거나 '/' 도 이름 글자도 아니다
-  const stop = (s, at) => at >= s.length || (s[at] !== '/' && !CONT.test(s[at]));
-  const ok = (s) => {   // s 는 홈으로 시작하는 나머지 글
-    const n = home.length;
-    if (stop(s, n) || (s[n] === '/' && stop(s, n + 1))) return true;   // 홈 자체('/home/u', '~/')
-    if (allowed.some((a) => s.startsWith(a) && (s.length === a.length || s[a.length] === '/' || stop(s, a.length)))) return true;
-    // 링크 경로(레포 폴더가 심볼릭 링크)는 findWrite 와 같은 resolve 로 풀어 본다. 경로는 공백·따옴표·괄호 앞까지, 끝의 :줄:칸 은 뗀다
-    const token = /^[^\s"'`<>()[\]{},;|]+/.exec(s)[0].replace(/(?::\d+){1,2}$/, '').replace(/[.:]+$/, '');
-    try { return insideAny(resolve(token), allowed); } catch { return false; }
+  if (home === null || home === '/') return () => true;
+  const fh = fold(home);
+  const allowed = [...(ctx.roots || []), ...(ctx.allowDirs || [])].map(absNorm).filter((a) => a !== null).map(fold);
+  const foreign = (raw) => {
+    const n = trimSlash(path.posix.normalize(raw));
+    let r = n;
+    try { const x = resolve(n); if (typeof x === 'string' && path.isAbsolute(x)) r = trimSlash(path.posix.normalize(x)); } catch { /* 못 풀면 정규화한 그대로 */ }
+    const fn = fold(n);
+    const fr = fold(r);
+    if (!under(fn, fh) && !under(fr, fh)) return false;   // 홈 밖 — 판정 대상이 아니다(spec §6)
+    if (fr === fh) return false;                          // 홈 자체
+    return !allowed.some((a) => under(fr, a));
   };
-  const starts = (i) => i === 0 || !CONT.test(text[i - 1]);
-  for (let i = text.indexOf(home); i !== -1; i = text.indexOf(home, i + 1)) {
-    if (!starts(i)) continue;
-    const s = text.slice(i);
-    if (!stop(s, home.length) && s[home.length] !== '/') continue;   // /home/u2 는 홈이 아니다
-    if (!ok(s)) return true;
-  }
-  for (const alias of ['~/', '$HOME/', '${HOME}/']) {
-    for (let i = text.indexOf(alias); i !== -1; i = text.indexOf(alias, i + 1)) {
-      if (!starts(i)) continue;
-      if (!ok(home + text.slice(i + alias.length - 1))) return true;
+  const ALIASES = ['~/', '$HOME/', '${HOME}/'];
+  return (text) => {
+    const s = String(text);
+    for (let i = 0; i < s.length; i++) {
+      if (i > 0 && CONT.test(s[i - 1])) continue;   // 이름 중간 — 절대 경로의 시작이 아니다
+      let raw = null;
+      if (s[i] === '/') raw = pathToken(s, i);
+      else {
+        const a = ALIASES.find((x) => s.startsWith(x, i));
+        if (a) raw = home + pathToken(s, i + a.length - 1);
+      }
+      if (raw !== null && foreign(raw)) return true;
     }
-  }
-  return false;
+    return false;
+  };
 }
 
 // 서로게이트 쌍을 가르지 않고 n 자 이하로 자른다
@@ -253,7 +288,7 @@ function buildExcerpt(entries, from, to, ctx) {
   const res = results(list);
   const lo = Math.max(0, Math.trunc(Number(from)) || 0);
   const hi = Math.min(list.length - 1, Math.trunc(Number(to)));
-  const blocks = [];   // { keep, cap, text } — keep: 합계를 넘어도 남기는 여는 글
+  const blocks = [];   // { kind, keep, cap, text } — keep: 합계를 넘어도 남기는 여는 글
   for (let i = lo; i <= hi; i++) {
     const e = list[i];
     if (!e) continue;
@@ -261,32 +296,34 @@ function buildExcerpt(entries, from, to, ctx) {
     if (e.type === 'user') {
       const t = promptText(e);   // tool_result 는 그 도구 블록에 붙는다. isMeta·자동 삽입은 뺀다
       if (t === null) continue;
-      if (e.isSidechain === true) blocks.push({ keep: true, cap: EXCERPT.brief, text: `[브리프${when}]\n${t}` });
-      else blocks.push({ keep: true, cap: EXCERPT.human, text: `[사람${when}]\n${t}` });
+      if (e.isSidechain === true) blocks.push({ kind: 'brief', keep: true, cap: EXCERPT.brief, text: `[브리프${when}]\n${t}` });
+      else blocks.push({ kind: 'human', keep: true, cap: EXCERPT.human, text: `[사람${when}]\n${t}` });
       continue;
     }
     if (e.type !== 'assistant') continue;
     for (const x of items(e)) {
       if (!x) continue;
       if (x.type === 'text' && typeof x.text === 'string' && x.text.trim()) {
-        blocks.push({ keep: false, cap: EXCERPT.block, text: `[Claude${when}]\n${x.text}` });
+        blocks.push({ kind: 'text', keep: false, cap: EXCERPT.block, text: `[Claude${when}]\n${x.text}` });
       } else if (x.type === 'thinking' && typeof x.thinking === 'string' && x.thinking.trim()) {
-        blocks.push({ keep: false, cap: EXCERPT.block, text: `[Claude 생각${when}]\n${x.thinking}` });
+        blocks.push({ kind: 'thinking', keep: false, cap: EXCERPT.block, text: `[Claude 생각${when}]\n${x.thinking}` });
       } else if (x.type === 'tool_use' && FILE_TOOLS.has(x.name)) {
         const p = target(x, e, resolve);
         if (p === null || !insideAny(p, roots)) continue;   // 밖이거나 모르는 대상 — 입력·결과째 뺀다
         const r = res.get(x.id);
         const body = renderInput(x.name, x.input || {});
-        blocks.push({ keep: false, cap: EXCERPT.block, text: `[${x.name} ${p}${when}]${body ? `\n${body}` : ''}${r ? `\n→ ${r.text}` : ''}` });
+        blocks.push({ kind: 'tool', keep: false, cap: EXCERPT.block, text: `[${x.name} ${p}${when}]${body ? `\n${body}` : ''}${r ? `\n→ ${r.text}` : ''}` });
       }
       // Bash·웹·MCP·Agent 등은 넣지 않는다
     }
   }
-  // 섞인 구간: 남긴 글 전체(자르기 전)에서 P 밖의 홈 경로가 보이면 세션 근거 전체를 뺀다
-  if (blocks.some((b) => foreignPath(b.text, c, resolve))) return { mixed: true };
+  // 섞인 구간: 남긴 글 전체(자르기 전)와 머리 줄에서 P 밖의 홈 경로가 보이면 세션 근거 전체를 뺀다
+  const rawTitle = typeof c.title === 'string' && c.title ? c.title : null;
+  const foreign = pathJudge(c, resolve);
+  if (blocks.some((b) => foreign(b.text)) || (rawTitle !== null && foreign(rawTitle))) return { mixed: true };
 
   const parts = blocks.map((b) => ({ keep: b.keep, text: cut(scrubSecrets(b.text), b.cap) }));
-  const title = typeof c.title === 'string' && c.title ? cut(c.title, 200) : null;
+  const title = rawTitle !== null ? cut(scrubSecrets(rawTitle), 200) : null;
   const sep = 2;   // '\n\n'
   const size = (ps, extra) => ps.reduce((n, p) => n + p.text.length + sep, (title ? title.length + 1 : 0) + extra);
   const note = (n) => `…(오래된 블록 ${n}개 생략)`;

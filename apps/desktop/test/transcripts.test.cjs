@@ -12,8 +12,23 @@ const F = `${R}/src/a.ts`;
 const LINE = 'const answer = compute();';
 const CTX = { roots: [R], home: '/home/u', allowDirs: ['/home/u/.claude', '/tmp'] };
 
+// 줄 diff 를 흉내 낸 structuredPatch — 앞뒤 같은 줄은 문맥(' '), 가운데만 '-'/'+'
+function patchOf(old, neu) {
+  const a = old.split('\n');
+  const b = neu.split('\n');
+  let p = 0;
+  while (p < a.length && p < b.length && a[p] === b[p]) p++;
+  let s = 0;
+  while (s < a.length - p && s < b.length - p && a[a.length - 1 - s] === b[b.length - 1 - s]) s++;
+  const lines = [...a.slice(0, p).map((l) => ` ${l}`), ...a.slice(p, a.length - s).map((l) => `-${l}`),
+    ...b.slice(p, b.length - s).map((l) => `+${l}`), ...a.slice(a.length - s).map((l) => ` ${l}`)];
+  return [{ oldStart: 1, oldLines: a.length, newStart: 1, newLines: b.length, lines }];
+}
+const editTur = (old, neu, structuredPatch = patchOf(old, neu)) => ({ originalFile: old, structuredPatch, userModified: false, replaceAll: false });
+const writeTur = (type, content, originalFile = null) => ({ type, content, originalFile, structuredPatch: type === 'create' ? [] : patchOf(originalFile, content) });
+
 // 합성 세션 기록 — Claude Code 2.1.x 에서 본 모양만 흉내 낸다(실제 ~/.claude 기록은 읽지 않는다).
-// at 은 T0 기준 초. 안 주면 기록마다 1초씩 늘어난다
+// at 은 T0 기준 초. 안 주면 기록마다 1초씩 늘어난다. o.tur: 결과 기록의 toolUseResult(null 이면 없음), o.resultTs: 결과 시각 덮어쓰기(null 이면 없음)
 function tx() {
   const entries = [];
   let clock = 0;
@@ -21,11 +36,14 @@ function tx() {
   const push = (e) => { entries.push(e); return entries.length - 1; };
   const when = (o) => iso(o && o.at !== undefined ? o.at : ++clock);
   const side = (o) => (o && o.sidechain ? { isSidechain: true } : {});
-  const result = (id, out, o) => push({
-    type: 'user', timestamp: when(o), sessionId: 'sess-1', ...side(o),
-    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: out, ...(o.err ? { is_error: true } : {}) }] },
-    ...(o.tur !== undefined ? { toolUseResult: o.tur } : {}),
-  });
+  const result = (id, out, o) => {
+    const ts = o.resultTs !== undefined ? o.resultTs : when(o);
+    return push({
+      type: 'user', ...(ts === null ? {} : { timestamp: ts }), sessionId: 'sess-1', ...side(o),
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: out, ...(o.err ? { is_error: true } : {}) }] },
+      ...(o.tur !== undefined && o.tur !== null ? { toolUseResult: o.tur } : {}),
+    });
+  };
   function tool(name, input, out, o = {}) {
     const id = `toolu_${++ids}`;
     const i = push({
@@ -35,8 +53,10 @@ function tx() {
     if (out !== undefined) result(id, out, o);
     return i;
   }
+  // 실패한 편집에도 '그 줄을 더한' 패치를 붙인다 — 오류 표시만으로 빠지는지 보려고
   const edit = (file, old, neu, o = {}) => tool('Edit', { file_path: file, old_string: old, new_string: neu },
-    o.err ? '<tool_use_error>String to replace not found in file.</tool_use_error>' : 'The file has been updated.', o);
+    o.err ? '<tool_use_error>String to replace not found in file.</tool_use_error>' : 'The file has been updated.',
+    { ...o, tur: o.tur !== undefined ? o.tur : editTur(old, neu) });
   const human = (text, o = {}) => push({
     type: 'user', timestamp: when(o), sessionId: 'sess-1', ...side(o), ...(o.meta ? { isMeta: true } : {}),
     message: { role: 'user', content: o.array ? [{ type: 'text', text }] : text },
@@ -75,7 +95,8 @@ test('only a successful edit that wrote the line counts', () => {
   t.tool('Grep', { pattern: LINE, path: R }, `src/a.ts:2:${LINE}`);
   t.tool('Bash', { command: `printf '%s\\n' '${LINE}' >> ${F}` }, '');
   t.edit(F, 'nothing here', LINE, { err: true });                                   // 실패한 Edit
-  t.tool('Edit', { file_path: F, old_string: 'zzz', new_string: LINE }, '<tool_use_error>File has not been read yet.</tool_use_error>');   // 플래그 없는 오류 결과
+  t.tool('Edit', { file_path: F, old_string: 'zzz', new_string: LINE }, '<tool_use_error>File has not been read yet.</tool_use_error>',
+    { tur: editTur('zzz', LINE) });                                                    // 플래그 없는 오류 결과
   t.edit(F, `${LINE}\nfoo();`, `${LINE}\nbar();`);                                  // 그 줄을 문맥으로만 품은 이웃
   t.edit(F, 'const answer = compute(1);', 'const answer = compute(2);');            // 비슷하기만 한 줄
   t.edit(F, 'z();', `// ${LINE} 는 지웠다`);                                         // 그 줄을 부분 문자열로만 품은 줄
@@ -102,7 +123,20 @@ test('edits after the commit time are ignored and the latest earlier one wins', 
   assert.equal(T.findWrite(t.entries, q({ until: T0 + 5_000 })), null);
 });
 
-test('a deleted line is found through old_string', () => {
+test('a result without a usable timestamp is not a candidate', () => {
+  for (const resultTs of ['invalid', null]) {
+    const t = tx();
+    t.edit(F, 'a();', LINE, { resultTs });   // tool_use 시각은 멀쩡해도 결과 시각이 없으면 후보가 아니다
+    assert.equal(T.findWrite(t.entries, q()), null, String(resultTs));
+  }
+  // 결과 시각이 기준 시각을 넘으면, tool_use 가 그 전이어도 빠진다
+  const t = tx();
+  t.edit(F, 'a();', LINE, { at: 10, resultTs: iso(40) });
+  assert.equal(T.findWrite(t.entries, q({ until: T0 + 30_000 })), null);
+  assert.equal(T.findWrite(t.entries, q({ until: T0 + 40_000 })).at, T0 + 40_000);
+});
+
+test('a deleted line is found through a removed patch line', () => {
   const t = tx();
   const removed = t.edit(F, `keep();\n${LINE}`, 'keep();', { at: 10 });
   t.edit(F, 'other();', LINE, { at: 20 });   // 나중에 다시 넣은 편집은 R 쪽 후보일 뿐
@@ -113,16 +147,46 @@ test('a deleted line is found through old_string', () => {
 
 test('MultiEdit and Write count', () => {
   const m = tx();
-  const multi = m.tool('MultiEdit', { file_path: F, edits: [{ old_string: 'a();', new_string: 'b();' }, { old_string: 'c();', new_string: `c();\n${LINE}` }] }, 'Applied 2 edits.');
+  const multi = m.tool('MultiEdit', { file_path: F, edits: [{ old_string: 'a();', new_string: 'b();' }, { old_string: 'c();', new_string: `c();\n${LINE}` }] },
+    'Applied 2 edits.', { tur: editTur('a();\nc();', `b();\nc();\n${LINE}`) });
   assert.equal(T.findWrite(m.entries, q()).index, multi);
   const ml = tx();
-  const multiDel = ml.tool('MultiEdit', { file_path: F, edits: [{ old_string: 'a();', new_string: 'b();' }, { old_string: `${LINE}\n`, new_string: '' }] }, 'Applied 2 edits.');
+  const multiDel = ml.tool('MultiEdit', { file_path: F, edits: [{ old_string: 'a();', new_string: 'b();' }, { old_string: `${LINE}\n`, new_string: '' }] },
+    'Applied 2 edits.', { tur: editTur(`a();\n${LINE}\nz();`, 'b();\nz();') });
   assert.equal(T.findWrite(ml.entries, q({ side: 'L' })).index, multiDel);
   const w = tx();
-  const write = w.tool('Write', { file_path: F, content: `import x;\n${LINE}\n` }, 'File created successfully.');
-  w.tool('Write', { file_path: `${R}/src/b.ts`, content: `${LINE}\n` }, 'File created successfully.', { at: 99 });   // 다른 파일
-  assert.equal(T.findWrite(w.entries, q()).index, write);
+  const content = `import x;\n${LINE}\n`;
+  const create = w.tool('Write', { file_path: F, content }, 'File created successfully.', { tur: writeTur('create', content) });
+  w.tool('Write', { file_path: `${R}/src/b.ts`, content: `${LINE}\n` }, 'File created successfully.', { at: 99, tur: writeTur('create', `${LINE}\n`) });   // 다른 파일
+  assert.equal(T.findWrite(w.entries, q()).index, create);
   assert.equal(T.findWrite(w.entries, q({ side: 'L' })), null);
+  const u = tx();
+  const update = u.tool('Write', { file_path: F, content }, 'File updated.', { tur: writeTur('update', content, 'import x;\n') });
+  assert.equal(T.findWrite(u.entries, q()).index, update);
+});
+
+test('a line counts only when the recorded patch adds or removes it', () => {
+  const none = (build, side = 'R') => { const t = tx(); build(t); return T.findWrite(t.entries, q({ side })); };
+  // 부분 문자열 치환: 입력의 new_string 은 그 줄이지만, 실제 바뀐 줄은 '  <그 줄> // keep'
+  assert.equal(none((t) => t.tool('Edit', { file_path: F, old_string: 'PLACEHOLDER', new_string: LINE, replace_all: true }, 'The file has been updated.',
+    { tur: editTur('PLACEHOLDER', LINE, [{ oldStart: 3, oldLines: 1, newStart: 3, newLines: 1, lines: ['-  PLACEHOLDER // keep', `+  ${LINE} // keep`] }]) })), null);
+  // MultiEdit 중간 상태: 첫 편집이 넣고 둘째가 지웠다 — 실제 변경은 a() → b()
+  for (const side of ['R', 'L']) {
+    assert.equal(none((t) => t.tool('MultiEdit', { file_path: F, edits: [{ old_string: 'a();', new_string: LINE }, { old_string: LINE, new_string: 'b();' }] },
+      'Applied 2 edits.', { tur: editTur('a();', 'b();') }), side), null, side);
+  }
+  // Write update 가 그 줄을 그대로 두었다(문맥 줄) — 다시 쓴 게 아니다
+  const content = `${LINE}\nmore();\n`;
+  assert.equal(none((t) => t.tool('Write', { file_path: F, content }, 'File updated.', { tur: writeTur('update', content, `${LINE}\n`) })), null);
+  // toolUseResult 가 없거나, 객체가 아니거나, structuredPatch 가 없으면 후보가 아니다
+  for (const tur of [null, 'Error: something', { originalFile: 'a();' }, { structuredPatch: 'x' }, { type: 'update', content }]) {
+    assert.equal(none((t) => t.edit(F, 'a();', LINE, { tur })), null, JSON.stringify(tur));
+  }
+  assert.equal(none((t) => t.tool('Write', { file_path: F, content }, 'File created successfully.', { tur: { type: 'create', content: 'other();\n', structuredPatch: [] } })), null);   // create 는 결과의 content 로 본다
+  // 실제로 그 줄을 더한 편집은 고른다
+  const t = tx();
+  const real = t.edit(F, 'a();', `a();\n${LINE}`);
+  assert.equal(T.findWrite(t.entries, q()).index, real);
 });
 
 test('a line with quotes and backslashes in an Edit is found', () => {
@@ -224,20 +288,22 @@ test('the excerpt keeps prose and in-repo file tools, drops Bash and foreign too
   assert.ok(T.buildExcerpt(t.entries, from, e, { ...CTX, title: '세션 sess-1, 오래된→최근' }).text.startsWith('세션 sess-1, 오래된→최근\n'));
 });
 
+// 말 한 줄을 사이에 둔 최소 발췌
+const runSay = (text, ctx = CTX, file = F) => {
+  const t = tx();
+  const f = t.human('go');
+  t.say(text);
+  const e = t.edit(file, 'a();', 'bbbbbbbbbb();');
+  return T.buildExcerpt(t.entries, f, e, ctx);
+};
+
 test('a foreign absolute path in kept text drops the whole excerpt', () => {
   const ctx = { roots: [R, '/home/u/my repo'], home: '/home/u', allowDirs: ['/home/u/.claude', '/home/u/Library/Application Support/claude-profiles/p1', '/tmp'] };
-  const run = (text) => {
-    const t = tx();
-    const f = t.human('go');
-    t.say(text);
-    const e = t.edit(F, 'a();', 'bbbbbbbbbb();');
-    return T.buildExcerpt(t.entries, f, e, ctx);
-  };
-  for (const bad of ['읽음: /home/u/other/.env', 'see ~/other/.env', 'see $HOME/other/x', 'see /home/u/viewed-company/src/a.ts', 'file:///home/u/other/x', '"/home/u/other"']) {
-    assert.deepEqual(run(bad), { mixed: true }, bad);
+  for (const bad of ['읽음: /home/u/other/.env', 'see ~/other/.env', 'see $HOME/other/x', 'see ${HOME}/other/x', 'see /home/u/viewed-company/src/a.ts', 'file:///home/u/other/x', '"/home/u/other"']) {
+    assert.deepEqual(runSay(bad, ctx), { mixed: true }, bad);
   }
-  for (const ok of ['규칙 ~/.claude/rules/x.md 에 따라', '/tmp/x 에 썼다', 'see /home/u/viewed/src/a.ts:12', '`/home/u/viewed`', 'in /home/u/my repo/b.ts', 'profile /home/u/Library/Application Support/claude-profiles/p1/settings.json', 'home is /home/u and ~/', '/home/user2/x is not under home', 'a/home/u/b is relative']) {
-    const r = run(ok);
+  for (const ok of ['규칙 ~/.claude/rules/x.md 에 따라', '/tmp/x 에 썼다', 'see /home/u/viewed/src/a.ts:12', '`/home/u/viewed`', 'in /home/u/my repo/b.ts', 'profile /home/u/Library/Application Support/claude-profiles/p1/settings.json', 'home is /home/u and ~/', '/home/user2/x is not under home', 'a/home/u/b is relative', 'the repo is /home/u/viewed.', 'cd /home/u/viewed && ls', '/home/u/viewed/src/../lib/b.ts 를 본다']) {
+    const r = runSay(ok, ctx);
     assert.equal(r.mixed, undefined, ok);
     assert.ok(r.text.includes(ok), ok);
   }
@@ -247,6 +313,66 @@ test('a foreign absolute path in kept text drops the whole excerpt', () => {
   t.tool('Read', { file_path: `${R}/cfg.ts` }, 'const p = "/home/u/other/.env";');
   const e = t.edit(F, 'a();', 'bbbbbbbbbb();');
   assert.deepEqual(T.buildExcerpt(t.entries, f, e, ctx), { mixed: true });
+});
+
+test('foreign paths are judged after normalizing and resolving, with no raw prefix shortcut', () => {
+  // 루트·허용 폴더 이름으로 시작해도, 공백 뒤 '/' 든 낱말·'..'·이름 글자가 이어지면 다른 경로다
+  for (const bad of ['/home/u/viewed copy/.env', '~/viewed copy/.env', '/home/u/viewed/../other/.env', '~/viewed/../other/.env',
+    '~/.claude/../other/.env', '/home/u/viewed+other/.env', '$HOME/viewed/../other/.env', '/home/u/viewed src/a.ts']) {
+    assert.deepEqual(runSay(`see ${bad} now`), { mixed: true }, bad);
+  }
+  // resolvePath 가 레포 안처럼 보이는 경로를 밖으로 풀면 밖이다
+  const prefix = '/home/u/viewed/link/';
+  const resolvePath = (p) => (p.startsWith(prefix) ? `/home/u/other/${p.slice(prefix.length)}` : path.posix.normalize(p));
+  assert.deepEqual(runSay('see /home/u/viewed/link/x.ts', { ...CTX, resolvePath }), { mixed: true });
+  assert.equal(runSay('see /home/u/viewed/link/x.ts').mixed, undefined);   // 링크를 모르면 레포 안
+  // resolvePath 가 실패해도 '..' 을 푼 경로로 본다
+  const failing = (p) => { if (p.includes('other') || p.includes('..')) throw new Error('ENOENT'); return path.posix.normalize(p); };
+  assert.deepEqual(runSay('see /home/u/viewed/../other/.env', { ...CTX, resolvePath: failing }), { mixed: true });
+});
+
+test('a foreign path in any kept block kind drops the excerpt', () => {
+  const P = '/home/u/other/.env';
+  const cases = {
+    'human prompt': (t) => t.human(`see ${P}`),
+    'subagent brief': (t) => t.human(`brief ${P}`, { sidechain: true }),
+    thinking: (t) => t.think(`maybe ${P}`),
+    'assistant text': (t) => t.say(`read ${P}`),
+    'file-tool input': (t) => t.tool('Edit', { file_path: `${R}/cfg.ts`, old_string: 'a();', new_string: `const p = "${P}";` }, 'The file has been updated.'),
+    'file-tool result': (t) => t.tool('Read', { file_path: `${R}/cfg.ts` }, `const p = "${P}";`),
+  };
+  for (const [kind, add] of Object.entries(cases)) {
+    for (const [p, want] of [[P, true], [`${R}/x.ts`, false]]) {   // 같은 블록에 레포 안 경로면 남는다 — 그 블록이 발췌에 든다는 대조군
+      const t = tx();
+      const f = t.human('go');
+      const i = add(t);
+      const e = t.edit(F, 'a();', 'bbbbbbbbbb();');
+      const entries = JSON.parse(JSON.stringify(t.entries).split(P).join(p));
+      const r = T.buildExcerpt(entries, f, e, CTX);
+      assert.equal(r.mixed === true, want, `${kind} ${p}`);
+      if (!want) assert.ok(r.text.includes(`${R}/x.ts`), `${kind} kept ${i}`);
+    }
+  }
+});
+
+test('home and roots are compared case- and NFC-insensitively', () => {
+  assert.deepEqual(runSay('see /HOME/U/other/.env'), { mixed: true });
+  assert.equal(runSay('see /HOME/U/VIEWED/src/a.ts').mixed, undefined);
+  const H = '/home/가';
+  const ctx = { roots: [`${H}/viewed`], home: H, allowDirs: [] };
+  const file = `${H}/viewed/a.ts`;
+  assert.notEqual(`${H}/other/.env`.normalize('NFD'), `${H}/other/.env`);
+  assert.deepEqual(runSay(`see ${`${H}/other/.env`.normalize('NFD')}`, ctx, file), { mixed: true });
+  assert.equal(runSay(`see ${`${H}/viewed/b.ts`.normalize('NFD')}`, ctx, file).mixed, undefined);
+});
+
+test('the title goes through the same mixed check and masking', () => {
+  const t = tx();
+  const f = t.human('go');
+  const e = t.edit(F, 'a();', 'bbbbbbbbbb();');
+  assert.deepEqual(T.buildExcerpt(t.entries, f, e, { ...CTX, title: '/home/u/other/.env password=example-value' }), { mixed: true });
+  const r = T.buildExcerpt(t.entries, f, e, { ...CTX, title: '세션 x password=example-value' });
+  assert.ok(!r.text.includes('example-value') && r.text.startsWith('세션 x password=[가림]\n'), r.text);
 });
 
 test('secrets are masked', () => {
@@ -261,6 +387,10 @@ test('secrets are masked', () => {
   for (const secret of [ghp, pat, aws, sk, 'MIIEowKEYBODY', 'hunter22', 'abcd1234efgh', 'tok_value_1', 's3cr3tvalue', 'kkkkkkkk']) assert.ok(!s.includes(secret), secret);
   assert.ok(s.includes('DB_PASSWORD=[가림]'), s);
   assert.ok(s.includes('if (token === undefined) return;'), s);   // 비교식은 값이 아니다
+  // 따옴표 값은 닫는 따옴표까지 가린다(없으면 줄 끝까지)
+  const quoted = T.scrubSecrets(`password="alpha beta gamma"\nsecret='one two three' tail\ntoken="no close here\nnext line`);
+  for (const word of ['alpha', 'beta', 'gamma', 'one', 'two', 'three', 'no close', 'here']) assert.ok(!quoted.includes(word), `${word}: ${quoted}`);
+  assert.ok(quoted.includes('password="[가림]"') && quoted.includes(' tail') && quoted.includes('next line'), quoted);
   // 발췌에도 적용된다
   const t = tx();
   const f = t.human(`토큰은 ${ghp} 이야`);
