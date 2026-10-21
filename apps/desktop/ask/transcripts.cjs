@@ -191,65 +191,82 @@ const under = (p, r) => p === r || p.startsWith(r === '/' ? '/' : r + '/');
 // 경로 토막의 시작(접은 글에서 찾는다). 별칭은 홈으로 펼친다
 const ALIASES = ['~/', '$home/', '${home}/', '"$home"/', '"${home}"/'];
 const QUOTES = '"\'`';
-const UNQUOTED_END = /[\s"`]/g;
+const STOPS = /[\s"`]/g;   // 따옴표 없는 토막이 끝나는 글자
+const SPACE = /\s/;
 const TRAIL = ".,;:!?)]}>'";   // 토막 끝에서만 뗀다(정규식 [..]+$ 는 긴 토막에서 되짚기가 제곱으로 는다)
-const QUOTED_MAX = 4096;
+const TOKEN_MAX = 4096;        // 토막마다 앞 4096자만 본다
 
 // 글을 받아 "P·허용 폴더 밖의 홈 아래 경로가 있나"를 답하는 판정기. 홈을 모르면 판정할 수 없으니 늘 true.
 // ① 시작: 접은(NFC 소문자) 글에서 홈·~/·$HOME/·${HOME}/·"$HOME"/·"${HOME}"/ 이 나오는 모든 자리(앞 글자와 상관없이), 왼쪽부터.
-// ② 범위: 시작 바로 앞이 따옴표면 같은 줄의 닫는 따옴표까지(최대 4096자), 아니면 첫 공백·"·` 까지. 공백 너머로 잇지 않는다.
-//    끝의 .,;:!?)]}>' 만 뗀다 — 가운데 글자는 경로의 일부다. 토막은 겹치지 않는다(끝에서 다음을 찾는다) — 선형 시간.
+// ② 범위: 시작 바로 앞이 따옴표면 같은 줄의 닫는 따옴표까지, 아니면 첫 공백·"·` 까지. 공백 너머로 잇지 않는다 — 단 알려진
+//    루트·허용 폴더(공백이 들어 있을 수 있다)로 시작하면 그 경로 전체가 첫 부분이고 그 뒤부터 같은 규칙. 토막마다 앞 4096자.
+//    끝의 .,;:!?)]}>' 만 뗀다 — 가운데 글자는 경로의 일부다.
+//    시작은 앞 토막 안에 있어도 전부 따로 본다(…/viewed/bin:/home/u/other/bin). 토막 끝은 미리 한 번 재 두어 다시 훑지 않는다.
 // ③ 판정: 토막 하나씩 펼치고 → posix 정규화 → resolve(실패하면 정규화한 그대로) → 루트·허용 폴더 안이 아니면 밖
 function pathJudge(ctx, resolve) {
   const home = absNorm(ctx.home);
   if (home === null || home === '/') return () => true;
   const fh = fold(home);
   const allowed = [...(ctx.roots || []), ...(ctx.allowDirs || [])].map(absNorm).filter((a) => a !== null).map(fold);
-  const foreign = (raw) => {
-    const n = trimSlash(path.posix.normalize(raw));
+  // '/.'·'//' 가 없으면 posix 정규화는 그대로다 — 긴 토막이 많을 때 그만큼 아낀다
+  const norm = (t) => trimSlash(t.includes('/.') || t.includes('//') ? path.posix.normalize(t) : t);
+  // lowTok = 접은 토막, srcTok = resolve 에 넘길 원래 글자 토막. 정규화는 접기와 순서를 바꿔도 같다('/'·'.' 은 안 바뀐다)
+  const foreign = (lowTok, srcTok) => {
+    const fn = norm(lowTok);
+    const n = srcTok === lowTok ? fn : norm(srcTok);
     let r = n;
-    try { const x = resolve(n); if (typeof x === 'string' && path.isAbsolute(x)) r = trimSlash(path.posix.normalize(x)); } catch { /* 못 풀면 정규화한 그대로 */ }
-    const fn = fold(n);
-    const fr = fold(r);
+    if (resolve) {
+      try { const x = resolve(n); if (typeof x === 'string' && x !== n && path.isAbsolute(x)) r = trimSlash(path.posix.normalize(x)); } catch { /* 못 풀면 정규화한 그대로 */ }
+    }
+    const fr = r === n ? fn : fold(r);   // 안 바뀌었으면 접은 꼴은 fn 그대로
     if (!under(fn, fh) && !under(fr, fh)) return false;   // 홈 밖 — 판정 대상이 아니다(spec §6)
     if (fr === fh) return false;                          // 홈 자체
     return !allowed.some((a) => under(fr, a));
   };
+  // 홈 아래 루트·허용 폴더의 '홈 뒤' 부분 — 시작 자리에서 통째로 맞춰 본다(긴 것부터)
+  const rels = [...new Set(allowed.filter((a) => a.startsWith(fh + '/')).map((a) => a.slice(fh.length)))].sort((a, b) => b.length - a.length);
   const pats = [fh, ...ALIASES];
   return (text) => {
     const s = String(text);
     const nfc = s.normalize('NFC');
     const low = nfc.toLowerCase();
+    if (!pats.some((p) => low.includes(p))) return false;
     // 접어도 길이가 그대로면 자리가 맞는다 — resolve 에는 원래 글자(대소문자)를 넘긴다. 안 맞으면 접은 글자로
     const src = nfc.length === s.length && low.length === s.length ? s : low;
-    const next = pats.map(() => -2);   // 패턴마다 다음 자리(-2 아직 안 찾음, -1 더 없음) — 커서를 넘을 때만 다시 찾는다
-    let c = 0;
-    for (;;) {
-      let at = -1;
-      let k = -1;
-      for (let p = 0; p < pats.length; p++) {
-        if (next[p] !== -1 && next[p] < c) next[p] = low.indexOf(pats[p], c);
-        if (next[p] !== -1 && (at === -1 || next[p] < at)) { at = next[p]; k = p; }
-      }
-      if (at === -1) return false;
-      const body = k === 0 ? at + fh.length : at + pats[k].length - 1;   // 홈은 통째로 토막에 넣고 그 뒤부터 범위를 잰다. 별칭은 뒤의 '/' 부터
+    const n = low.length;
+    // 토막 끝을 한 번에 잰다: nextStop[i] = i 이후 첫 공백·"·` 자리, keep[i] = i 앞에서 뗄 글자가 아닌 마지막 자리 + 1
+    const nextStop = new Int32Array(n + 1);
+    nextStop[n] = n;
+    const isStop = new Uint8Array(n);
+    STOPS.lastIndex = 0;
+    for (let m = STOPS.exec(low); m; m = STOPS.exec(low)) isStop[m.index] = 1;
+    for (let i = n - 1; i >= 0; i--) nextStop[i] = isStop[i] ? i : nextStop[i + 1];
+    const keep = new Int32Array(n + 1);
+    for (let i = 0; i < n; i++) keep[i + 1] = TRAIL.includes(low[i]) ? keep[i] : i + 1;
+    const boundary = (i) => i >= n || low[i] === '/' || SPACE.test(low[i]) || TRAIL.includes(low[i]);
+    const judge = (at, k) => {
+      const body = k === 0 ? at + fh.length : at + pats[k].length - 1;   // 홈은 통째로, 별칭은 뒤의 '/' 부터
+      const limit = Math.min(n, (k === 0 ? at : body) + TOKEN_MAX);
       const q = at > 0 ? low[at - 1] : '';
+      let from = body;
       let end;
       if (q && QUOTES.includes(q)) {
-        const cap = Math.min(low.length, body + QUOTED_MAX);
-        end = body;
-        while (end < cap && low[end] !== q && low[end] !== '\n') end++;
+        end = body;   // 같은 줄의 닫는 따옴표까지 — 따옴표 종류마다 훑는 구간이 겹치지 않아 합해서 선형이다
+        while (end < limit && low[end] !== q && low[end] !== '\n') end++;
       } else {
-        UNQUOTED_END.lastIndex = body;
-        const m = UNQUOTED_END.exec(low);
-        end = m ? m.index : low.length;
+        const rel = rels.find((r) => low.startsWith(r, body) && boundary(body + r.length));
+        if (rel) from = body + rel.length;
+        end = Math.min(from < n ? nextStop[from] : n, limit);
       }
-      let cut = end;
-      while (cut > body && TRAIL.includes(low[cut - 1])) cut--;
-      const raw = k === 0 ? src.slice(at, cut) : home + src.slice(body, cut);
-      if (foreign(raw)) return true;
-      c = Math.max(end, at + 1);
+      const cut = Math.max(Math.min(from, end), keep[end]);
+      return k === 0 ? foreign(low.slice(at, cut), src.slice(at, cut)) : foreign(fh + low.slice(body, cut), home + src.slice(body, cut));
+    };
+    for (let k = 0; k < pats.length; k++) {
+      for (let at = low.indexOf(pats[k]); at !== -1; at = low.indexOf(pats[k], at + 1)) {
+        if (judge(at, k)) return true;
+      }
     }
+    return false;
   };
 }
 
@@ -329,7 +346,7 @@ function buildExcerpt(entries, from, to, ctx) {
   }
   // 섞인 구간: 남긴 글 전체(자르기 전)와 머리 줄에서 P 밖의 홈 경로가 보이면 세션 근거 전체를 뺀다
   const rawTitle = typeof c.title === 'string' && c.title ? c.title : null;
-  const foreign = pathJudge(c, resolve);
+  const foreign = pathJudge(c, typeof c.resolvePath === 'function' ? c.resolvePath : null);   // 기본(정규화만)은 토막이 이미 정규화돼 있어 부를 것이 없다
   if (blocks.some((b) => foreign(b.text)) || (rawTitle !== null && foreign(rawTitle))) return { mixed: true };
 
   const parts = blocks.map((b) => ({ keep: b.keep, text: cut(scrubSecrets(b.text), b.cap) }));

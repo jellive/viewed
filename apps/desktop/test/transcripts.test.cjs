@@ -299,12 +299,12 @@ const runSay = (text, ctx = CTX, file = F) => {
 
 test('a foreign absolute path in kept text drops the whole excerpt', () => {
   const ctx = { roots: [R, '/home/u/my repo'], home: '/home/u', allowDirs: ['/home/u/.claude', '/home/u/Library/Application Support/claude-profiles/p1', '/tmp'] };
-  // 경로 시작은 앞 글자와 상관없이 찾는다(a/home/u/b 도 홈 경로로 본다). 공백 든 루트·허용 폴더는 따옴표 없이는 못 읽는다 — 섞임 쪽
+  // 경로 시작은 앞 글자와 상관없이 찾는다(a/home/u/b 도 홈 경로로 본다)
   for (const bad of ['읽음: /home/u/other/.env', 'see ~/other/.env', 'see $HOME/other/x', 'see ${HOME}/other/x', 'see "$HOME"/other/x', 'see "${HOME}"/other/x',
-    'see /home/u/viewed-company/src/a.ts', 'file:///home/u/other/x', '"/home/u/other"', 'a/home/u/b is relative', 'in /home/u/my repo/b.ts']) {
+    'see /home/u/viewed-company/src/a.ts', 'file:///home/u/other/x', '"/home/u/other"', 'a/home/u/b is relative']) {
     assert.deepEqual(runSay(bad, ctx), { mixed: true }, bad);
   }
-  for (const ok of ['규칙 ~/.claude/rules/x.md 에 따라', '/tmp/x 에 썼다', 'see /home/u/viewed/src/a.ts:12', '`/home/u/viewed`', 'in "/home/u/my repo/b.ts"', 'profile "/home/u/Library/Application Support/claude-profiles/p1/settings.json"', 'home is /home/u and ~/', '/home/user2/x is not under home', 'the repo is /home/u/viewed.', 'cd /home/u/viewed && ls', '/home/u/viewed/src/../lib/b.ts 를 본다']) {
+  for (const ok of ['규칙 ~/.claude/rules/x.md 에 따라', '/tmp/x 에 썼다', 'see /home/u/viewed/src/a.ts:12', '`/home/u/viewed`', 'in "/home/u/my repo/b.ts"', 'in /home/u/my repo/b.ts', 'profile "/home/u/Library/Application Support/claude-profiles/p1/settings.json"', 'profile /home/u/Library/Application Support/claude-profiles/p1/settings.json', 'home is /home/u and ~/', '/home/user2/x is not under home', 'the repo is /home/u/viewed.', 'cd /home/u/viewed && ls', '/home/u/viewed/src/../lib/b.ts 를 본다', '/home/u//viewed/src/a.ts']) {
     const r = runSay(ok, ctx);
     assert.equal(r.mixed, undefined, ok);
     assert.ok(r.text.includes(ok), ok);
@@ -366,6 +366,8 @@ test('the foreign-path check runs in linear time', () => {
     '20000 in-repo paths': Array.from({ length: 20000 }, (_, k) => `/home/u/viewed/a${k}.ts`).join(' '),
     'one long home token': '/home/u'.repeat(6000),
     'one long in-repo token': '/home/u/viewed'.repeat(3000),
+    'one long token with many starts': '/home/u/viewed/a'.repeat(3000),
+    'many starts before a long tail': `${'/home/u/viewed/a'.repeat(3000)}${'x'.repeat(200000)}`,   // 시작마다 끝까지 다시 훑거나 4096 에서 안 자르면 제곱
     '4000 quoted paths without a closing quote': Array.from({ length: 4000 }, () => '"~/viewed/a').join(' '),
     'a quoted path with no closing quote': `"~/${'x'.repeat(40000)}`,
     'a long run of trailing punctuation inside a token': `/home/u/viewed/${'.,'.repeat(20000)}x`,
@@ -376,6 +378,33 @@ test('the foreign-path check runs in linear time', () => {
     runSay(text);
     const ms = performance.now() - t0;
     assert.ok(ms < 200, `${name}: ${ms.toFixed(1)}ms`);
+  }
+});
+
+test('every path start is judged, even inside an earlier token', () => {
+  for (const bad of ['PATH=/home/u/viewed/bin:/home/u/other/bin', '/home/u/viewed/a.ts,/home/u/other/.env', '~/viewed/x:~/other/y', '"/home/u/viewed/a /home/u/other/b"']) {
+    assert.deepEqual(runSay(`see ${bad} now`), { mixed: true }, bad);
+  }
+  for (const ok of ['PATH=/home/u/viewed/bin:/home/u/viewed/node_modules/.bin', '/home/u/viewed/a.ts,~/viewed/b.ts']) {
+    assert.equal(runSay(ok).mixed, undefined, ok);
+  }
+  // 토막은 앞 4096자로 본다 — 밖 경로로 시작한 긴 토막을 뒤의 '..' 이 레포 안으로 되돌리지 못한다
+  assert.deepEqual(runSay(`/home/u/other/${'x/'.repeat(2100)}${'../'.repeat(2101)}viewed/a`), { mixed: true });
+  // 따옴표 토막은 줄을 넘지 않는다 — 다음 줄의 '..' 이 밖 경로를 지우지 못한다
+  assert.deepEqual(runSay("see '/home/u/other\n/../viewed/a' now"), { mixed: true });
+});
+
+test('known roots and allowDirs with spaces are read whole', () => {
+  const ctx = { roots: [R, '/home/u/my repo'], home: '/home/u', allowDirs: ['/home/u/Library/Application Support/x/home'] };
+  for (const ok of ['/home/u/Library/Application Support/x/home/projects/a.jsonl', '/home/u/my repo/src/a.ts', '/home/u/my repo and more',
+    'see ~/my repo/src/a.ts, then', '(~/Library/Application Support/x/home/settings.json)', 'the repo /home/u/my repo.']) {
+    const r = runSay(ok, ctx);
+    assert.equal(r.mixed, undefined, ok);
+    assert.ok(r.text.includes(ok), ok);
+  }
+  // 경계: 루트 뒤가 '/'·공백·끝 문장 부호·글 끝일 때만 통째로 읽는다(따옴표가 바로 붙으면 아니다)
+  for (const bad of ['/home/u/my repo2/x', '/home/u/Library/Application Supportx/y', '/home/u/my repo/../other/.env', '~/my repository/x', 'cfg=/home/u/my repo" x']) {
+    assert.deepEqual(runSay(bad, ctx), { mixed: true }, bad);
   }
 });
 
