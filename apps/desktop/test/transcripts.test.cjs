@@ -1,0 +1,320 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const T = require('../ask/transcripts.cjs');
+
+const T0 = Date.parse('2026-10-15T05:00:00.000Z');
+const iso = (s) => new Date(T0 + s * 1000).toISOString();
+const LATER = T0 + 3600e3;
+const R = '/home/u/viewed';
+const F = `${R}/src/a.ts`;
+const LINE = 'const answer = compute();';
+const CTX = { roots: [R], home: '/home/u', allowDirs: ['/home/u/.claude', '/tmp'] };
+
+// 합성 세션 기록 — Claude Code 2.1.x 에서 본 모양만 흉내 낸다(실제 ~/.claude 기록은 읽지 않는다).
+// at 은 T0 기준 초. 안 주면 기록마다 1초씩 늘어난다
+function tx() {
+  const entries = [];
+  let clock = 0;
+  let ids = 0;
+  const push = (e) => { entries.push(e); return entries.length - 1; };
+  const when = (o) => iso(o && o.at !== undefined ? o.at : ++clock);
+  const side = (o) => (o && o.sidechain ? { isSidechain: true } : {});
+  const result = (id, out, o) => push({
+    type: 'user', timestamp: when(o), sessionId: 'sess-1', ...side(o),
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: out, ...(o.err ? { is_error: true } : {}) }] },
+    ...(o.tur !== undefined ? { toolUseResult: o.tur } : {}),
+  });
+  function tool(name, input, out, o = {}) {
+    const id = `toolu_${++ids}`;
+    const i = push({
+      type: 'assistant', timestamp: when(o), sessionId: 'sess-1', cwd: o.cwd || '/home/u/work', ...side(o),
+      message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input }] },
+    });
+    if (out !== undefined) result(id, out, o);
+    return i;
+  }
+  const edit = (file, old, neu, o = {}) => tool('Edit', { file_path: file, old_string: old, new_string: neu },
+    o.err ? '<tool_use_error>String to replace not found in file.</tool_use_error>' : 'The file has been updated.', o);
+  const human = (text, o = {}) => push({
+    type: 'user', timestamp: when(o), sessionId: 'sess-1', ...side(o), ...(o.meta ? { isMeta: true } : {}),
+    message: { role: 'user', content: o.array ? [{ type: 'text', text }] : text },
+  });
+  const assistant = (item, o = {}) => push({
+    type: 'assistant', timestamp: when(o), sessionId: 'sess-1', cwd: '/home/u/work', ...side(o),
+    message: { role: 'assistant', content: [item] },
+  });
+  const say = (text, o) => assistant({ type: 'text', text }, o);
+  const think = (thinking, o) => assistant({ type: 'thinking', thinking, signature: 'sig' }, o);
+  const idAt = (i) => entries[i].message.content[0].id;
+  return { entries, tool, edit, human, say, think, idAt };
+}
+
+const q = (o = {}) => ({ text: LINE, side: 'R', files: [F], until: LATER, ...o });
+
+test('a sibling repo with a shared name prefix is not this repo', () => {
+  const t = tx();
+  t.human('고쳐줘');
+  t.edit('/home/u/viewed-company/src/a.ts', 'let x;', LINE);
+  assert.equal(T.findWrite(t.entries, q()), null);
+  assert.equal(T.insideAny('/home/u/viewed-company/x', ['/home/u/viewed']), false);
+  assert.equal(T.insideAny('/home/u/viewed/x', ['/home/u/viewed']), true);
+  assert.equal(T.insideAny('/home/u/viewed', ['/home/u/viewed/']), true);
+  assert.equal(T.insideAny('/home/u/viewed/../other/x', ['/home/u/viewed']), false);
+  assert.equal(T.insideAny('src/x', ['/home/u/viewed']), false);
+  // 같은 편집이 이 레포에 있으면 그걸 고른다
+  const mine = t.edit(F, 'let x;', LINE);
+  assert.equal(T.findWrite(t.entries, q()).index, mine);
+});
+
+test('only a successful edit that wrote the line counts', () => {
+  const t = tx();
+  t.human('줄을 추가해');
+  const good = t.edit(F, 'let x = 1;', `let x = 1;\n    ${LINE}  `);   // 들여쓰기·끝 공백은 trim 해서 본다
+  t.tool('Grep', { pattern: LINE, path: R }, `src/a.ts:2:${LINE}`);
+  t.tool('Bash', { command: `printf '%s\\n' '${LINE}' >> ${F}` }, '');
+  t.edit(F, 'nothing here', LINE, { err: true });                                   // 실패한 Edit
+  t.tool('Edit', { file_path: F, old_string: 'zzz', new_string: LINE }, '<tool_use_error>File has not been read yet.</tool_use_error>');   // 플래그 없는 오류 결과
+  t.edit(F, `${LINE}\nfoo();`, `${LINE}\nbar();`);                                  // 그 줄을 문맥으로만 품은 이웃
+  t.edit(F, 'const answer = compute(1);', 'const answer = compute(2);');            // 비슷하기만 한 줄
+  t.edit(F, 'z();', `// ${LINE} 는 지웠다`);                                         // 그 줄을 부분 문자열로만 품은 줄
+  t.tool('Edit', { file_path: F, old_string: 'yyy', new_string: LINE }, undefined); // 결과가 없다(중단)
+  const r = T.findWrite(t.entries, q());
+  assert.equal(r.index, good);
+  assert.equal(r.toolUseId, t.idAt(good));
+  assert.equal(r.at, Date.parse(t.entries[good + 1].timestamp));   // 편집이 끝난(결과) 시각
+  // 공백 제외 8자 미만 줄은 찾지 않는다
+  const s = tx();
+  s.edit(F, 'a', 'return;');
+  assert.equal(T.findWrite(s.entries, q({ text: 'return;' })), null);
+  assert.equal(T.findWrite(s.entries, q({ text: '   }   ' })), null);
+});
+
+test('edits after the commit time are ignored and the latest earlier one wins', () => {
+  const t = tx();
+  const early = t.edit(F, 'a', LINE, { at: 10 });
+  const mid = t.edit(F, 'b', LINE, { at: 20 });
+  t.edit(F, 'c', LINE, { at: 40 });
+  assert.equal(T.findWrite(t.entries, q({ until: T0 + 30_000 })).index, mid);
+  assert.equal(T.findWrite(t.entries, q({ until: T0 + 20_000 })).index, mid);   // 같은 시각은 든다
+  assert.equal(T.findWrite(t.entries, q({ until: T0 + 15_000 })).index, early);
+  assert.equal(T.findWrite(t.entries, q({ until: T0 + 5_000 })), null);
+});
+
+test('a deleted line is found through old_string', () => {
+  const t = tx();
+  const removed = t.edit(F, `keep();\n${LINE}`, 'keep();', { at: 10 });
+  t.edit(F, 'other();', LINE, { at: 20 });   // 나중에 다시 넣은 편집은 R 쪽 후보일 뿐
+  t.edit(F, `${LINE}\nx();`, `${LINE}\ny();`, { at: 30 });
+  assert.equal(T.findWrite(t.entries, q({ side: 'L' })).index, removed);
+  assert.notEqual(T.findWrite(t.entries, q({ side: 'R' })).index, removed);
+});
+
+test('MultiEdit and Write count', () => {
+  const m = tx();
+  const multi = m.tool('MultiEdit', { file_path: F, edits: [{ old_string: 'a();', new_string: 'b();' }, { old_string: 'c();', new_string: `c();\n${LINE}` }] }, 'Applied 2 edits.');
+  assert.equal(T.findWrite(m.entries, q()).index, multi);
+  const ml = tx();
+  const multiDel = ml.tool('MultiEdit', { file_path: F, edits: [{ old_string: 'a();', new_string: 'b();' }, { old_string: `${LINE}\n`, new_string: '' }] }, 'Applied 2 edits.');
+  assert.equal(T.findWrite(ml.entries, q({ side: 'L' })).index, multiDel);
+  const w = tx();
+  const write = w.tool('Write', { file_path: F, content: `import x;\n${LINE}\n` }, 'File created successfully.');
+  w.tool('Write', { file_path: `${R}/src/b.ts`, content: `${LINE}\n` }, 'File created successfully.', { at: 99 });   // 다른 파일
+  assert.equal(T.findWrite(w.entries, q()).index, write);
+  assert.equal(T.findWrite(w.entries, q({ side: 'L' })), null);
+});
+
+test('a line with quotes and backslashes in an Edit is found', () => {
+  const line = 'say("a\\\\b")';   // 파일 속 줄: say("a\\b")
+  const t = tx();
+  const e = t.edit(F, 'old();', `x();\n${line}\n`);
+  t.edit(F, 'q();', 'say("a\\b")');   // 역슬래시 하나짜리 다른 줄
+  // JSONL 로 썼다 읽는다(JSON 이스케이프 왕복) — 깨진 줄은 건너뛴다
+  const text = [JSON.stringify(t.entries[0]), '{"type":"assistant", broken', JSON.stringify(t.entries[1]), '', ...t.entries.slice(2).map((x) => JSON.stringify(x))].join('\n');
+  const parsed = T.parseJsonl(text);
+  assert.equal(parsed.length, t.entries.length);
+  assert.deepEqual(parsed.map((x) => x._i), [0, 2, 4, 5]);
+  const r = T.findWrite(parsed, q({ text: line }));
+  assert.equal(r.index, e);
+  assert.equal(r.toolUseId, t.idAt(e));
+  assert.equal(T.findWrite(parsed, q({ text: 'say("a\\b")' })).index, 2);
+});
+
+test('a /tmp path matches its /private/tmp realpath', () => {
+  // macOS 에서 /tmp 는 /private/tmp 링크다. 리눅스에서도 같은 길을 타게 링크 폴더를 하나 더 둔다
+  const dir = fs.mkdtempSync('/tmp/viewed-tx-');
+  try {
+    fs.mkdirSync(path.join(dir, 'real'));
+    fs.writeFileSync(path.join(dir, 'real', 'a.ts'), '');
+    fs.symlinkSync(path.join(dir, 'real'), path.join(dir, 'link'));
+    const real = fs.realpathSync(path.join(dir, 'real', 'a.ts'));
+    const resolve = (p) => { try { return fs.realpathSync(p); } catch { return path.normalize(p); } };
+    for (const written of [path.join(dir, 'real', 'a.ts'), path.join(dir, 'link', 'a.ts')]) {
+      const t = tx();
+      const e = t.edit(written, 'x();', LINE);
+      const r = T.findWrite(t.entries, q({ files: [real] }), resolve);
+      assert.equal(r && r.index, e, written);
+    }
+    const t = tx();
+    t.edit(path.join(dir, 'link', 'a.ts'), 'x();', LINE);
+    assert.equal(T.findWrite(t.entries, q({ files: [real] })), null);   // 기본(정규화만)은 링크를 안 따라간다
+    // 발췌도 같은 resolve 로 링크 경로를 레포 안으로 본다 — 홈 아래 링크 레포에서 결과 글의 링크 경로가 섞임으로 잡히지 않게
+    const home = dir;
+    const repo = fs.realpathSync(path.join(dir, 'real'));
+    const linked = path.join(dir, 'link', 'a.ts');
+    const x = tx();
+    const f = x.human('go');
+    x.tool('Read', { file_path: linked }, 'READ-VIA-LINK');
+    x.say(`${linked}:1 을 고친다`);
+    const e = x.tool('Edit', { file_path: linked, old_string: 'x();', new_string: LINE }, `The file ${linked} has been updated.`);
+    const ctx = { roots: [repo], home, allowDirs: [] };
+    const ex = T.buildExcerpt(x.entries, f, e, { ...ctx, resolvePath: resolve });
+    assert.ok(ex.text && ex.text.includes('READ-VIA-LINK') && ex.text.includes(LINE), JSON.stringify(ex));
+    assert.deepEqual(T.buildExcerpt(x.entries, f, e, ctx), { mixed: true });   // 링크를 못 풀면 밖 경로다
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('isMeta, tool_result and command wrapper entries are not human prompts', () => {
+  const t = tx();
+  const human = t.human('왜 이렇게 했어?');
+  const arr = t.human('배열 모양 메시지', { array: true });
+  const meta = t.human('Caveat: The messages below were generated by the user', { meta: true });
+  const cmd = t.human('<command-name>/clear</command-name>\n<command-message>clear</command-message>');
+  const out = t.human('<local-command-stdout>ok</local-command-stdout>');
+  const rem = t.human('  <system-reminder>x</system-reminder>');
+  const brief = t.human('You are implementing Task 2', { sidechain: true });   // 서브에이전트 브리프는 사람이 친 게 아니다
+  const read = t.tool('Read', { file_path: F }, 'contents');
+  const say = t.say('hello');
+  const yes = (i) => T.isHumanPrompt(t.entries[i]);
+  assert.equal(yes(human), true);
+  assert.equal(yes(arr), true);
+  for (const i of [meta, cmd, out, rem, brief, read, read + 1, say]) assert.equal(yes(i), false, JSON.stringify(t.entries[i]));
+  for (const e of [null, {}, { type: 'summary', summary: 'x' }, { type: 'user', message: { content: '   ' } }, { type: 'user' }]) assert.equal(T.isHumanPrompt(e), false);
+});
+
+test('the excerpt keeps prose and in-repo file tools, drops Bash and foreign tools', () => {
+  const t = tx();
+  t.human('EARLIER-PROMPT');
+  const from = t.human('리뷰 지적 고쳐줘');
+  t.think('THINK-regression test first');
+  t.say('SAY-먼저 재현 테스트를 쓴다.');
+  t.tool('Read', { file_path: F }, 'READ-IN-REPO');
+  t.tool('Grep', { pattern: 'compute', path: R }, 'GREP-IN-REPO');
+  t.tool('Glob', { pattern: '**/*.ts' }, 'GLOB-IN-REPO-CWD', { cwd: R });                 // path 없음 → 그 기록의 cwd
+  t.tool('Glob', { pattern: '**/*.md' }, 'GLOB-OUTSIDE-CWD', { cwd: '/home/u/work' });
+  t.tool('Bash', { command: 'BASH-CMD' }, 'BASH-OUT');
+  t.tool('WebFetch', { url: 'https://example.com' }, 'WEB-OUT');
+  t.tool('Read', { file_path: '/home/u/elsewhere/notes.md' }, 'FOREIGN-READ');           // 밖 경로는 입력째로 빠진다 — 섞임 판정도 안 탄다
+  t.tool('mcp__x__y', { file_path: F, q: 'MCP-IN' }, 'MCP-OUT');                       // 레포 안 경로를 받아도 파일 도구가 아니면 뺀다
+  t.tool('Agent', { description: 'd', prompt: 'AGENT-PROMPT' }, 'AGENT-OUT');
+  t.tool('TodoWrite', { todos: [{ content: 'TODO-ITEM' }] }, 'TODO-OUT');
+  t.human('<system-reminder>REMINDER</system-reminder>');
+  const e = t.edit(F, 'old();', 'NEW-LINE-WRITTEN();');
+  t.say('LATER-SAY');
+  const r = T.buildExcerpt(t.entries, from, e, CTX);
+  assert.equal(r.mixed, undefined);
+  const has = (s) => r.text.includes(s);
+  for (const s of ['리뷰 지적 고쳐줘', 'THINK-regression', 'SAY-먼저 재현', 'READ-IN-REPO', 'GREP-IN-REPO', 'GLOB-IN-REPO-CWD', 'NEW-LINE-WRITTEN();', 'The file has been updated.']) assert.ok(has(s), s);
+  for (const s of ['EARLIER-PROMPT', 'LATER-SAY', 'GLOB-OUTSIDE-CWD', 'BASH-CMD', 'BASH-OUT', 'WEB-OUT', 'example.com', 'FOREIGN-READ', 'elsewhere', 'MCP-IN', 'MCP-OUT', 'AGENT-PROMPT', 'AGENT-OUT', 'TODO-ITEM', 'REMINDER']) assert.ok(!has(s), s);
+  assert.ok(r.text.indexOf('리뷰 지적') < r.text.indexOf('SAY-먼저') && r.text.indexOf('SAY-먼저') < r.text.indexOf('NEW-LINE-WRITTEN'));   // 오래된→최근
+  // 머리 줄은 주면 맨 위에
+  assert.ok(T.buildExcerpt(t.entries, from, e, { ...CTX, title: '세션 sess-1, 오래된→최근' }).text.startsWith('세션 sess-1, 오래된→최근\n'));
+});
+
+test('a foreign absolute path in kept text drops the whole excerpt', () => {
+  const ctx = { roots: [R, '/home/u/my repo'], home: '/home/u', allowDirs: ['/home/u/.claude', '/home/u/Library/Application Support/claude-profiles/p1', '/tmp'] };
+  const run = (text) => {
+    const t = tx();
+    const f = t.human('go');
+    t.say(text);
+    const e = t.edit(F, 'a();', 'bbbbbbbbbb();');
+    return T.buildExcerpt(t.entries, f, e, ctx);
+  };
+  for (const bad of ['읽음: /home/u/other/.env', 'see ~/other/.env', 'see $HOME/other/x', 'see /home/u/viewed-company/src/a.ts', 'file:///home/u/other/x', '"/home/u/other"']) {
+    assert.deepEqual(run(bad), { mixed: true }, bad);
+  }
+  for (const ok of ['규칙 ~/.claude/rules/x.md 에 따라', '/tmp/x 에 썼다', 'see /home/u/viewed/src/a.ts:12', '`/home/u/viewed`', 'in /home/u/my repo/b.ts', 'profile /home/u/Library/Application Support/claude-profiles/p1/settings.json', 'home is /home/u and ~/', '/home/user2/x is not under home', 'a/home/u/b is relative']) {
+    const r = run(ok);
+    assert.equal(r.mixed, undefined, ok);
+    assert.ok(r.text.includes(ok), ok);
+  }
+  // 레포 안 도구의 결과 속 밖 경로도 섞임이다
+  const t = tx();
+  const f = t.human('go');
+  t.tool('Read', { file_path: `${R}/cfg.ts` }, 'const p = "/home/u/other/.env";');
+  const e = t.edit(F, 'a();', 'bbbbbbbbbb();');
+  assert.deepEqual(T.buildExcerpt(t.entries, f, e, ctx), { mixed: true });
+});
+
+test('secrets are masked', () => {
+  // 공개 레포 스캔에 안 걸리게 토큰은 실행 중에 만든다
+  const ghp = 'ghp_' + 'A1b2'.repeat(9);
+  const pat = 'github_pat_' + 'x9'.repeat(15);
+  const aws = 'AKIA' + 'ABCDEFGHIJKLMNOP';
+  const sk = 'sk-ant-api03-' + 'Qz_-'.repeat(8);
+  const key = '-----BEGIN RSA PRIVATE KEY-----\nMIIEowKEYBODY\n-----END RSA PRIVATE KEY-----';
+  const kv = ['DB_PASSWORD=hunter22', 'apiKey: "abcd1234efgh"', 'GITHUB_TOKEN=tok_value_1', 'client_secret = s3cr3tvalue', '"api_key":"kkkkkkkk"'];
+  const s = T.scrubSecrets(`a ${ghp} b ${pat} c ${aws} d ${sk}\n${key}\n${kv.join('\n')}\nif (token === undefined) return;`);
+  for (const secret of [ghp, pat, aws, sk, 'MIIEowKEYBODY', 'hunter22', 'abcd1234efgh', 'tok_value_1', 's3cr3tvalue', 'kkkkkkkk']) assert.ok(!s.includes(secret), secret);
+  assert.ok(s.includes('DB_PASSWORD=[가림]'), s);
+  assert.ok(s.includes('if (token === undefined) return;'), s);   // 비교식은 값이 아니다
+  // 발췌에도 적용된다
+  const t = tx();
+  const f = t.human(`토큰은 ${ghp} 이야`);
+  const e = t.edit(F, 'a();', `const k = "${aws}";`);
+  const r = T.buildExcerpt(t.entries, f, e, CTX);
+  assert.ok(!r.text.includes(ghp) && !r.text.includes(aws) && r.text.includes('[가림]'));
+});
+
+test('caps keep the human prompt and drop the oldest blocks', () => {
+  const t = tx();
+  const f = t.human('H'.repeat(5000));
+  for (let k = 0; k < 40; k++) t.say(`S${k}| ` + 'x'.repeat(3000));
+  const e = t.edit(F, 'a();', 'final_line_here();');
+  const r = T.buildExcerpt(t.entries, f, e, CTX);
+  assert.ok(r.text.length <= T.EXCERPT.total, String(r.text.length));
+  assert.ok(r.text.includes('H'.repeat(1900)) && !r.text.includes('H'.repeat(T.EXCERPT.human)));   // 사람 메시지는 2000자까지 남는다
+  assert.ok(r.text.includes('final_line_here();'));
+  assert.ok(r.text.includes('S39|') && !r.text.includes('S0|') && !r.text.includes('S1|'));
+  assert.ok(r.text.indexOf('HHHH') < r.text.indexOf('S39|'));
+  assert.ok(!/x{1500}/.test(r.text));   // 블록마다 1500자
+  assert.match(r.text, /생략/);         // 버린 블록이 있다는 표시
+  assert.equal(T.EXCERPT.block, 1500);
+  assert.deepEqual(T.EXCERPT, { block: 1500, total: 30000, human: 2000, brief: 3000, lookback: 300, minChars: 8 });
+});
+
+test('a subagent brief is kept up to 3000 chars and the parent prompt opens the excerpt', () => {
+  const t = tx();
+  const parent = t.human('부모 세션의 사람 질문');
+  const brief = t.human('B'.repeat(5000), { sidechain: true });
+  t.say('ok', { sidechain: true });
+  const e = t.tool('Edit', { file_path: F, old_string: 'a();', new_string: 'abcdefghij();' }, 'The file has been updated.', { sidechain: true });
+  assert.equal(T.isHumanPrompt(t.entries[brief]), false);
+  const r = T.buildExcerpt(t.entries, parent, e, CTX);
+  assert.ok(r.text.startsWith('[사람') && r.text.includes('부모 세션의 사람 질문'));
+  assert.ok(r.text.includes('B'.repeat(2900)) && !r.text.includes('B'.repeat(T.EXCERPT.brief)));
+  assert.ok(r.text.includes('abcdefghij();'));
+});
+
+test('findSpawn links a subagent to the Agent call that started it', () => {
+  assert.equal(T.subagentId('/home/u/.claude/projects/-home-u-work/sess-1/subagents/agent-a6abee1b23b9afe1a.jsonl'), 'a6abee1b23b9afe1a');
+  assert.equal(T.subagentId('/home/u/.claude/projects/-home-u-work/sess-1.jsonl'), null);
+  assert.equal(T.subagentId('/x/agent-abc.jsonl'), null);
+  assert.equal(T.subagentId('/x/p/subagents/agent-abc.meta.json'), null);
+  const t = tx();
+  t.human('do it');
+  t.tool('Agent', { description: 'one', prompt: 'p1' }, 'done\nagentId: aaa111 (for resuming)');
+  const spawn = t.tool('Agent', { description: 'two', prompt: 'p2' }, [{ type: 'text', text: 'ok' }, { type: 'text', text: 'agentId: bbb222' }]);
+  const viaTur = t.tool('Agent', { description: 'three', prompt: 'p3' }, 'Async agent launched.', { tur: { agentId: 'ccc333', status: 'async_launched' } });
+  t.tool('Read', { file_path: F }, 'agentId: ddd444');
+  t.tool('Agent', { description: 'again', prompt: 'p4' }, 'agentId: bbb222');   // 같은 id 를 다시 언급해도 띄운 건 처음 것
+  assert.equal(T.findSpawn(t.entries, 'bbb222'), spawn);
+  assert.equal(T.findSpawn(t.entries, 'ccc333'), viaTur);
+  assert.equal(T.findSpawn(t.entries, 'aaa11'), null);   // 다른 id 의 앞부분
+  assert.equal(T.findSpawn(t.entries, 'ddd444'), null);  // Agent 호출이 아니다
+  assert.equal(T.findSpawn(t.entries, 'zzz999'), null);
+  assert.equal(T.findSpawn(t.entries, 'a.*'), null);
+});
