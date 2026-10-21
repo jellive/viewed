@@ -214,6 +214,16 @@ button.primary:hover { background: var(--primary-hover); }
 @media (pointer: coarse) { input, select { font-size: 16px; } }
 @media (prefers-reduced-motion: reduce) { .meter > span { transition: none; } }
 .file-body > .note:last-child { border-bottom: 0; }
+.search { margin-left: auto; width: 180px; min-height: 28px; padding: 3px 8px; font-size: 12px; }
+.search + .filter { margin-left: 0; }
+/* .search 의 12px 가 위 input 16px 규칙보다 세다 — iOS 포커스 확대를 막으려면 여기서 다시 올린다 */
+@media (max-width: 639px), (pointer: coarse) { .search { font-size: 16px; } }
+/* 좁은 폭에서 한 줄에 다 넣으면 진행 막대가 점이 된다 — 검색칸은 아랫줄 전체 폭으로 내린다 */
+@media (max-width: 639px) {
+  .progress { flex-wrap: wrap; row-gap: 8px; }
+  .search { order: 1; flex: 1 0 100%; width: auto; margin-left: 0; }
+  .progress .filter { margin-left: auto; }
+}
 .filter { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; }
 .filter input { min-height: 0; margin: 0; padding: 0; accent-color: var(--accent); }
 .source { display: inline-flex; margin-bottom: 12px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }

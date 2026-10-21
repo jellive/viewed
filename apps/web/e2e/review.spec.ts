@@ -127,6 +127,70 @@ test('the filter hides viewed files and says so when nothing is left', async ({ 
   await expect(page.getByTestId('file-row')).toHaveCount(2);
 });
 
+test('the search box keeps files whose path contains the text, ignoring case and outer spaces', async ({ page }) => {
+  await seedSettings(page);
+  const tree = [
+    { filename: 'src/Button.tsx', status: 'modified', sha: 'b1', patch: 'p' },
+    { filename: 'src/api/client.ts', status: 'modified', sha: 'c1', patch: 'p' },
+    { filename: 'docs/readme.md', status: 'modified', sha: 'd1', patch: 'p' },
+  ];
+  await mockGitHub(page, { files: tree });
+  await open(page);
+  const search = page.getByRole('searchbox', { name: 'Search files' });
+  await search.fill('BUTT');                       // 대소문자 무시, 부분 문자열
+  await expect(page.getByTestId('file-row')).toHaveCount(1);
+  await expect(page.getByTestId('file-row')).toContainText('src/Button.tsx');
+  await search.fill('  api/  ');                   // 폴더 이름도 맞고 앞뒤 공백은 무시
+  await expect(page.getByTestId('file-row')).toHaveCount(1);
+  await expect(page.getByTestId('file-row')).toContainText('src/api/client.ts');
+  await search.fill('src');
+  await expect(page.getByTestId('file-row')).toHaveCount(2);
+  await search.fill('');
+  await expect(page.getByTestId('file-row')).toHaveCount(3);
+});
+
+test('search combines with the viewed filter, leaves progress alone and says when nothing matches', async ({ page }) => {
+  await seedSettings(page);
+  await mockGitHub(page, { files });
+  await open(page);
+  const search = page.getByRole('searchbox', { name: 'Search files' });
+  await page.getByTestId('file-row').filter({ hasText: 'a.ts' }).getByTestId('file-check').check();
+  await search.fill('.ts');
+  await expect(page.getByTestId('file-row')).toHaveCount(1);
+  await expect(page.getByTestId('progress')).toHaveText('1 / 2');   // 검색은 보이는 목록만 좁힌다
+  await page.getByTestId('filter-unviewed').check();                // a.ts 는 확인함 → 둘 다 만족하는 것이 없다
+  await expect(page.getByTestId('file-row')).toHaveCount(0);
+  await expect(page.getByTestId('search-empty')).toBeVisible();
+  await expect(page.getByTestId('filter-empty')).toHaveCount(0);
+  await expect(page.getByTestId('progress')).toHaveText('1 / 2');
+  await search.fill('');                                            // 검색어 없이 0건이 아니므로 기존 문구
+  await expect(page.getByTestId('file-row')).toHaveCount(1);
+  await expect(page.getByTestId('search-empty')).toHaveCount(0);
+  await page.getByTestId('file-row').getByTestId('file-check').click();
+  await expect(page.getByTestId('filter-empty')).toBeVisible();
+  await expect(page.getByTestId('search-empty')).toHaveCount(0);
+});
+
+// iOS 는 16px 미만 입력칸에 포커스하면 화면을 확대하고 안 되돌린다 — 크롬에선 안 보이니 글자 크기로 잰다.
+// 가로로 돌린 폰(폭 844)은 폭 조건에 안 걸리고 pointer: coarse 로만 잡힌다
+for (const [name, viewport] of [['portrait', { width: 360, height: 740 }], ['landscape', { width: 844, height: 390 }]] as const) {
+  test.describe(`on a ${name} phone`, () => {
+    test.use({ viewport, hasTouch: true, isMobile: true });
+    test('the search box is at least 16px and the progress bar does not overflow', async ({ page }) => {
+      await seedSettings(page);
+      await mockGitHub(page, { files });
+      await open(page);
+      const search = page.getByRole('searchbox', { name: 'Search files' });
+      expect(parseFloat(await search.evaluate((el) => getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(16);
+      // 한 줄에 다 넣으면 진행 막대가 점으로 줄어든다(360 폭 실측 14px)
+      expect(await page.locator('.meter').evaluate((el) => el.clientWidth)).toBeGreaterThanOrEqual(60);
+      const over = await page.locator('.progress').evaluate((el) => el.scrollWidth - el.clientWidth);
+      expect(over).toBeLessThanOrEqual(0);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0);
+    });
+  });
+}
+
 test('device-only storage keeps check marks across reloads and never calls the gist', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('viewed.settings', JSON.stringify({
     accounts: [{ label: 'personal', token: 'tok' }], gistAccount: 'personal', gistId: '', secret: 'k', deviceId: 'mac', storage: 'device' })));

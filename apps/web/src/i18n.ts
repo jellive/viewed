@@ -83,7 +83,9 @@ const en = {
   localFetchHint: 'Reads commits on this Mac, pushed or not. The base is as of your last git fetch.',
   onlyUnviewed: 'Hide viewed files',
   nothingLeft: 'Every file here is viewed. Turn off the filter to see them.',
-  aria: { accountLabel: 'account label', token: 'token', gistId: 'gist id', secret: 'shared secret', deviceId: 'device id' },
+  searchFiles: 'Search files',
+  noMatch: 'No matching files',
+  aria: { accountLabel: 'account label', token: 'token', gistId: 'gist id', secret: 'shared secret', deviceId: 'device id', searchFiles: 'Search files' },
 };
 
 export type Messages = typeof en;
@@ -170,7 +172,9 @@ const ko: Messages = {
   localFetchHint: '이 맥의 커밋을 읽습니다. 푸시 안 한 커밋도 보입니다. 기준 브랜치는 마지막 git fetch 시점입니다.',
   onlyUnviewed: '확인한 파일 숨기기',
   nothingLeft: '여기 있는 파일은 전부 확인했습니다. 필터를 끄면 다시 보입니다.',
-  aria: { accountLabel: '계정 이름', token: 'GitHub 토큰', gistId: 'Gist id', secret: '공유 비밀', deviceId: '기기 id' },
+  searchFiles: '파일 이름 검색',
+  noMatch: '맞는 파일 없음',
+  aria: { accountLabel: '계정 이름', token: 'GitHub 토큰', gistId: 'Gist id', secret: '공유 비밀', deviceId: '기기 id', searchFiles: '파일 이름 검색' },
 };
 
 const lang = typeof navigator !== 'undefined' && navigator.language.toLowerCase().startsWith('ko') ? 'ko' : 'en';
