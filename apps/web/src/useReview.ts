@@ -10,11 +10,13 @@ export function useReview(a: { snap: Snapshot; merged: DeviceState; secret: stri
   const own = useSyncExternalStore(store.subscribe, store.own);
   const sync = useSyncExternalStore(store.subscribe, store.status);
   const merged = useMemo(() => mergeStates([a.merged, own]), [a.merged, own]);
-  const [review, setReview] = useState<Review | null>(null);
+  // 보이는 리뷰와 그것을 만든 스냅숏을 같이 든다 — 새로고침 중엔 옛 리뷰가 남고 a.snap 만 먼저 바뀐다
+  const [shown, setShown] = useState<{ review: Review; snap: Snapshot } | null>(null);
 
   useEffect(() => {
     let live = true;   // 늦게 끝난 옛 계산이 새 상태를 덮지 못하게
-    buildReview(a.snap, merged, a.secret, a.others).then((r) => { if (live) setReview(r); });
+    const snap = a.snap;
+    buildReview(snap, merged, a.secret, a.others).then((r) => { if (live) setShown({ review: r, snap }); });
     return () => { live = false; };
   }, [a.snap, merged, a.secret, a.others]);
 
@@ -22,5 +24,5 @@ export function useReview(a: { snap: Snapshot; merged: DeviceState; secret: stri
     store.set(item.key, markRecord(item, a.snap.headSha, viewed));
   }, [store, a.snap.headSha]);
 
-  return { review, toggle, sync, flush: store.flush };
+  return { review: shown?.review ?? null, shownSnap: shown?.snap ?? null, toggle, sync, flush: store.flush };
 }

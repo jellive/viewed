@@ -11,7 +11,7 @@ import type { DiffAsk, View } from '../ask';
 import type { ReviewItem } from '@viewed/core';
 
 export function ReviewView(a: { snap: Snapshot; merged: DeviceState; secret: string; store: SyncStore; readBlob: (sha: string) => Promise<string | null>; onRefresh: () => void; live: boolean; askRepo?: string; others?: ReadonlyMap<string, string[]>; isMe?: (a: Author) => boolean }) {
-  const { review, toggle, sync } = useReview(a);
+  const { review, shownSnap, toggle, sync } = useReview(a);
   // 스레드는 여기(FileList 위)에 둔다 — 접기·필터로 diff 가 사라져도 남게. 로컬로 연 리뷰(askRepo)에만 + 가 붙는다
   const { forFile } = useThreads({ repo: a.askRepo, snap: a.snap, bridge: window.viewedDesktop?.ask });
   if (!review) return null;
@@ -26,7 +26,7 @@ export function ReviewView(a: { snap: Snapshot; merged: DeviceState; secret: str
         <p data-testid="sync-status" className="sync" data-sync={sync}>{sync === 'error' ? t.syncFailed : sync === 'pending' ? t.saving : t.saved}</p>
       </div>
       <FileList review={review} syncOk={sync === 'idle'} onToggle={toggle} renderDiff={(it) => (
-        <FileDiff item={it} readBlob={a.readBlob} forFile={forFile} src={a.askRepo && a.isMe && a.snap.mergeBase ? { repo: a.askRepo, head: a.snap.headSha, mergeBase: a.snap.mergeBase, isMe: a.isMe } : undefined} />
+        <FileDiff item={it} readBlob={a.readBlob} forFile={forFile} src={a.askRepo && a.isMe && shownSnap?.mergeBase ? { repo: a.askRepo, head: shownSnap.headSha, mergeBase: shownSnap.mergeBase, isMe: a.isMe } : undefined} />
       )} />
     </>
   );

@@ -146,7 +146,8 @@ async function fakeBlame(page: Page, o: BlameOpts = {}) {
       try {
         await new Promise((r) => setTimeout(r, o.delay ?? 0));
         if (o.fail) throw new Error('boom');
-        return JSON.stringify(o.blame ?? []);
+        const by = w.__blameByHead?.[a[0] + '|' + a[2]];
+        return JSON.stringify(by ?? o.blame ?? []);
       } finally { w.__inflight--; }
     };
   }, o);
@@ -210,4 +211,40 @@ test('since view tints the same head lines', async ({ page }) => {
   const since = a.getByTestId('since-diff');
   await expect(since.locator('.ln.add[data-n="4"]')).toHaveClass(/\bother\b/);
   await expect(since.locator('.ln.add[data-n="3"]')).not.toHaveClass(/\bother\b/);
+});
+
+test('after refresh the old diff is not tinted with the new head blame', async ({ page }) => {
+  await fakeLocal(page); await fakeBlame(page, { blame: [A, A, A] });
+  await openLocal(page, '1 / 2');
+  await expect(lnOf(page, 2)).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as any).__blameCalls.length)).toBeGreaterThan(0);
+  await expect(page.locator('.other')).toHaveCount(0);
+  await page.evaluate(() => {
+    const w = window as any, oid = (c: string) => c.repeat(40);
+    w.__git.head = oid('9');
+    w.__blameByHead = { [oid('9') + '|' + w.__git.mb]: [['alice', 'a@example.test'], ['bob', 'b@example.test'], ['alice', 'a@example.test']] };
+    // buildReview 가 느리게 끝난다 — 그동안 옛 리뷰가 보인다
+    const sub = crypto.subtle, d = sub.digest.bind(sub), sg = sub.sign.bind(sub);
+    w.__slow = true;
+    sub.digest = (async (...a: any[]) => { if (w.__slow) await new Promise((r) => setTimeout(r, 1500)); return (d as any)(...a); }) as any;
+    sub.sign = (async (...a: any[]) => { if (w.__slow) await new Promise((r) => setTimeout(r, 1500)); return (sg as any)(...a); }) as any;
+  });
+  await page.getByTestId('refresh-btn').click();
+  await page.waitForTimeout(600);
+  await expect(page.locator('.other')).toHaveCount(0);   // 새 head 의 줄 번호가 옛 diff 에 적용되면 안 된다
+  await page.evaluate(() => { (window as any).__slow = false; });
+  await expect(lnOf(page, 2)).toHaveClass(/\bother\b/, { timeout: 8000 });
+});
+
+test('the same head against another base is blamed again', async ({ page }) => {
+  await fakeLocal(page); await fakeBlame(page, { blame: [A, A, A] });
+  await openLocal(page, '1 / 2');
+  await expect.poll(() => page.evaluate(() => (window as any).__blameCalls.length)).toBe(1);
+  await page.evaluate(() => {
+    const w = window as any, oid = (c: string) => c.repeat(40);
+    w.__git.mb = oid('7');
+    w.__blameByHead = { [w.__git.head + '|' + oid('7')]: [['alice', 'a@example.test'], ['bob', 'b@example.test'], ['alice', 'a@example.test']] };
+  });
+  await page.getByTestId('refresh-btn').click();
+  await expect(lnOf(page, 2)).toHaveClass(/\bother\b/);
 });

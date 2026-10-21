@@ -1,37 +1,37 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { Author } from '@viewed/core';
 import { localBlame } from './localSource';
+import { createQueue } from './blameQueue';
 
 export type BlameSrc = { repo: string; head: string; mergeBase: string; isMe: (a: Author) => boolean };
 type Blame = (Author | null)[];
 type Entry = { p: Promise<Blame | null>; refs: number };
 
-const MAX = 4;   // 앱 전체 동시 blame — 큰 리뷰가 git 프로세스를 줄줄이 띄우지 않게
-let running = 0;
-const waiting: (() => void)[] = [];
-const cache = new Map<string, Entry>();
+const queue = createQueue(4);   // 앱 전체 동시 blame — 큰 리뷰가 git 프로세스를 줄줄이 띄우지 않게
+const CAP = 200;
+const cache = new Map<string, Entry>();   // 삽입 순서 = 최근 사용 순서(쓰면 뒤로)
 
-function slot<T>(job: () => Promise<T>, skip: () => boolean, skipped: T): Promise<T> {
-  return new Promise<T>((resolve) => {
-    const run = async () => {   // 호출 전에 자리(running)를 이미 잡았다
-      try { resolve(skip() ? skipped : await job()); }   // 기다리는 사이 접혀서 아무도 안 보면 안 돈다
-      finally { running--; const next = waiting.shift(); if (next) { running++; next(); } }
-    };
-    // 자리는 동기로 잡고 시작만 마이크로태스크로 미룬다 — 만든 쪽이 refs 를 올린 뒤에 skip() 이 읽혀야 한다
-    if (running < MAX) { running++; queueMicrotask(() => void run()); } else waiting.push(() => void run());
-  });
+// 키에 mergeBase 가 든다 — 같은 head 라도 base 가 다르면 경계(null)가 달라진다
+const keyOf = (s: { head: string; mergeBase: string }, path: string) => `${s.head}\0${s.mergeBase}\0${path}`;
+
+function evict(src: BlameSrc) {
+  const cur = `${src.head}\0${src.mergeBase}\0`;
+  for (const [k, e] of cache) if (e.refs === 0 && !k.startsWith(cur)) cache.delete(k);   // 다른 리뷰의 것
+  for (const [k, e] of cache) { if (cache.size <= CAP) break; if (e.refs === 0) cache.delete(k); }   // 가장 오래된 것부터
 }
 
 function acquire(src: BlameSrc, path: string): { key: string; entry: Entry } {
-  const key = `${src.head}\0${path}`;
+  const key = keyOf(src, path);
   let entry = cache.get(key);
-  if (!entry) {
+  if (entry) { cache.delete(key); cache.set(key, entry); }
+  else {
     const e: Entry = { refs: 0, p: undefined as unknown as Promise<Blame | null> };
-    e.p = slot(() => localBlame(src.repo, src.head, path, src.mergeBase), () => e.refs === 0, null).then((r) => {
+    e.p = queue.enqueue(() => localBlame(src.repo, src.head, path, src.mergeBase), () => e.refs === 0).then((r) => {
       if (r === null && cache.get(key) === e) cache.delete(key);   // 실패·취소는 남기지 않는다 — 다시 펼치면 새로 시도
       return r;
     });
     cache.set(key, e); entry = e;
+    evict(src);
   }
   entry.refs++;
   return { key, entry };
@@ -50,9 +50,9 @@ export function useOtherLines(src: BlameSrc | undefined, path: string): Readonly
   }, [repo, head, mb, path]);
   const isMe = src?.isMe;
   return useMemo(() => {
-    if (!blame || !head || !isMe || blame.key !== `${head}\0${path}`) return undefined;
+    if (!blame || !head || !isMe || !mb || blame.key !== keyOf({ head, mergeBase: mb }, path)) return undefined;
     const s = new Set<number>();
     blame.v.forEach((a, i) => { if (a && !isMe(a)) s.add(i + 1); });
     return s;
-  }, [blame, head, path, isMe]);
+  }, [blame, head, mb, path, isMe]);
 }
