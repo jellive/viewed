@@ -52,6 +52,18 @@ export function useThreads({ repo, snap, bridge }: { repo?: string; snap: Snapsh
     };
   }, [bridge]);
 
+  // 리뷰 정체(repo·head·mergeBase)가 바뀌면 — 실시간 갱신은 같은 id 로 다시 읽어 ReviewView 가 다시 마운트되지 않는다 —
+  // 도는 질문을 끝내고 스레드를 비운다(spec §10)
+  const identity = `${repo ?? ''}|${snap.headSha}|${snap.mergeBase ?? ''}`;
+  const seenIdentity = useRef(identity);
+  useEffect(() => {
+    if (seenIdentity.current === identity) return;
+    seenIdentity.current = identity;
+    for (const th of Object.values(ref.current)) if (th.pending) bridge?.cancel(th.pending.id).catch(() => {});
+    ref.current = {};
+    setThreads({});
+  }, [identity, bridge]);
+
   const patch = (key: string, f: (th: ThreadData) => ThreadData | undefined) => setThreads((ts) => {
     if (!ts[key]) return ts;
     const next = f(ts[key]);

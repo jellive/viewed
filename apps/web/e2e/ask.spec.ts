@@ -21,8 +21,11 @@ async function fakeLocal(page: Page, o: { rename?: boolean; accounts?: boolean; 
     const raw = o.rename
       ? `:100644 100644 ${oid('a')} ${oid('b')} R100\0src/old.ts\0src/a.ts\0`
       : `:100644 100644 ${oid('a')} ${oid('b')} M\0src/a.ts\0`;
+    const feat = oid('f');
     const head = o.rename ? 'diff --git a/src/old.ts b/src/a.ts\nsimilarity index 90%\nrename from src/old.ts\nrename to src/a.ts\n' : 'diff --git a/src/a.ts b/src/a.ts\n';
     const patch = `${head}--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n ctx\n-old\n+new\n`;
+    // 테스트가 바꿀 수 있는 저장소 상태 — 새 커밋·리베이스를 흉내 낸다
+    w.__git = { head: feat, mb: oid('e'), raw, patch, blobs: {} as Record<string, string> };
     w.viewedDesktop = {
       getSecret: async (n: string) => (n === 'token:personal' ? 'tok' : null),
       setSecret: async () => {},
@@ -30,8 +33,9 @@ async function fakeLocal(page: Page, o: { rename?: boolean; accounts?: boolean; 
         pick: async () => null,
         list: async () => ['/r/a'],
         info: async () => ({ refs: ['refs/heads/feat', 'refs/heads/main'], defaultBase: null, current: 'refs/heads/feat', remote: null }),
-        run: async (_repo: string, op: string, ref: string) => op === 'resolve' ? oid(ref === 'refs/heads/feat' ? 'f' : 'd')
-          : op === 'mergeBase' ? (o.noMergeBase ? null : oid('e')) : op === 'rawDiff' ? raw : op === 'patchDiff' ? patch : null,
+        run: async (_repo: string, op: string, ref: string) => op === 'resolve' ? (ref === 'refs/heads/feat' ? w.__git.head : oid('d'))
+          : op === 'mergeBase' ? (o.noMergeBase ? null : w.__git.mb) : op === 'rawDiff' ? w.__git.raw : op === 'patchDiff' ? w.__git.patch
+          : op === 'blob' ? (w.__git.blobs[ref] ?? null) : null,
       },
       ask: {
         start: (req: { id: string }) => new Promise((res) => { w.__asks.push(req); waiting[req.id] = res; }),
@@ -48,6 +52,11 @@ async function openLocal(page: Page) {
   await page.getByTestId('open-btn').click();
   await expect(page.getByTestId('progress')).toHaveText('0 / 1');
 }
+
+// 저장소를 바꾼다(새 head·merge-base·diff·blob) — 다시 읽기 버튼을 눌러야 화면에 오른다
+const moveRepo = (page: Page, g: { head?: string; mb?: string; raw?: string; patch?: string; blobs?: Record<string, string> }) =>
+  page.evaluate((g) => { Object.assign((window as any).__git, g); }, g);
+const refresh = (page: Page) => page.getByTestId('refresh-btn').click();
 
 const line = (page: Page, kind: string, text: string) => page.locator(`.ln.${kind}`).filter({ hasText: text });
 async function ask(page: Page, kind: string, text: string, q: string) {
@@ -256,4 +265,77 @@ test.describe('on a phone-sized touch screen', () => {
     const size = await page.getByTestId('thread-input').evaluate((e) => parseFloat(getComputedStyle(e).fontSize));
     expect(size).toBeGreaterThanOrEqual(16);
   });
+});
+
+const RAW2 = `:100644 100644 ${oid('a')} ${oid('c')} M\0src/a.ts\0`;
+const HEAD2 = oid('9'), MB2 = oid('8');
+const diffOf = (body: string) => `diff --git a/src/a.ts b/src/a.ts\n--- a/x\n+++ b/x\n${body}`;
+
+test.describe('since-viewed views', () => {
+  async function viewThenMove(page: Page, g: Parameters<typeof moveRepo>[1]) {
+    await fakeLocal(page);
+    await openLocal(page);
+    await page.getByTestId('file-check').check();
+    await expect(page.getByTestId('progress')).toHaveText('1 / 1');
+    await moveRepo(page, g);
+    await refresh(page);
+    await expect(page.getByTestId('file-row')).toHaveAttribute('data-state', 'changed-since-viewed');
+    if (!(await page.getByTestId('since-diff').isVisible())) await page.getByTestId('file-expand').click();
+    await expect(page.getByTestId('since-diff')).toBeVisible();
+  }
+
+  test('in the since-viewed blob view added lines have a + and deleted lines do not', async ({ page }) => {
+    // 확인한 blob(b) → 지금 blob(c). merge-base 는 그대로라 blob 비교 경로다
+    await viewThenMove(page, {
+      head: HEAD2, raw: RAW2,
+      patch: diffOf('@@ -1,2 +1,3 @@\n ctx\n-old\n+new\n+extra\n'),
+      blobs: { [oid('b')]: 'ctx\nold\nz\n', [oid('c')]: 'ctx\nnew\nextra\nz\n' },
+    });
+    const sd = page.getByTestId('since-diff');
+    await expect(sd.locator('.ln.del')).toHaveCount(1);
+    await expect(sd.locator('.ln.del').getByTestId('ask-btn')).toHaveCount(0);
+    await expect(sd.locator('.ln.add').getByTestId('ask-btn')).toHaveCount(2);
+    await sd.locator('.ln.add').filter({ hasText: 'extra' }).hover();
+    await sd.locator('.ln.add').filter({ hasText: 'extra' }).getByTestId('ask-btn').click();
+    await page.getByTestId('thread-input').fill('why extra?');
+    await page.getByTestId('thread-send').click();
+    const [req] = await asks(page);
+    expect(req).toMatchObject({ head: HEAD2, mergeBase: MB, side: 'R', line: 3, lineText: 'extra', path: 'src/a.ts' });
+  });
+
+  test('the since-viewed block view asks with full-diff coordinates', async ({ page }) => {
+    // merge-base 가 움직였다 → 지금 patch 에서 확인 안 한 블록이 든 덩어리를 그대로 보인다(전체 diff 좌표)
+    await viewThenMove(page, {
+      head: HEAD2, mb: MB2, raw: RAW2,
+      patch: diffOf('@@ -1,4 +1,5 @@\n ctx\n-old\n+new\n mid\n+extra\n tail\n'),
+    });
+    await expect(page.getByTestId('since-blocks')).toBeVisible();
+    const sd = page.getByTestId('since-diff');
+    await sd.locator('.ln.add').filter({ hasText: 'extra' }).getByTestId('ask-btn').click();
+    await page.getByTestId('thread-input').fill('q-add');
+    await page.getByTestId('thread-send').click();
+    // 삭제 줄은 merge-base 쪽 옛 번호(2)
+    await sd.locator('.ln.del').filter({ hasText: 'old' }).getByTestId('ask-btn').click();
+    await page.getByTestId('thread-input').first().fill('q-del');
+    await page.getByTestId('thread-send').first().click();
+    const [a, b] = await asks(page);
+    expect(a).toMatchObject({ head: HEAD2, mergeBase: MB2, side: 'R', line: 4, lineText: 'extra' });
+    expect(b).toMatchObject({ head: HEAD2, mergeBase: MB2, side: 'L', line: 2, lineText: 'old', path: 'src/a.ts' });
+  });
+});
+
+test('a new head cancels the running question and clears the threads', async ({ page }) => {
+  await fakeLocal(page);
+  await openLocal(page);
+  await ask(page, 'add', 'new', 'why?');
+  const [req] = await asks(page);
+  await expect(page.getByTestId('thread')).toHaveCount(1);
+  await moveRepo(page, { head: HEAD2, raw: RAW2, patch: diffOf('@@ -1,2 +1,2 @@\n ctx\n-old\n+new\n') });
+  await refresh(page);
+  await expect(page.getByTestId('thread')).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).__cancelled)).toEqual([req.id]);
+  // 늦게 온 답은 새 화면에 나타나지 않는다
+  await answer(page, ok('stale'), req.id);
+  await page.waitForTimeout(200);
+  await expect(page.getByTestId('thread-answer')).toHaveCount(0);
 });

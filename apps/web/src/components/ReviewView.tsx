@@ -24,7 +24,7 @@ export function ReviewView(a: { snap: Snapshot; merged: DeviceState; secret: str
       </div>
       <FileList review={review} syncOk={sync === 'idle'} onToggle={toggle} renderDiff={(it) => it.file.patch === undefined || it.state !== 'changed-since-viewed'
         ? <DiffView patch={it.file.patch} ask={forFile(it, 'full')} />
-        : <SinceViewed readBlob={a.readBlob} item={it} />} />
+        : <SinceViewed readBlob={a.readBlob} item={it} ask={(v) => forFile(it, v)} />} />
     </>
   );
 }
