@@ -1,18 +1,20 @@
 import { useEffect, useRef, useState } from 'react';
-import { GitHub, loadLocalSnapshot, loadSnapshot, loadAll, mergeStates, repoIdFromRemote, type DeviceState, type Snapshot } from '@viewed/core';
+import { GitHub, loadLocalSnapshot, loadSnapshot, loadAll, mergeStates, meMatcher, othersOf, repoIdFromRemote, type Author, type DeviceState, type Snapshot } from '@viewed/core';
 import { loadSettings, type Settings as S } from './settings';
 import { Settings } from './components/Settings';
 import { ReviewView } from './components/ReviewView';
 import { getDeviceStore, getSyncStore, type SyncStore } from './syncStore';
 import { errorText, t } from './i18n';
 import { LocalOpen } from './components/LocalOpen';
-import { desktopGit, localBlob, localGit } from './localSource';
+import { desktopGit, localAuthors, localBlob, localGit } from './localSource';
 import { readRecent, rememberGithub, rememberLocal } from './recent';
 
 type ReadBlob = (sha: string) => Promise<string | null>;
 // head: 로컬 모드에서 브랜치 끝 커밋을 싸게 읽는다 — 바뀌면 자동으로 다시 읽는다
 // repo: 로컬로 연 리뷰의 폴더 — 줄에 질문하기(+)는 이게 있는 리뷰에만(폼의 소스 버튼이 아니라 연 리뷰를 따른다)
-type Made = { snap: Snapshot; readBlob: ReadBlob; head?: () => Promise<string>; repo?: string };
+type Made = { snap: Snapshot; readBlob: ReadBlob; head?: () => Promise<string>; repo?: string;
+  // 남의 변경만 닿은 파일(경로 → 작성자 이름)과 '나' 판정 — 로컬 모드만
+  others?: ReadonlyMap<string, string[]>; isMe?: (a: Author) => boolean };
 type Make = () => Promise<Made>;
 const LIVE_MS = 3000;
 // 기기 저장 기록은 기기 밖으로 안 나가 이름을 감출 필요가 없다 — 고정 키라 공유 비밀을 바꿔도 기록이 그대로 찾아진다
@@ -24,7 +26,7 @@ export function App() {
   const [last] = useState(() => readRecent().last);
   const [form, setForm] = useState(() => last?.source === 'github'
     ? { account: last.account, repo: last.repo, branch: last.branch, base: last.base } : { account: '', repo: '', branch: '', base: '' });
-  const [loaded, setLoaded] = useState<{ id: number; snap: Snapshot; merged: DeviceState; store: SyncStore; readBlob: ReadBlob; make: Make; head?: () => Promise<string>; repo?: string } | null>(null);
+  const [loaded, setLoaded] = useState<{ id: number; snap: Snapshot; merged: DeviceState; store: SyncStore; readBlob: ReadBlob; make: Make; head?: () => Promise<string>; repo?: string; others?: ReadonlyMap<string, string[]>; isMe?: (a: Author) => boolean } | null>(null);
   const [source, setSource] = useState<'github' | 'local'>(() => (desktopGit() && last?.source !== 'github' ? 'local' : 'github'));
   // 마지막 로컬 리뷰를 켤 때 한 번 자동으로 여는 권한. 실행당 1회라 App 이 든다 — 설정·소스 전환으로 LocalOpen 이 다시 마운트돼도 다시 안 준다
   const auto = useRef(last?.source === 'local' ? last : undefined);
@@ -75,11 +77,11 @@ export function App() {
     setError(''); if (!refresh) setLoaded(null);
     const keep = (id: number) => (refresh && loaded ? loaded.id : id);
     try {
-      const { snap, readBlob, head, repo } = await make();
+      const { snap, readBlob, head, repo, others, isMe } = await make();
       if (settings!.storage === 'device') {
         const store = getDeviceStore(settings!.deviceId);
         if (mine !== seq.current) return;
-        setLoaded({ id: keep(mine), snap, merged: store.own(), store, readBlob, make, head, repo });
+        setLoaded({ id: keep(mine), snap, merged: store.own(), store, readBlob, make, head, repo, others, isMe });
         remember?.();
         return;
       }
@@ -90,7 +92,7 @@ export function App() {
       store.absorb(all.own);
       const merged = mergeStates([all.merged, store.own()]);
       if (mine !== seq.current) return;
-      setLoaded({ id: keep(mine), snap, merged, store, readBlob, make, head, repo });
+      setLoaded({ id: keep(mine), snap, merged, store, readBlob, make, head, repo, others, isMe });
       remember?.();
     } catch (e) {
       if (mine !== seq.current) return;
@@ -125,12 +127,24 @@ export function App() {
       )}
       {localForm ? (
         <form data-testid="open-form" className="open-bar" onSubmit={(e) => e.preventDefault()}>
-          <LocalOpen onError={setError} onCancel={() => { seq.current++; }} recentRev={recentRev} takeAuto={() => { const a = auto.current; auto.current = undefined; return a; }} onOpen={(repo, info, branch, base) => load(async () => ({
-            snap: await loadLocalSnapshot(localGit(repo), repoIdFromRemote(info.remote, repo), branch, base),
-            readBlob: localBlob(repo),
-            head: () => localGit(repo).resolve(branch),
-            repo,
-          }), false, () => { rememberLocal(repo, branch, base); setRecentRev((n) => n + 1); })} />
+          <LocalOpen onError={setError} onCancel={() => { seq.current++; }} recentRev={recentRev} takeAuto={() => { const a = auto.current; auto.current = undefined; return a; }} onOpen={(repo, info, branch, base) => load(async () => {
+            const git = localGit(repo);
+            // 스냅숏과 작성자 목록을 나란히 읽는다(둘 다 ~1초) — 그 사이 브랜치가 움직였으면 작성자는 버린다
+            // 미리 읽기가 실패하면 작성자만 포기한다 — 오류는 스냅숏 읽기가 같은 말로 낸다
+            let head = '', mb = '';
+            try { head = await git.resolve(branch); const baseSha = await git.resolve(base); mb = head && baseSha ? await git.mergeBase(baseSha, head) : ''; } catch { /* 위 */ }
+            const [snap, authors] = await Promise.all([
+              loadLocalSnapshot(git, repoIdFromRemote(info.remote, repo), branch, base),
+              mb ? localAuthors(repo, mb, head) : Promise.resolve(null),
+            ]);
+            // '나' = git 사용자(이름·이메일) + 설정의 추가분. 다시 읽을 때마다 그때의 설정으로 다시 계산한다
+            const isMe = meMatcher([info.user?.name ?? '', info.user?.email ?? '', ...(settingsRef.current?.extraMe ?? [])]);
+            const fresh = authors && snap.headSha === head && snap.mergeBase === mb;
+            return {
+              snap, readBlob: localBlob(repo), head: () => git.resolve(branch), repo, isMe,
+              ...(fresh ? { others: othersOf(snap.files, authors.files, isMe, authors.renames) } : {}),
+            };
+          }, false, () => { rememberLocal(repo, branch, base); setRecentRev((n) => n + 1); })} />
           <button type="button" data-testid="settings-open" onClick={() => setEditing(true)}>{t.settings}</button>
         </form>
       ) : (
@@ -147,7 +161,7 @@ export function App() {
       {localForm && <p className="hint">{t.localFetchHint}</p>}
       {error && <p data-testid="error" role="alert" className="flash err">{error}</p>}
       {loaded && (
-        <ReviewView key={loaded.id} snap={loaded.snap} merged={loaded.merged} secret={device ? DEVICE_SECRET : settings.secret} store={loaded.store} readBlob={loaded.readBlob} onRefresh={() => refreshRef.current()} live={!!loaded.head} askRepo={loaded.repo} />
+        <ReviewView key={loaded.id} snap={loaded.snap} merged={loaded.merged} secret={device ? DEVICE_SECRET : settings.secret} store={loaded.store} readBlob={loaded.readBlob} onRefresh={() => refreshRef.current()} live={!!loaded.head} askRepo={loaded.repo} others={loaded.others} isMe={loaded.isMe} />
       )}
     </main>
   );

@@ -32,7 +32,7 @@ export function FileList({ review, syncOk, onToggle, renderDiff }: { review: Rev
           const open = isOpen(it);
           const flip = () => setPicked((p) => ({ ...p, [it.key]: { open: !open, fp: it.fp } }));
           return (
-            <li key={it.key} data-testid="file-row" data-state={it.state} className="file">
+            <li key={it.key} data-testid="file-row" data-state={it.state} className="file" {...(it.others ? { 'data-others': '1' } : {})}>
               {/* 머리 빈 곳을 눌러도 꺾쇠처럼 펼친다. 체크 라벨·버튼·링크는 각자 일하고(겹치면 두 번 바뀐다), 경로 글자는 고르는 데만 쓴다
                   (더블클릭으로 파일 이름을 복사하면 첫 클릭에 펼침이 바뀐다). 머리 어디서든 드래그로 고르는 중이면 그대로.
                   키보드는 꺾쇠 버튼이 맡는다 — 머리에 role·tabindex 를 달면 탭 정지가 겹친다 */}
@@ -52,9 +52,10 @@ export function FileList({ review, syncOk, onToggle, renderDiff }: { review: Rev
                 <span data-testid="file-state" className={it.carried === 'same' ? 'badge muted' : 'badge'}>
                   {it.carried === 'same' ? t.carried : it.carried === 'shrunk' ? t.carriedDropped(it.dropped ?? 0) : MARK[it.state]}
                 </span>
-                <label className="viewed-toggle">
+                {it.others && <span data-testid="file-others" className="badge others" title={it.others.join(', ')}>{t.othersBadge(it.others)}</span>}
+                <label className="viewed-toggle" title={it.others ? t.othersAuto : undefined}>
                   {/* 체크하면 접고 풀면 펼친다 — 머리로 고른 것은 덮는다. 판정이 비동기라 목표 상태를 바로 넣어야 옛 state 로 한 번 그려질 때 깜빡이지 않는다 */}
-                  <input type="checkbox" data-testid="file-check" aria-label={t.viewedFile(it.file.path)} checked={it.state === 'viewed'} onChange={(e) => {
+                  <input type="checkbox" data-testid="file-check" aria-label={t.viewedFile(it.file.path)} checked={it.state === 'viewed'} disabled={!!it.others} onChange={(e) => {
                     const v = e.target.checked;
                     setPicked((p) => ({ ...p, [it.key]: { open: !v, fp: it.fp } }));
                     onToggle(it, v);

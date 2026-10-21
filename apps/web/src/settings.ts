@@ -2,7 +2,9 @@ import type { DesktopAsk } from './ask';
 
 export interface AccountCfg { label: string; token: string }
 // storage: 'gist' = 비밀 gist 로 기기 간 동기화(기본, 옛 설정 포함) / 'device' = 이 기기에만, 토큰 없이도 된다
-export interface Settings { accounts: AccountCfg[]; gistAccount: string; gistId: string; secret: string; deviceId: string; storage?: 'gist' | 'device' }
+export interface Settings { accounts: AccountCfg[]; gistAccount: string; gistId: string; secret: string; deviceId: string; storage?: 'gist' | 'device';
+  // 로컬 모드에서 '나'로 칠 작성자 이름·이메일(git 사용자 말고 추가분) — 한 줄에 하나
+  extraMe?: string[] }
 
 declare global {
   interface DesktopGit {

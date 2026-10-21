@@ -1,4 +1,4 @@
-import type { DeviceState, Snapshot } from '@viewed/core';
+import type { Author, DeviceState, Snapshot } from '@viewed/core';
 import { useReview } from '../useReview';
 import type { SyncStore } from '../syncStore';
 import { FileList } from './FileList';
@@ -7,7 +7,7 @@ import { SinceViewed } from './SinceViewed';
 import { t } from '../i18n';
 import { useThreads } from '../ask';
 
-export function ReviewView(a: { snap: Snapshot; merged: DeviceState; secret: string; store: SyncStore; readBlob: (sha: string) => Promise<string | null>; onRefresh: () => void; live: boolean; askRepo?: string }) {
+export function ReviewView(a: { snap: Snapshot; merged: DeviceState; secret: string; store: SyncStore; readBlob: (sha: string) => Promise<string | null>; onRefresh: () => void; live: boolean; askRepo?: string; others?: ReadonlyMap<string, string[]>; isMe?: (a: Author) => boolean }) {
   const { review, toggle, sync } = useReview(a);
   // 스레드는 여기(FileList 위)에 둔다 — 접기·필터로 diff 가 사라져도 남게. 로컬로 연 리뷰(askRepo)에만 + 가 붙는다
   const { forFile } = useThreads({ repo: a.askRepo, snap: a.snap, bridge: window.viewedDesktop?.ask });

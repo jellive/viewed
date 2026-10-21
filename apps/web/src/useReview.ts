@@ -5,7 +5,7 @@ import type { SyncStore } from './syncStore';
 export type { SyncStatus } from './syncStore';
 
 // 저장·미저장 기록은 기기당 하나인 SyncStore 가 갖는다 — 이 훅은 그것을 보여 주기만 한다
-export function useReview(a: { snap: Snapshot; merged: DeviceState; secret: string; store: SyncStore }) {
+export function useReview(a: { snap: Snapshot; merged: DeviceState; secret: string; store: SyncStore; others?: ReadonlyMap<string, string[]> }) {
   const { store } = a;
   const own = useSyncExternalStore(store.subscribe, store.own);
   const sync = useSyncExternalStore(store.subscribe, store.status);
@@ -14,9 +14,9 @@ export function useReview(a: { snap: Snapshot; merged: DeviceState; secret: stri
 
   useEffect(() => {
     let live = true;   // 늦게 끝난 옛 계산이 새 상태를 덮지 못하게
-    buildReview(a.snap, merged, a.secret).then((r) => { if (live) setReview(r); });
+    buildReview(a.snap, merged, a.secret, a.others).then((r) => { if (live) setReview(r); });
     return () => { live = false; };
-  }, [a.snap, merged, a.secret]);
+  }, [a.snap, merged, a.secret, a.others]);
 
   const toggle = useCallback((item: ReviewItem, viewed: boolean) => {
     store.set(item.key, markRecord(item, a.snap.headSha, viewed));

@@ -1,4 +1,4 @@
-import type { LocalGit } from '@viewed/core';
+import type { Author, LocalGit } from '@viewed/core';
 
 export const desktopGit = () => window.viewedDesktop?.git;
 
@@ -18,3 +18,14 @@ export const localBlob = (repo: string) => (sha: string) => desktopGit()!.run(re
 
 // refs/heads/feat → feat, refs/remotes/origin/main → origin/main
 export const shortRef = (r: string) => r.replace(/^refs\/(heads|remotes)\//, '');
+
+// 파일별 작성자 + 이름 변경 쌍. 실패·파싱 오류는 null — 못 읽었으면 전부 내 것으로 둔다(흐리지 않는다)
+export async function localAuthors(repo: string, mergeBase: string, head: string): Promise<{ files: Record<string, Author[]>; renames: [string, string][] } | null> {
+  try {
+    const raw = await desktopGit()!.run(repo, 'authors', mergeBase, head);
+    if (!raw) return null;
+    const j = JSON.parse(raw) as { files?: unknown; renames?: unknown };
+    if (!j || typeof j.files !== 'object' || j.files === null || Array.isArray(j.files)) return null;
+    return { files: j.files as Record<string, Author[]>, renames: Array.isArray(j.renames) ? (j.renames as [string, string][]) : [] };
+  } catch { return null; }
+}

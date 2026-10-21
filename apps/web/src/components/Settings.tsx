@@ -90,6 +90,13 @@ export function Settings({ initial, onSaved, notice }: { initial: S | null; onSa
         <input aria-label={t.aria.secret} type="password" value={s.secret} onChange={(e) => setS({ ...s, secret: e.target.value })} />
       </Field>
       </>)}
+      {desktopGit() && (
+        <Field name={t.extraMe} hint={t.extraMeHint}>
+          <textarea data-testid="extra-me" rows={3} autoCapitalize="none" autoCorrect="off" spellCheck={false}
+            defaultValue={(s.extraMe ?? []).join('\n')}
+            onChange={(e) => setS({ ...s, extraMe: e.target.value.split('\n').map((x) => x.trim()).filter(Boolean) })} />
+        </Field>
+      )}
       <Field name={t.deviceId} hint={t.deviceIdHint}>
         <input aria-label={t.aria.deviceId} autoCapitalize="none" autoCorrect="off" spellCheck={false} value={s.deviceId} onChange={(e) => setS({ ...s, deviceId: e.target.value })} />
       </Field>

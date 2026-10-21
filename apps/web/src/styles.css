@@ -22,6 +22,8 @@
   --hunk-fg: #59636e;
   --primary: #1f883d;
   --primary-hover: #1c8139;
+  --others-bg: #eef2f8;   /* 남의 변경 — 회청 */
+  --others-fg: #3d4b5c;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   color-scheme: light;
@@ -50,6 +52,8 @@
     --hunk-fg: #9198a1;
     --primary: #238636;
     --primary-hover: #1c8139; /* 흰 글자 대비 4.94:1 */
+    --others-bg: #1b2330;
+    --others-fg: #a9b6c7;
     color-scheme: dark;
   }
 }
@@ -157,6 +161,9 @@ button.primary:hover { background: var(--primary-hover); }
 .viewed-toggle input { min-height: 0; margin: 0; padding: 0; accent-color: var(--accent); }
 .file[data-state="viewed"] .viewed-toggle { background: var(--hunk-line); border-color: var(--accent); }
 .file[data-state="viewed"] .path { color: var(--fg-muted); }
+.badge.others { color: var(--others-fg); background: var(--others-bg); border-color: transparent; }
+.file[data-others] .file-head { background: var(--others-bg); }
+.file[data-others] .viewed-toggle { cursor: default; opacity: 0.7; }
 
 /* diff — 줄번호는 data-o/data-n 을 CSS 가 그린다(텍스트에 안 섞인다) */
 .diff {
