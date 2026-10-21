@@ -5,9 +5,12 @@ import { FileList } from './FileList';
 import { DiffView } from './DiffView';
 import { SinceViewed } from './SinceViewed';
 import { t } from '../i18n';
+import { useThreads } from '../ask';
 
-export function ReviewView(a: { snap: Snapshot; merged: DeviceState; secret: string; store: SyncStore; readBlob: (sha: string) => Promise<string | null>; onRefresh: () => void; live: boolean }) {
+export function ReviewView(a: { snap: Snapshot; merged: DeviceState; secret: string; store: SyncStore; readBlob: (sha: string) => Promise<string | null>; onRefresh: () => void; live: boolean; askRepo?: string }) {
   const { review, toggle, sync } = useReview(a);
+  // 스레드는 여기(FileList 위)에 둔다 — 접기·필터로 diff 가 사라져도 남게. 로컬로 연 리뷰(askRepo)에만 + 가 붙는다
+  const { forFile } = useThreads({ repo: a.askRepo, snap: a.snap, bridge: window.viewedDesktop?.ask });
   if (!review) return null;
   return (
     <>
@@ -20,7 +23,7 @@ export function ReviewView(a: { snap: Snapshot; merged: DeviceState; secret: str
         <p data-testid="sync-status" className="sync" data-sync={sync}>{sync === 'error' ? t.syncFailed : sync === 'pending' ? t.saving : t.saved}</p>
       </div>
       <FileList review={review} syncOk={sync === 'idle'} onToggle={toggle} renderDiff={(it) => it.file.patch === undefined || it.state !== 'changed-since-viewed'
-        ? <DiffView patch={it.file.patch} />
+        ? <DiffView patch={it.file.patch} ask={forFile(it, 'full')} />
         : <SinceViewed readBlob={a.readBlob} item={it} />} />
     </>
   );

@@ -11,7 +11,8 @@ import { readRecent, rememberGithub, rememberLocal } from './recent';
 
 type ReadBlob = (sha: string) => Promise<string | null>;
 // head: 로컬 모드에서 브랜치 끝 커밋을 싸게 읽는다 — 바뀌면 자동으로 다시 읽는다
-type Made = { snap: Snapshot; readBlob: ReadBlob; head?: () => Promise<string> };
+// repo: 로컬로 연 리뷰의 폴더 — 줄에 질문하기(+)는 이게 있는 리뷰에만(폼의 소스 버튼이 아니라 연 리뷰를 따른다)
+type Made = { snap: Snapshot; readBlob: ReadBlob; head?: () => Promise<string>; repo?: string };
 type Make = () => Promise<Made>;
 const LIVE_MS = 3000;
 // 기기 저장 기록은 기기 밖으로 안 나가 이름을 감출 필요가 없다 — 고정 키라 공유 비밀을 바꿔도 기록이 그대로 찾아진다
@@ -23,7 +24,7 @@ export function App() {
   const [last] = useState(() => readRecent().last);
   const [form, setForm] = useState(() => last?.source === 'github'
     ? { account: last.account, repo: last.repo, branch: last.branch, base: last.base } : { account: '', repo: '', branch: '', base: '' });
-  const [loaded, setLoaded] = useState<{ id: number; snap: Snapshot; merged: DeviceState; store: SyncStore; readBlob: ReadBlob; make: Make; head?: () => Promise<string> } | null>(null);
+  const [loaded, setLoaded] = useState<{ id: number; snap: Snapshot; merged: DeviceState; store: SyncStore; readBlob: ReadBlob; make: Make; head?: () => Promise<string>; repo?: string } | null>(null);
   const [source, setSource] = useState<'github' | 'local'>(() => (desktopGit() && last?.source !== 'github' ? 'local' : 'github'));
   // 마지막 로컬 리뷰를 켤 때 한 번 자동으로 여는 권한. 실행당 1회라 App 이 든다 — 설정·소스 전환으로 LocalOpen 이 다시 마운트돼도 다시 안 준다
   const auto = useRef(last?.source === 'local' ? last : undefined);
@@ -74,11 +75,11 @@ export function App() {
     setError(''); if (!refresh) setLoaded(null);
     const keep = (id: number) => (refresh && loaded ? loaded.id : id);
     try {
-      const { snap, readBlob, head } = await make();
+      const { snap, readBlob, head, repo } = await make();
       if (settings!.storage === 'device') {
         const store = getDeviceStore(settings!.deviceId);
         if (mine !== seq.current) return;
-        setLoaded({ id: keep(mine), snap, merged: store.own(), store, readBlob, make, head });
+        setLoaded({ id: keep(mine), snap, merged: store.own(), store, readBlob, make, head, repo });
         remember?.();
         return;
       }
@@ -89,7 +90,7 @@ export function App() {
       store.absorb(all.own);
       const merged = mergeStates([all.merged, store.own()]);
       if (mine !== seq.current) return;
-      setLoaded({ id: keep(mine), snap, merged, store, readBlob, make, head });
+      setLoaded({ id: keep(mine), snap, merged, store, readBlob, make, head, repo });
       remember?.();
     } catch (e) {
       if (mine !== seq.current) return;
@@ -128,6 +129,7 @@ export function App() {
             snap: await loadLocalSnapshot(localGit(repo), repoIdFromRemote(info.remote, repo), branch, base),
             readBlob: localBlob(repo),
             head: () => localGit(repo).resolve(branch),
+            repo,
           }), false, () => { rememberLocal(repo, branch, base); setRecentRev((n) => n + 1); })} />
           <button type="button" data-testid="settings-open" onClick={() => setEditing(true)}>{t.settings}</button>
         </form>
@@ -145,7 +147,7 @@ export function App() {
       {localForm && <p className="hint">{t.localFetchHint}</p>}
       {error && <p data-testid="error" role="alert" className="flash err">{error}</p>}
       {loaded && (
-        <ReviewView key={loaded.id} snap={loaded.snap} merged={loaded.merged} secret={device ? DEVICE_SECRET : settings.secret} store={loaded.store} readBlob={loaded.readBlob} onRefresh={() => refreshRef.current()} live={!!loaded.head} />
+        <ReviewView key={loaded.id} snap={loaded.snap} merged={loaded.merged} secret={device ? DEVICE_SECRET : settings.secret} store={loaded.store} readBlob={loaded.readBlob} onRefresh={() => refreshRef.current()} live={!!loaded.head} askRepo={loaded.repo} />
       )}
     </main>
   );
