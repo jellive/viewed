@@ -85,6 +85,21 @@ const en = {
   nothingLeft: 'Every file here is viewed. Turn off the filter to see them.',
   searchFiles: 'Search files',
   noMatch: 'No matching files',
+  askLine: 'Ask about this line',
+  askPlaceholder: 'Why was this changed?',
+  askFollowUp: 'Ask a follow-up',
+  askSend: 'Ask',
+  askCancel: 'Cancel',
+  askRetry: 'Retry',
+  askArrived: 'Answer arrived.',
+  askYou: 'You',
+  askStage: { queued: 'Waiting…', searching: 'Finding the session log…', answering: 'Claude is answering…' },
+  askSourceSession: (id: string, at: string, subagent: boolean) => `From the session log · ${id}${subagent ? ' (subagent)' : ''} · ${at}`,
+  askSourceNone: 'No session log · from commits and code',
+  askAccount: (email: string) => `Asked as ${email}`,
+  askAccountUnknown: "Couldn't read the account",
+  askError: { timeout: 'No answer within 90 seconds.', 'not-installed': "Couldn't find Claude Code on this Mac.", 'too-old': 'This needs a newer Claude Code.',
+    login: 'Claude Code is not logged in.', invalid: "This line couldn't be checked — the file may have changed. Refresh and try again.", failed: "Couldn't get an answer.", cancelled: 'Cancelled.' },
   aria: { accountLabel: 'account label', token: 'token', gistId: 'gist id', secret: 'shared secret', deviceId: 'device id', searchFiles: 'Search files' },
 };
 
@@ -174,10 +189,25 @@ const ko: Messages = {
   nothingLeft: '여기 있는 파일은 전부 확인했습니다. 필터를 끄면 다시 보입니다.',
   searchFiles: '파일 이름 검색',
   noMatch: '맞는 파일 없음',
+  askLine: '이 줄에 질문',
+  askPlaceholder: '이걸 왜 바꿨지?',
+  askFollowUp: '이어서 묻기',
+  askSend: '묻기',
+  askCancel: '취소',
+  askRetry: '다시 시도',
+  askArrived: '답이 왔어요.',
+  askYou: '나',
+  askStage: { queued: '대기 중…', searching: '세션 기록 찾는 중…', answering: 'Claude 가 답하는 중…' },
+  askSourceSession: (id, at, subagent) => `세션 기록 기반 · ${id}${subagent ? ' (서브에이전트)' : ''} · ${at}`,
+  askSourceNone: '세션 기록 없음 · 커밋·코드 기반',
+  askAccount: (email) => `${email} 계정으로`,
+  askAccountUnknown: '계정 확인 못 함',
+  askError: { timeout: '90초 안에 답을 못 받았어요.', 'not-installed': '이 맥에서 Claude Code 를 찾지 못했어요.', 'too-old': '더 새 Claude Code 가 필요해요.',
+    login: 'Claude Code 에 로그인돼 있지 않아요.', invalid: '이 줄을 확인하지 못했어요. 파일이 바뀌었을 수 있으니 새로고침 뒤 다시 물어 주세요.', failed: '답을 못 받았어요.', cancelled: '취소했어요.' },
   aria: { accountLabel: '계정 이름', token: 'GitHub 토큰', gistId: 'Gist id', secret: '공유 비밀', deviceId: '기기 id', searchFiles: '파일 이름 검색' },
 };
 
-const lang = typeof navigator !== 'undefined' && navigator.language.toLowerCase().startsWith('ko') ? 'ko' : 'en';
+export const lang: 'ko' | 'en' = typeof navigator !== 'undefined' && navigator.language.toLowerCase().startsWith('ko') ? 'ko' : 'en';
 if (typeof document !== 'undefined') document.documentElement.lang = lang;
 
 export const t: Messages = lang === 'ko' ? ko : en;

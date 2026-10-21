@@ -17,5 +17,6 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: bash scripts/prepublish-scan.sh
       - run: pnpm --filter @viewed/core test
+      - run: pnpm --filter @viewed/desktop test:unit
       - run: pnpm --filter @viewed/web exec playwright install --with-deps chromium
       - run: pnpm --filter @viewed/web test

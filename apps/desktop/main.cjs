@@ -1,6 +1,10 @@
 const { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } = require('electron');
 const { isAppPage } = require('./app-page.cjs');
-const { createRepos, info, ops } = require('./local-git.cjs');
+const { createRepos, info, ops, askGit } = require('./local-git.cjs');
+const { createAsk } = require('./ask/index.cjs');
+const claudeRun = require('./ask/claude-run.cjs');
+const sessions = require('./ask/sessions.cjs');
+const os = require('node:os');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
@@ -90,6 +94,18 @@ ipcMain.handle('repo:git', async (e, repo, op, a, b) => {
   return ops[op](await repos.allowed(repo), a, b);
 });
 
+// 코드 줄에 대한 질문 — Claude Code CLI 를 도구 없이 한 번 돌린다. 창이 다시 불리거나 죽거나 닫히면 진행 중인 질문은 전부 취소한다
+const asker = createAsk({
+  allowed: repos.allowed, askGit,
+  findAuthoring: sessions.findAuthoring, sessionStores: sessions.sessionStores,
+  findClaude: claudeRun.findClaude, claudeVersion: claudeRun.claudeVersion, runClaude: claudeRun.runClaude,
+  readResult: claudeRun.readResult, accountEmail: claudeRun.accountEmail,
+  env: process.env, home: os.homedir(),
+  onProgress: (id, stage) => { if (win && !win.isDestroyed()) win.webContents.send('ask:progress', { id, stage }); },
+});
+ipcMain.handle('ask:start', (e, req) => { assertSender(e); return asker.start(req); });
+ipcMain.handle('ask:cancel', (e, id) => { assertSender(e); asker.cancel(id); });
+
 // 같은 userData 로 두 번째 인스턴스를 띄우면 secrets.json 쓰기가 엇갈린다 — 하나만 허용
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) app.quit();
@@ -109,6 +125,18 @@ if (gotLock) app.whenReady().then(() => {
     if (/^https:\/\//.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
+  wc.on('render-process-gone', () => asker.cancelAll());
+  wc.on('did-start-navigation', (d) => { if (d.isMainFrame && !d.isSameDocument) asker.cancelAll(); });
+  win.on('closed', () => asker.cancelAll());
   win.loadFile(indexHtml);
+});
+// 종료 전에 진행 중인 질문의 자식 프로세스 정리(SIGTERM → 2 s 뒤 SIGKILL)가 끝나기를 기다린다. 상한 3 s
+let quitting = false;
+app.on('before-quit', (e) => {
+  if (quitting || !asker.active()) return;
+  quitting = true;
+  e.preventDefault();
+  asker.cancelAll();
+  Promise.race([asker.idle(), new Promise((r) => setTimeout(r, 3000))]).then(() => app.quit(), () => app.quit());
 });
 app.on('window-all-closed', () => app.quit());

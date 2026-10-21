@@ -8,4 +8,13 @@ contextBridge.exposeInMainWorld('viewedDesktop', {
     info: (repo) => ipcRenderer.invoke('repo:info', repo),
     run: (repo, op, a, b) => ipcRenderer.invoke('repo:git', repo, op, a, b),
   },
+  ask: {
+    start: (req) => ipcRenderer.invoke('ask:start', req),
+    cancel: (id) => ipcRenderer.invoke('ask:cancel', id),
+    onProgress: (cb) => {
+      const h = (_e, p) => cb(p);
+      ipcRenderer.on('ask:progress', h);
+      return () => ipcRenderer.removeListener('ask:progress', h);
+    },
+  },
 });
