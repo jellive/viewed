@@ -359,6 +359,23 @@ test('an unclosed quote does not join the path with the next word', () => {
   }
 });
 
+test('a quoted token is also judged by its unquoted extent', () => {
+  // 닫힌 따옴표 안이라도 공백 너머의 '..' 이 밖 경로를 레포 안으로 되돌리면 안 된다 — 따옴표 범위와 공백까지의 범위를 둘 다 본다
+  const ctx = { roots: [R, '/home/u/my repo'], home: '/home/u', allowDirs: ['/home/u/.claude'] };
+  for (const bad of ['"/home/u/other /../viewed/a.js"', "'/home/u/other /../viewed/a.js'", '`/home/u/other /../viewed/a.js`', '"/home/u/viewed client copy/.env"',
+    'see "/home/u/other /../viewed/a.js" now', '"~/other /../viewed/a.js"', '"/home/u/my repo /../other/.env"']) {
+    assert.deepEqual(runSay(bad, ctx), { mixed: true }, bad);
+  }
+  for (const ok of ['"/home/u/viewed/src/a.ts"', '"/home/u/my repo/src/a.ts"', '"~/.claude/rules/x.md"', "'/home/u/viewed/src/a.ts'", '`/home/u/my repo/src/a.ts`',
+    'see "/home/u/my repo/src/a.ts", then', '"~/my repo/src/a.ts"',
+    '"/home/u/viewed."', '"/home/u/my repo."',   // 따옴표 없는 범위도 끝의 문장 부호를 뗀다
+    '"/home/u/viewed\n/../x"']) {               // 닫는 따옴표가 다음 줄이면 따옴표 범위가 아니다 — 줄 너머의 '..' 로 레포 밖처럼 읽지 않는다
+    const r = runSay(ok, ctx);
+    assert.equal(r.mixed, undefined, ok);
+    assert.ok(r.text.includes(ok), ok);
+  }
+});
+
 test('characters after a root inside one token make it a different path', () => {
   for (const bad of ['/home/u/viewed(1)/.env', '/home/u/viewed,old/.env', '/home/u/viewed[old]/.env', '/home/u/viewed;x/.env', "/home/u/viewed'x/.env",
     '"/home/u/viewed client copy/.env"', '"/home/u/viewed(company)/.env"']) {

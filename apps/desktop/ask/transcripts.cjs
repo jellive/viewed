@@ -242,7 +242,7 @@ const TOKEN_MAX = 4096;        // 토막마다 앞 4096자만 본다
 
 // 글을 받아 "P·허용 폴더 밖의 홈 아래 경로가 있나"를 답하는 판정기. 홈을 모르면 판정할 수 없으니 늘 true.
 // ① 시작: 접은(NFC 소문자) 글에서 홈·~/·$HOME/·${HOME}/·"$HOME"/·"${HOME}"/ 이 나오는 모든 자리(앞 글자와 상관없이), 왼쪽부터.
-// ② 범위: 시작 바로 앞이 따옴표이고 같은 줄 4096자 안에 닫는 따옴표가 있으면 거기까지, 아니면 첫 공백·"·` 까지. 공백 너머로 잇지 않는다 — 단 알려진
+// ② 범위: 첫 공백·"·` 까지. 시작 바로 앞이 따옴표이고 같은 줄 4096자 안에 닫는 따옴표가 있으면 거기까지도 **따로** 본다(둘 중 하나라도 밖이면 밖). 공백 너머로 잇지 않는다 — 단 알려진
 //    루트·허용 폴더(공백이 들어 있을 수 있다)로 시작하면 그 경로 전체가 첫 부분이고 그 뒤부터 같은 규칙. 토막마다 앞 4096자.
 //    끝의 .,;:!?)]}>' 만 뗀다 — 가운데 글자는 경로의 일부다.
 //    시작은 앞 토막 안에 있어도 전부 따로 본다(…/viewed/bin:/home/u/other/bin). 토막 끝은 미리 한 번 재 두어 다시 훑지 않는다.
@@ -288,25 +288,26 @@ function pathJudge(ctx, resolve) {
     const keep = new Int32Array(n + 1);
     for (let i = 0; i < n; i++) keep[i + 1] = TRAIL.includes(low[i]) ? keep[i] : i + 1;
     const boundary = (i) => i >= n || low[i] === '/' || SPACE.test(low[i]) || TRAIL.includes(low[i]);
+    // 시작 at 의 토막 [at, end) 를 판정한다(from 앞은 통째로 읽은 루트라 뗄 글자가 아니다)
+    const verdict = (at, k, body, from, end) => {
+      const cut = Math.max(Math.min(from, end), keep[end]);
+      return k === 0 ? foreign(low.slice(at, cut), src.slice(at, cut)) : foreign(fh + low.slice(body, cut), home + src.slice(body, cut));
+    };
     const judge = (at, k) => {
       const body = k === 0 ? at + fh.length : at + pats[k].length - 1;   // 홈은 통째로, 별칭은 뒤의 '/' 부터
       const limit = Math.min(n, (k === 0 ? at : body) + TOKEN_MAX);
       const q = at > 0 ? low[at - 1] : '';
-      let from = body;
-      let end = -1;
       if (q && QUOTES.includes(q)) {
-        // 같은 줄, 4096자 안에 닫는 따옴표가 있을 때만 거기까지가 한 경로다. 훑는 구간은 따옴표 종류마다 겹치지 않거나 4096자라 합해서 선형이다
+        // 같은 줄, 4096자 안에 닫는 따옴표가 있으면 거기까지를 한 경로로 본다. 훑는 구간은 따옴표 종류마다 겹치지 않거나 4096자라 합해서 선형이다
         let p = body;
         while (p < limit && low[p] !== q && low[p] !== '\n') p++;
-        if (p < limit && low[p] === q) end = p;
+        if (p < limit && low[p] === q && verdict(at, k, body, body, p)) return true;
       }
-      if (end === -1) {   // 따옴표가 없거나 안 닫혔다 — 공백·"·` 까지. 안 닫힌 따옴표로 공백 너머의 '..' 을 끌어오지 않는다
-        const rel = rels.find((r) => low.startsWith(r, body) && boundary(body + r.length));
-        if (rel) from = body + rel.length;
-        end = Math.min(from < n ? nextStop[from] : n, limit);
-      }
-      const cut = Math.max(Math.min(from, end), keep[end]);
-      return k === 0 ? foreign(low.slice(at, cut), src.slice(at, cut)) : foreign(fh + low.slice(body, cut), home + src.slice(body, cut));
+      // 따옴표 안이어도 공백·"·` 까지의 범위로 한 번 더 본다 — 따옴표 안의 공백 너머 '..' 이 밖 경로를 레포 안으로 되돌리지 못하게.
+      // 따옴표가 없거나 안 닫혔으면 이것뿐이다
+      const rel = rels.find((r) => low.startsWith(r, body) && boundary(body + r.length));
+      const from = rel ? body + rel.length : body;
+      return verdict(at, k, body, from, Math.min(from < n ? nextStop[from] : n, limit));
     };
     for (let k = 0; k < pats.length; k++) {
       for (let at = low.indexOf(pats[k]); at !== -1; at = low.indexOf(pats[k], at + 1)) {
