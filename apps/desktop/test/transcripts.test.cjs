@@ -230,7 +230,7 @@ test('a /tmp path matches its /private/tmp realpath', () => {
     const x = tx();
     const f = x.human('go');
     x.tool('Read', { file_path: linked }, 'READ-VIA-LINK');
-    x.say(`${linked}:1 을 고친다`);
+    x.say(`${linked} 을 고친다`);
     const e = x.tool('Edit', { file_path: linked, old_string: 'x();', new_string: LINE }, `The file ${linked} has been updated.`);
     const ctx = { roots: [repo], home, allowDirs: [] };
     const ex = T.buildExcerpt(x.entries, f, e, { ...ctx, resolvePath: resolve });
@@ -299,10 +299,12 @@ const runSay = (text, ctx = CTX, file = F) => {
 
 test('a foreign absolute path in kept text drops the whole excerpt', () => {
   const ctx = { roots: [R, '/home/u/my repo'], home: '/home/u', allowDirs: ['/home/u/.claude', '/home/u/Library/Application Support/claude-profiles/p1', '/tmp'] };
-  for (const bad of ['읽음: /home/u/other/.env', 'see ~/other/.env', 'see $HOME/other/x', 'see ${HOME}/other/x', 'see /home/u/viewed-company/src/a.ts', 'file:///home/u/other/x', '"/home/u/other"']) {
+  // 경로 시작은 앞 글자와 상관없이 찾는다(a/home/u/b 도 홈 경로로 본다). 공백 든 루트·허용 폴더는 따옴표 없이는 못 읽는다 — 섞임 쪽
+  for (const bad of ['읽음: /home/u/other/.env', 'see ~/other/.env', 'see $HOME/other/x', 'see ${HOME}/other/x', 'see "$HOME"/other/x', 'see "${HOME}"/other/x',
+    'see /home/u/viewed-company/src/a.ts', 'file:///home/u/other/x', '"/home/u/other"', 'a/home/u/b is relative', 'in /home/u/my repo/b.ts']) {
     assert.deepEqual(runSay(bad, ctx), { mixed: true }, bad);
   }
-  for (const ok of ['규칙 ~/.claude/rules/x.md 에 따라', '/tmp/x 에 썼다', 'see /home/u/viewed/src/a.ts:12', '`/home/u/viewed`', 'in /home/u/my repo/b.ts', 'profile /home/u/Library/Application Support/claude-profiles/p1/settings.json', 'home is /home/u and ~/', '/home/user2/x is not under home', 'a/home/u/b is relative', 'the repo is /home/u/viewed.', 'cd /home/u/viewed && ls', '/home/u/viewed/src/../lib/b.ts 를 본다']) {
+  for (const ok of ['규칙 ~/.claude/rules/x.md 에 따라', '/tmp/x 에 썼다', 'see /home/u/viewed/src/a.ts:12', '`/home/u/viewed`', 'in "/home/u/my repo/b.ts"', 'profile "/home/u/Library/Application Support/claude-profiles/p1/settings.json"', 'home is /home/u and ~/', '/home/user2/x is not under home', 'the repo is /home/u/viewed.', 'cd /home/u/viewed && ls', '/home/u/viewed/src/../lib/b.ts 를 본다']) {
     const r = runSay(ok, ctx);
     assert.equal(r.mixed, undefined, ok);
     assert.ok(r.text.includes(ok), ok);
@@ -316,9 +318,9 @@ test('a foreign absolute path in kept text drops the whole excerpt', () => {
 });
 
 test('foreign paths are judged after normalizing and resolving, with no raw prefix shortcut', () => {
-  // 루트·허용 폴더 이름으로 시작해도, 공백 뒤 '/' 든 낱말·'..'·이름 글자가 이어지면 다른 경로다
-  for (const bad of ['/home/u/viewed copy/.env', '~/viewed copy/.env', '/home/u/viewed/../other/.env', '~/viewed/../other/.env',
-    '~/.claude/../other/.env', '/home/u/viewed+other/.env', '$HOME/viewed/../other/.env', '/home/u/viewed src/a.ts']) {
+  // 루트·허용 폴더 이름으로 시작해도, '..'·이름 글자가 이어지면 다른 경로다. 공백 든 형제 폴더는 따옴표로 감쌌을 때만 읽는다(spec §12)
+  for (const bad of ['"/home/u/viewed copy/.env"', "'~/viewed copy/.env'", '/home/u/viewed/../other/.env', '~/viewed/../other/.env',
+    '~/.claude/../other/.env', '/home/u/viewed+other/.env', '$HOME/viewed/../other/.env']) {
     assert.deepEqual(runSay(`see ${bad} now`), { mixed: true }, bad);
   }
   // resolvePath 가 레포 안처럼 보이는 경로를 밖으로 풀면 밖이다
@@ -329,6 +331,62 @@ test('foreign paths are judged after normalizing and resolving, with no raw pref
   // resolvePath 가 실패해도 '..' 을 푼 경로로 본다
   const failing = (p) => { if (p.includes('other') || p.includes('..')) throw new Error('ENOENT'); return path.posix.normalize(p); };
   assert.deepEqual(runSay('see /home/u/viewed/../other/.env', { ...CTX, resolvePath: failing }), { mixed: true });
+});
+
+test('a path token is never joined with the next word', () => {
+  // 다음 낱말의 '..' 이 밖 경로를 지워 레포 안처럼 보이게 하면 안 된다
+  for (const bad of ['diff /home/u/other/.env ./../../../x', 'diff /home/u/other/.env a/../../../../tmp/x', 'cp /home/u/other/.env src/../../../../../home/u/viewed/.env']) {
+    assert.deepEqual(runSay(bad), { mixed: true }, bad);
+  }
+  const mac = ['', 'Users', 'u'].join('/');   // 공개 레포 스캔에 안 걸리게 실행 중에 만든다
+  const ctx = { roots: [`${mac}/viewed`], home: mac, allowDirs: [] };
+  assert.deepEqual(runSay(`${mac}/other /../viewed/a.js`, ctx, `${mac}/viewed/src/a.ts`), { mixed: true });
+});
+
+test('characters after a root inside one token make it a different path', () => {
+  for (const bad of ['/home/u/viewed(1)/.env', '/home/u/viewed,old/.env', '/home/u/viewed[old]/.env', '/home/u/viewed;x/.env', "/home/u/viewed'x/.env",
+    '"/home/u/viewed client copy/.env"', '"/home/u/viewed(company)/.env"']) {
+    assert.deepEqual(runSay(`see ${bad} now`), { mixed: true }, bad);
+  }
+  // 따옴표 토막은 같은 줄, 4096자까지 — 그 너머의 밖 경로를 삼키지 않는다
+  assert.deepEqual(runSay("see '/home/u/viewed/a.ts\nthen /home/u/other/.env' now"), { mixed: true });
+  assert.deepEqual(runSay(`see "/home/u/viewed/${'x'.repeat(5000)} /home/u/other/.env now`), { mixed: true });
+  // 끝의 문장 부호·닫는 괄호는 경로가 아니다
+  for (const ok of ['in /home/u/viewed, then', '(see /home/u/viewed/src/a.ts)', '`~/.claude/rules/x.md`', '작업본은 /home/u/viewed/src 이다']) {
+    const r = runSay(ok);
+    assert.equal(r.mixed, undefined, ok);
+    assert.ok(r.text.includes(ok), ok);
+  }
+});
+
+test('the foreign-path check runs in linear time', () => {
+  const cases = {
+    '40000 slashes': '/'.repeat(40000),
+    '4000 slash words': Array.from({ length: 4000 }, (_, k) => `/w${k}/x`).join(' '),
+    '20000 in-repo paths': Array.from({ length: 20000 }, (_, k) => `/home/u/viewed/a${k}.ts`).join(' '),
+    'one long home token': '/home/u'.repeat(6000),
+    'one long in-repo token': '/home/u/viewed'.repeat(3000),
+    '4000 quoted paths without a closing quote': Array.from({ length: 4000 }, () => '"~/viewed/a').join(' '),
+    'a quoted path with no closing quote': `"~/${'x'.repeat(40000)}`,
+    'a long run of trailing punctuation inside a token': `/home/u/viewed/${'.,'.repeat(20000)}x`,
+    'many secrets with unclosed quotes': `password="${'a'.repeat(50)}\n`.repeat(2000),
+  };
+  for (const [name, text] of Object.entries(cases)) {
+    const t0 = performance.now();
+    runSay(text);
+    const ms = performance.now() - t0;
+    assert.ok(ms < 200, `${name}: ${ms.toFixed(1)}ms`);
+  }
+});
+
+test('the resolver gets the text as written, and a home with a space is read whole', () => {
+  // 대소문자를 가리는 파일 시스템(리눅스 CI)에서 링크를 풀려면 접은 글자가 아니라 원래 글자를 넘겨야 한다
+  const resolvePath = (p) => (p === '/home/u/Link/a.ts' ? '/home/u/viewed/a.ts' : path.posix.normalize(p));
+  assert.equal(runSay('see /home/u/Link/a.ts', { ...CTX, resolvePath }).mixed, undefined);
+  // 홈 경로에 공백이 있어도 홈까지는 한 토막이다
+  const ctx = { roots: ['/home/u x/viewed'], home: '/home/u x', allowDirs: [] };
+  assert.deepEqual(runSay('see /home/u x/other/.env', ctx, '/home/u x/viewed/a.ts'), { mixed: true });
+  assert.equal(runSay('see /home/u x/viewed/b.ts', ctx, '/home/u x/viewed/a.ts').mixed, undefined);
 });
 
 test('a foreign path in any kept block kind drops the excerpt', () => {
@@ -364,6 +422,9 @@ test('home and roots are compared case- and NFC-insensitively', () => {
   assert.notEqual(`${H}/other/.env`.normalize('NFD'), `${H}/other/.env`);
   assert.deepEqual(runSay(`see ${`${H}/other/.env`.normalize('NFD')}`, ctx, file), { mixed: true });
   assert.equal(runSay(`see ${`${H}/viewed/b.ts`.normalize('NFD')}`, ctx, file).mixed, undefined);
+  // 반대로 홈·루트가 NFD(realpath 가 그렇게 돌려줄 수 있다)이고 글이 NFC 여도 같다
+  const d = { roots: [`${H}/viewed`.normalize('NFD')], home: H.normalize('NFD'), allowDirs: [] };
+  assert.deepEqual(runSay(`see ${H}/other/.env`, d, `${H}/viewed/a.ts`.normalize('NFD')), { mixed: true });
 });
 
 test('the title goes through the same mixed check and masking', () => {
@@ -391,6 +452,11 @@ test('secrets are masked', () => {
   const quoted = T.scrubSecrets(`password="alpha beta gamma"\nsecret='one two three' tail\ntoken="no close here\nnext line`);
   for (const word of ['alpha', 'beta', 'gamma', 'one', 'two', 'three', 'no close', 'here']) assert.ok(!quoted.includes(word), `${word}: ${quoted}`);
   assert.ok(quoted.includes('password="[가림]"') && quoted.includes(' tail') && quoted.includes('next line'), quoted);
+  // 닫는 따옴표가 다음 줄에 있어도 거기까지(4000자 안), 그보다 멀면 줄 끝까지
+  const multi = T.scrubSecrets('password=`first part\nsecond part` after');
+  assert.ok(!multi.includes('first part') && !multi.includes('second part') && multi.includes('` after'), multi);
+  const far = T.scrubSecrets(`password="aaa\n${'b'.repeat(5000)}"`);
+  assert.ok(!far.includes('aaa') && far.includes('b'.repeat(4000)), far.slice(0, 40));   // 가리는 범위는 4000자까지
   // 발췌에도 적용된다
   const t = tx();
   const f = t.human(`토큰은 ${ghp} 이야`);

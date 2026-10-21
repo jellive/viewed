@@ -10,10 +10,6 @@ const FILE_TOOLS = new Set(['Read', 'Edit', 'MultiEdit', 'Write', 'Grep', 'Glob'
 // Claude Code 가 user 기록으로 끼워 넣는 꼬리표 — 사람이 친 글이 아니다
 const INJECTED = ['<command-name>', '<command-message>', '<command-args>', '<local-command-', '<system-reminder>',
   '<bash-input>', '<bash-stdout>', '<bash-stderr>', '<task-notification>', '<user-prompt-submit-hook>'];
-// 이름 글자. '/' 나 '~' 앞에 이게 붙어 있으면 절대 경로의 시작이 아니다(a/b, ../x, 10/15)
-const CONT = /[\p{L}\p{M}\p{N}._-]/u;
-// 경로 토막을 끊는 글자. 공백은 따로 본다(다음 낱말에 '/' 가 있으면 경로가 이어진다)
-const PATH_STOP = /[\s"'`<>()[\]{},;|]/;
 const AGENT_ID = /^[A-Za-z0-9_-]+$/;
 const MASK = '[가림]';
 
@@ -179,8 +175,8 @@ const SECRETS = [
   /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
 ];
 // 이름=값 · 이름: 값 · "이름":"값". 비교(==)·화살표(=>)는 값이 아니다.
-// 따옴표 값은 닫는 따옴표까지(없으면 줄 끝까지) — 공백 든 값이 첫 낱말만 가려지지 않게
-const KV = /((?:password|passwd|secret|token|api[-_.]?key)[A-Za-z0-9_.-]*["']?\s*(?::|=(?![=>]))\s*)("(?:[^"\\\n]|\\.)*"?|'(?:[^'\\\n]|\\.)*'?|`(?:[^`\\\n]|\\.)*`?|[^\s"'`,;]+)/gi;
+// 따옴표 값은 닫는 따옴표까지 — 줄을 넘어도 4000자 안이면 거기까지, 닫는 따옴표가 없거나 더 멀면 그 줄 끝까지
+const KV = /((?:password|passwd|secret|token|api[-_.]?key)[A-Za-z0-9_.-]*["']?\s*(?::|=(?![=>]))\s*)("(?:(?:[^"\\]|\\[\s\S]){0,4000}"|[^"\n]*)|'(?:(?:[^'\\]|\\[\s\S]){0,4000}'|[^'\n]*)|`(?:(?:[^`\\]|\\[\s\S]){0,4000}`|[^`\n]*)|[^\s"'`,;]+)/gi;
 
 function scrubSecrets(s) {
   let out = String(s);
@@ -188,29 +184,22 @@ function scrubSecrets(s) {
   return out.replace(KV, (_, k, v) => (/^["'`]/.test(v) ? k + v[0] + MASK + v[0] : k + MASK));
 }
 
-// '/' 로 시작하는 경로 토막. 공백 뒤 낱말에 '/' 가 있으면 경로가 이어진다(/home/u/viewed copy/.env).
-// 끝의 문장 부호와 :줄:칸 은 뗀다 — '..' 은 경로라 남긴다
-function pathToken(text, i) {
-  const word = (k) => { while (k < text.length && !PATH_STOP.test(text[k])) k++; return k; };
-  let j = word(i);
-  for (;;) {
-    let k = j;
-    while (k < text.length && (text[k] === ' ' || text[k] === '\t')) k++;
-    if (k === j) break;
-    const m = word(k);
-    if (m === k || !text.slice(k, m).includes('/')) break;
-    j = m;
-  }
-  const tail = /([^./])[.,:;!?]+$/;
-  return text.slice(i, j).replace(tail, '$1').replace(/(?::\d+){1,2}$/, '').replace(tail, '$1');
-}
-
 // 이 앱은 macOS 전용 — 기본 파일 시스템이 대소문자·유니코드 정규화를 가리지 않으니 비교는 NFC 소문자로
 const fold = (s) => s.normalize('NFC').toLowerCase();
 const under = (p, r) => p === r || p.startsWith(r === '/' ? '/' : r + '/');
 
+// 경로 토막의 시작(접은 글에서 찾는다). 별칭은 홈으로 펼친다
+const ALIASES = ['~/', '$home/', '${home}/', '"$home"/', '"${home}"/'];
+const QUOTES = '"\'`';
+const UNQUOTED_END = /[\s"`]/g;
+const TRAIL = ".,;:!?)]}>'";   // 토막 끝에서만 뗀다(정규식 [..]+$ 는 긴 토막에서 되짚기가 제곱으로 는다)
+const QUOTED_MAX = 4096;
+
 // 글을 받아 "P·허용 폴더 밖의 홈 아래 경로가 있나"를 답하는 판정기. 홈을 모르면 판정할 수 없으니 늘 true.
-// 지름길 없음: 경로 토막마다 펼치고(~/·$HOME/·${HOME}/) 정규화('..' 처리)하고 resolve 한 뒤 경계 비교로만 본다
+// ① 시작: 접은(NFC 소문자) 글에서 홈·~/·$HOME/·${HOME}/·"$HOME"/·"${HOME}"/ 이 나오는 모든 자리(앞 글자와 상관없이), 왼쪽부터.
+// ② 범위: 시작 바로 앞이 따옴표면 같은 줄의 닫는 따옴표까지(최대 4096자), 아니면 첫 공백·"·` 까지. 공백 너머로 잇지 않는다.
+//    끝의 .,;:!?)]}>' 만 뗀다 — 가운데 글자는 경로의 일부다. 토막은 겹치지 않는다(끝에서 다음을 찾는다) — 선형 시간.
+// ③ 판정: 토막 하나씩 펼치고 → posix 정규화 → resolve(실패하면 정규화한 그대로) → 루트·허용 폴더 안이 아니면 밖
 function pathJudge(ctx, resolve) {
   const home = absNorm(ctx.home);
   if (home === null || home === '/') return () => true;
@@ -226,20 +215,41 @@ function pathJudge(ctx, resolve) {
     if (fr === fh) return false;                          // 홈 자체
     return !allowed.some((a) => under(fr, a));
   };
-  const ALIASES = ['~/', '$HOME/', '${HOME}/'];
+  const pats = [fh, ...ALIASES];
   return (text) => {
     const s = String(text);
-    for (let i = 0; i < s.length; i++) {
-      if (i > 0 && CONT.test(s[i - 1])) continue;   // 이름 중간 — 절대 경로의 시작이 아니다
-      let raw = null;
-      if (s[i] === '/') raw = pathToken(s, i);
-      else {
-        const a = ALIASES.find((x) => s.startsWith(x, i));
-        if (a) raw = home + pathToken(s, i + a.length - 1);
+    const nfc = s.normalize('NFC');
+    const low = nfc.toLowerCase();
+    // 접어도 길이가 그대로면 자리가 맞는다 — resolve 에는 원래 글자(대소문자)를 넘긴다. 안 맞으면 접은 글자로
+    const src = nfc.length === s.length && low.length === s.length ? s : low;
+    const next = pats.map(() => -2);   // 패턴마다 다음 자리(-2 아직 안 찾음, -1 더 없음) — 커서를 넘을 때만 다시 찾는다
+    let c = 0;
+    for (;;) {
+      let at = -1;
+      let k = -1;
+      for (let p = 0; p < pats.length; p++) {
+        if (next[p] !== -1 && next[p] < c) next[p] = low.indexOf(pats[p], c);
+        if (next[p] !== -1 && (at === -1 || next[p] < at)) { at = next[p]; k = p; }
       }
-      if (raw !== null && foreign(raw)) return true;
+      if (at === -1) return false;
+      const body = k === 0 ? at + fh.length : at + pats[k].length - 1;   // 홈은 통째로 토막에 넣고 그 뒤부터 범위를 잰다. 별칭은 뒤의 '/' 부터
+      const q = at > 0 ? low[at - 1] : '';
+      let end;
+      if (q && QUOTES.includes(q)) {
+        const cap = Math.min(low.length, body + QUOTED_MAX);
+        end = body;
+        while (end < cap && low[end] !== q && low[end] !== '\n') end++;
+      } else {
+        UNQUOTED_END.lastIndex = body;
+        const m = UNQUOTED_END.exec(low);
+        end = m ? m.index : low.length;
+      }
+      let cut = end;
+      while (cut > body && TRAIL.includes(low[cut - 1])) cut--;
+      const raw = k === 0 ? src.slice(at, cut) : home + src.slice(body, cut);
+      if (foreign(raw)) return true;
+      c = Math.max(end, at + 1);
     }
-    return false;
   };
 }
 
