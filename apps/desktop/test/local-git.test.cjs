@@ -243,3 +243,39 @@ test('authors keeps odd path names intact (prototype keys, leading newlines, con
   assert.deepEqual(files['b.ts'], [['t', 't@t']]);   // makeRepo 의 feat 커밋만 — 개행 붙은 이름이 b.ts 로 깎이지 않았다
   assert.equal(files['a'], undefined);
 });
+
+const gitAs = (d, who, ...a) => git(d, '-c', `user.name=${who[0]}`, '-c', `user.email=${who[1]}`, ...a);
+
+test('authors reports rename pairs across the range, deduped, and credits both paths', async () => {
+  const d = makeRepo();
+  const mb = rev(d, 'main');
+  fs.writeFileSync(path.join(d, 'feature.ts'), 'f\nf2\nf3\n'); fs.writeFileSync(path.join(d, 'chain.ts'), 'c\nc2\nc3\n');
+  gitAs(d, ALICE, 'add', 'feature.ts', 'chain.ts'); gitAs(d, ALICE, 'commit', '-q', '-m', 'alice creates');
+  gitAs(d, ALICE, 'mv', 'chain.ts', 'chain-b.ts'); gitAs(d, ALICE, 'commit', '-q', '-m', 'alice renames');
+  gitAs(d, BOB, 'mv', 'feature.ts', 'feature-renamed.ts'); gitAs(d, BOB, 'mv', 'chain-b.ts', 'chain-c.ts');
+  gitAs(d, BOB, 'commit', '-q', '-m', 'bob renames');
+  const { files, renames } = JSON.parse(await ops.authors(d, mb, rev(d, 'HEAD')));
+  assert.deepEqual(renames.slice().sort(), [['chain-b.ts', 'chain-c.ts'], ['chain.ts', 'chain-b.ts'], ['feature.ts', 'feature-renamed.ts']]);
+  assert.deepEqual(files['feature-renamed.ts'], [BOB]);
+  assert.deepEqual(files['feature.ts'].slice().sort(), [ALICE, BOB]);
+});
+
+test('authors counts Co-authored-by trailers (mailmapped) as authors of that commit paths', async () => {
+  const d = makeOthersRepo();
+  const mb = rev(d, 'main');
+  fs.writeFileSync(path.join(d, 'co.ts'), 'x\n'); fs.writeFileSync(path.join(d, 'co2.ts'), 'x\n');
+  gitAs(d, BOB, 'add', 'co.ts', 'co2.ts');
+  gitAs(d, BOB, 'commit', '-q', '-m', 'pair', '-m', 'Co-authored-by: alice <a@example.test>\nCo-authored-by: bobby <b2@example.test>');
+  const { files } = JSON.parse(await ops.authors(d, mb, rev(d, 'HEAD')));
+  assert.deepEqual(files['co.ts'].slice().sort(), [ALICE, BOB]);   // bobby <b2> 는 mailmap 으로 bob 이 돼 중복이 접힌다
+  assert.deepEqual(files['co2.ts'].slice().sort(), [ALICE, BOB]);
+});
+
+test('info normalizes git user through the repo mailmap', async () => {
+  const d = makeRepo();
+  fs.writeFileSync(path.join(d, '.mailmap'), 'alice <a@example.test> <a2@example.test>\n');
+  git(d, 'config', 'user.name', 'alice2'); git(d, 'config', 'user.email', 'a2@example.test');
+  assert.deepEqual((await info(d)).user, { name: 'alice', email: 'a@example.test' });
+  git(d, 'config', 'user.name', 'zed'); git(d, 'config', 'user.email', 'z@example.test');
+  assert.deepEqual((await info(d)).user, { name: 'zed', email: 'z@example.test' });
+});

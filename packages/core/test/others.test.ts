@@ -47,3 +47,24 @@ describe('othersOf', () => {
     expect(m.get('__proto__')).toEqual(['Bob']);
   });
 });
+
+describe('othersOf renames', () => {
+  const isMe = meMatcher(['alice@example.test']);
+  it('alice created, bob renamed (no previousPath) -> not others', () => {
+    const m = othersOf([f('feature-renamed.ts')], { 'feature-renamed.ts': [bob], 'feature.ts': [alice, bob] }, isMe, [['feature.ts', 'feature-renamed.ts']]);
+    expect(m.has('feature-renamed.ts')).toBe(false);
+  });
+  it('A->B (alice) ->C (bob) chain -> not others', () => {
+    const m = othersOf([f('c.ts')], { 'a.ts': [alice], 'b.ts': [alice], 'c.ts': [bob] }, isMe, [['a.ts', 'b.ts'], ['b.ts', 'c.ts']]);
+    expect(m.has('c.ts')).toBe(false);
+  });
+  it('rename chain by bob only stays others, with names from the component', () => {
+    const carol: Author = ['Carol', 'carol@example.test'];
+    const m = othersOf([f('c.ts')], { 'a.ts': [carol], 'c.ts': [bob] }, isMe, [['a.ts', 'c.ts']]);
+    expect(m.get('c.ts')).toEqual(['Bob', 'Carol']);
+  });
+  it('prototype-named rename paths are safe', () => {
+    const m = othersOf([f('constructor')], {}, isMe, [['__proto__', 'constructor']]);
+    expect(m.has('constructor')).toBe(false);
+  });
+});

@@ -62,7 +62,11 @@ async function info(repo) {
   const remote = await git(repo, ['remote', 'get-url', 'origin']).then((s) => s.trim(), () => null);
   const current = await git(repo, ['symbolic-ref', '-q', 'HEAD']).then((s) => s.trim(), () => '');
   const cfg = (k) => git(repo, ['config', '--get', k]).then((v) => v.replace(/\n$/, ''), () => '');   // 없으면 git 이 1 로 끝난다
-  const user = { name: await cfg('user.name'), email: await cfg('user.email') };
+  let user = { name: await cfg('user.name'), email: await cfg('user.email') };
+  if (user.email) {   // .mailmap 으로 작성자(%aN/%aE)와 같은 신원으로 맞춘다. 실패하면 설정 그대로
+    const hit = (await mailmapped(repo, [`${user.name} <${user.email}>`])).get(`${user.name} <${user.email}>`);
+    if (hit) user = { name: user.name ? hit[0] : user.name, email: hit[1] };
+  }
   return { refs, defaultBase: REF.test(head) ? head : null, current: REF.test(current) ? current : null, remote, user };
 }
 
@@ -120,26 +124,59 @@ const askGit = {
 };
 
 // log 한 번의 -z 출력 → 경로별 작성자. 경로는 NUL 말고 아무 바이트나 가질 수 있으므로 NUL 토큰만으로 짠다:
-// 커밋 머리 = 빈 토큰 둘 + 'N'이름 + 'E'메일(경로는 비어 있을 수 없어 위조 불가). 머지 --cc 는 머리 뒤에 빈 토큰이 하나 더 끼고,
-// 머지가 아닌 커밋은 첫 경로 앞에 구분 개행이 하나 붙는다
-const AUTHOR_FMT = '--format=%x00%x00N%aN%x00E%aE';
-function collectAuthors(out, files) {
+// 커밋 머리 = 빈 토큰 둘 + 'N'이름 + 'E'메일 + 'C'공저자(경로는 비어 있을 수 없어 위조 불가). 공저자는 \x01 로 이어 붙인다.
+// 머지 --cc 는 머리 뒤에 빈 토큰이 하나 더 끼고, 머지가 아닌 커밋은 첫 항목 앞에 구분 개행이 하나 붙는다.
+// 머지가 아닌 커밋은 --name-status 라 항목이 상태 토큰(+경로 1~2개)이다. R 은 경로가 둘(옛, 새)
+const AUTHOR_FMT = '--format=%x00%x00N%aN%x00E%aE%x00C%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x01)';
+const CO = /^(.*?)\s*<([^<>]*)>\s*$/;
+function collectAuthors(out, files, renames, coMap, status) {
   const t = out.split('\0');
   let i = 0;
   while (i < t.length) {
     while (i < t.length && t[i] === '') i++;
-    if (i + 1 >= t.length) break;
-    const name = t[i].slice(1), email = t[i + 1].slice(1);
-    i += 2;
+    if (i + 2 >= t.length) break;
+    const name = t[i].slice(1), email = t[i + 1].slice(1), co = t[i + 2].slice(1);
+    i += 3;
+    const who = [[name, email]];
+    for (const c of co.split('\x01')) {
+      const m = CO.exec(c.trim());
+      if (m) who.push(coMap ? (coMap.get(c.trim()) ?? [m[1], m[2]]) : [m[1], m[2]]);
+    }
     let first = true;
     if (t[i] === '') { i++; first = false; }   // 머지: 구분 개행 없음
-    for (; i < t.length && t[i] !== ''; i++) {
-      const f = first && t[i].startsWith('\n') ? t[i].slice(1) : t[i];
-      first = false;
+    const add = (f) => {
       const list = files[f] ?? (files[f] = []);
-      if (!list.some(([n, e]) => n === name && e === email)) list.push([name, email]);
+      for (const [n, e] of who) if (!list.some(([n2, e2]) => n2 === n && e2 === e)) list.push([n, e]);
+    };
+    while (i < t.length && t[i] !== '') {
+      if (status) {
+        const st = first && t[i].startsWith('\n') ? t[i].slice(1) : t[i];
+        first = false; i++;
+        if (st[0] === 'R' || st[0] === 'C') {
+          const from = t[i++], to = t[i++];
+          if (from === undefined || to === undefined) break;
+          add(from); add(to);
+          if (st[0] === 'R' && !renames.some(([x, y]) => x === from && y === to)) renames.push([from, to]);
+        } else if (t[i] !== undefined) add(t[i++]);
+      } else {
+        const f = first && t[i].startsWith('\n') ? t[i].slice(1) : t[i];
+        first = false; i++;
+        add(f);
+      }
     }
   }
+}
+
+// 공저자 "이름 <메일>" 을 레포 .mailmap 으로 정규화한다. 실패하면 원문 그대로 쓴다
+async function mailmapped(repo, contacts, o) {
+  const map = new Map();
+  const list = [...new Set(contacts)].filter((c) => !c.includes('\n'));
+  if (list.length === 0) return map;
+  const out = await git(repo, ['check-mailmap', '--', ...list], o).catch(() => null);
+  if (out === null) return map;
+  const lines = out.split('\n');
+  list.forEach((c, k) => { const m = CO.exec(lines[k] ?? ''); if (m) map.set(c, [m[1], m[2]]); });
+  return map;
 }
 
 // blame --porcelain: 커밋의 메타는 처음 나올 때만 있다. 경계 커밋(범위 밖) 줄은 null
@@ -181,13 +218,17 @@ const ops = {
     const fmt = AUTHOR_FMT;
     const o = { timeoutMs: 10_000 };
     const [plain, merges] = await Promise.all([
-      git(repo, ['log', '--no-merges', '-M', '-z', '--name-only', '--no-show-signature', '--no-textconv', '--no-ext-diff', fmt, range], o),
+      git(repo, ['log', '--no-merges', '-M', '-z', '--name-status', '--no-show-signature', '--no-textconv', '--no-ext-diff', fmt, range], o),
       git(repo, ['log', '--merges', '--cc', '-z', '--name-only', '--no-show-signature', '--no-textconv', '--no-ext-diff', fmt, range], o),
     ]);
     const files = Object.create(null);   // constructor·__proto__ 같은 경로가 상속 속성으로 풀리지 않게
-    collectAuthors(plain, files);
-    collectAuthors(merges, files);
-    return JSON.stringify({ files });
+    const renames = [];
+    const cos = [];
+    for (const out of [plain, merges]) for (const m of out.matchAll(/\0C([^\0]+)/g)) for (const c of m[1].split('\x01')) if (c.trim()) cos.push(c.trim());
+    const coMap = await mailmapped(repo, cos, o);
+    collectAuthors(plain, files, renames, coMap, true);
+    collectAuthors(merges, files, renames, coMap, false);
+    return JSON.stringify({ files, renames });
   },
   // head 파일의 줄별 작성자 — 인덱스 n-1 이 줄 n. mergeBase 이전(경계) 줄과 실패는 null
   blameAuthors: async (repo, head, p, mergeBase) => {

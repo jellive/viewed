@@ -11,12 +11,25 @@ export function meMatcher(ids: string[]): (a: Author) => boolean {
   return ([name, email]) => set.has(norm(name)) || set.has(norm(email));
 }
 
-// 키는 file.path. 작성자 = authors[path] ∪ authors[previousPath]. 비었거나 '나'가 하나라도 있으면 맵에 없다
-export function othersOf(files: ChangedFile[], authors: Record<string, Author[]>, isMe: (a: Author) => boolean): Map<string, string[]> {
+// 키는 file.path. 작성자 = 이름 변경으로 이어진 모든 경로(renames 의 연결 요소)와 previousPath 의 작성자 합집합.
+// 과하게 합쳐도 '내 파일' 쪽으로만 기운다. 비었거나 '나'가 하나라도 있으면 맵에 없다
+export function othersOf(files: ChangedFile[], authors: Record<string, Author[]>, isMe: (a: Author) => boolean,
+  renames: [string, string][] = []): Map<string, string[]> {
   const own = (p: string): Author[] => (Object.hasOwn(authors, p) ? authors[p] : []);
+  const adj = new Map<string, string[]>();   // Map 이라 prototype 이름 경로도 안전하다
+  const link = (a: string, b: string) => { (adj.get(a) ?? adj.set(a, []).get(a)!).push(b); };
+  for (const [a, b] of renames) { link(a, b); link(b, a); }
+  for (const file of files) if (file.previousPath) { link(file.path, file.previousPath); link(file.previousPath, file.path); }
   const out = new Map<string, string[]>();
   for (const file of files) {
-    const all = [...own(file.path), ...(file.previousPath ? own(file.previousPath) : [])];
+    const seen = new Set([file.path]);
+    const stack = [file.path];
+    const all: Author[] = [];
+    while (stack.length) {
+      const p = stack.pop()!;
+      all.push(...own(p));
+      for (const n of adj.get(p) ?? []) if (!seen.has(n)) { seen.add(n); stack.push(n); }
+    }
     if (all.length === 0 || all.some(isMe)) continue;
     out.set(file.path, [...new Set(all.map(([name]) => name))]);
   }
