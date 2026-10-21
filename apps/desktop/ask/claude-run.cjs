@@ -78,7 +78,8 @@ function buildArgs(instruction, systemPrompt) {
 // env 를 안 주면 cleanEnv(process.env), 셸 없이, 새 빈 임시 폴더에서, 프로세스 그룹 리더로 돌린다. 마감·취소·한도 초과면 그룹에 SIGTERM, 2초 뒤 SIGKILL.
 // 종료코드는 보지 않는다 — 판정은 readResult 가 stdout JSON·stderr 로 한다. 'close' 뒤에야 cwd 를 지우고 돌려준다(슬롯 반납 시점)
 function runClaude(a) {
-  const env = a.env || cleanEnv(process.env);
+  // claude.ai 커넥터(계정 단위 MCP)는 답에 필요 없다 — 호출자 값과 상관없이 끈다
+  const env = { ...(a.env || cleanEnv(process.env)), ENABLE_CLAUDEAI_MCP_SERVERS: 'false' };
   // 남은 마감 시간이 없거나 잘못됐으면 이미 지난 것이다 — 띄우지 않는다
   const timeoutMs = a.timeoutMs;
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return Promise.resolve({ ok: false, error: 'timeout' });

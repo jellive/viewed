@@ -252,3 +252,24 @@ test('a missing or non-positive timeoutMs means the deadline is gone: timeout wi
   }
   assert.equal(fs.existsSync(path.join(f.rec, 'ran')), false);
 });
+
+test('runClaude always turns claude.ai connectors off, overriding the caller and covering --version', async () => {
+  const f = fake('echo "C=${ENABLE_CLAUDEAI_MCP_SERVERS-unset}" > "$REC/env"\n[ "$1" = "--version" ] && echo "2.1.305 (Claude Code)"\nexit 0');
+  const rec = () => fs.readFileSync(path.join(f.rec, 'env'), 'utf8').trim();
+  const r = await C.runClaude(base(f, { env: { PATH: process.env.PATH, REC: f.rec, ENABLE_CLAUDEAI_MCP_SERVERS: 'true' } }));
+  assert.equal(r.ok, true);
+  assert.equal(rec(), 'C=false');
+  fs.rmSync(path.join(f.rec, 'env'));
+  const prev = process.env.ENABLE_CLAUDEAI_MCP_SERVERS; process.env.ENABLE_CLAUDEAI_MCP_SERVERS = 'true';
+  process.env.REC = f.rec;
+  try {
+    assert.equal(await C.claudeVersion(f.bin, 5000), '2.1.305');
+    assert.equal(rec(), 'C=false');
+    fs.rmSync(path.join(f.rec, 'env'));
+    await C.runClaude({ bin: f.bin, args: [], stdin: '', signal: new AbortController().signal, timeoutMs: 10000 });
+    assert.equal(rec(), 'C=false');
+  } finally {
+    delete process.env.REC;
+    if (prev === undefined) delete process.env.ENABLE_CLAUDEAI_MCP_SERVERS; else process.env.ENABLE_CLAUDEAI_MCP_SERVERS = prev;
+  }
+});
