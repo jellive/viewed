@@ -472,3 +472,54 @@ test('the job abort signal reaches claudeVersion, and idle() resolves only after
   assert.equal(idled, true);
   void release;
 });
+
+test('B cancelling during --version keeps the slot and idle() busy until the version process is gone', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const C = require('../ask/claude-run.cjs');
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'viewed-ver-')));
+  const bin = path.join(dir, 'claude');
+  // SIGTERM 을 무시하는 가짜 --version — 그룹 SIGKILL(2초 유예 뒤)로만 끝난다
+  fs.writeFileSync(bin, `#!/bin/sh\necho $$ > "${dir}/self"\ntrap '' TERM\nwhile :; do sleep 1; done\n`);
+  fs.chmodSync(bin, 0o755);
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const readPid = () => { try { return Number(fs.readFileSync(path.join(dir, 'self'), 'utf8').trim()) || null; } catch { return null; } };
+  let pid = null;
+  let overlapped = null;
+  let n = 0;
+  const { d, calls } = deps({ timeoutMs: 20000,
+    claudeVersion: (b, ms, signal) => (++n === 1 ? C.claudeVersion(bin, ms, signal) : (overlapped = pid !== null && alive(pid), Promise.resolve('2.1.305'))) });
+  const ask = createAsk(d);
+  try {
+    const r1 = req(), r2 = req();
+    const p1 = ask.start(r1);
+    const p2 = ask.start(r2);
+    await until(() => (pid = readPid()) !== null, 3000);
+    let idled = false;
+    const idle = ask.idle().then(() => { idled = true; });
+    ask.cancel(r1.id);
+    assert.deepEqual(await p1, { ok: false, error: 'cancelled' });
+    assert.equal(alive(pid), false, 'the first question settled only after its --version process was gone');
+    assert.equal((await p2).ok, true);
+    assert.equal(overlapped, false, 'the second question never ran beside the first --version');
+    await idle;
+    assert.equal(idled, true);
+    assert.equal(calls.runClaude.length, 1);
+    // 혼자 취소해도 idle() 은 프로세스가 끝난 뒤에 풀린다(버전은 앱 실행당 한 번 기억하므로 새 인스턴스로)
+    n = 0; pid = null; fs.rmSync(path.join(dir, 'self'), { force: true });
+    const ask2 = createAsk(d);
+    const r3 = req();
+    const p3 = ask2.start(r3);
+    await until(() => (pid = readPid()) !== null, 3000);
+    const idle3 = ask2.idle();
+    assert.equal(ask2.active(), true);
+    ask2.cancel(r3.id);
+    await idle3;
+    assert.equal(alive(pid), false, 'idle() resolved only after the --version process was gone');
+    assert.equal(ask2.active(), false);
+    assert.deepEqual(await p3, { ok: false, error: 'cancelled' });
+  } finally {
+    if (pid && alive(pid)) { try { process.kill(-pid, 'SIGKILL'); } catch { /* 없다 */ } }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

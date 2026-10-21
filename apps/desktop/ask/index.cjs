@@ -158,7 +158,12 @@ function createAsk(deps) {
     if (!bin) throw new Stop({ ok: false, error: 'not-installed' });
     let ver = versions.get(bin);
     if (ver === undefined) {
-      ver = await within(() => deps.claudeVersion(bin, Math.min(VERSION_TIMEOUT_MS, left()), job.ac.signal));
+      // 취소와 겨루지 않는다 — 취소 신호는 claudeVersion 에 넘기고, 그룹을 죽이고 'close' 뒤에 풀릴 때까지 기다린다.
+      // 겨루면 --version 이 아직 살아 있는데 슬롯·idle() 이 풀려 다음 질문의 자식과 겹친다. 시간 상한은 min(5000, 남은 시간)
+      check();
+      if (late()) throw TIMEOUT;
+      try { ver = await deps.claudeVersion(bin, Math.min(VERSION_TIMEOUT_MS, left()), job.ac.signal); } catch { ver = null; }
+      check();
       if (!ver) { if (late()) throw TIMEOUT; throw new Stop({ ok: false, error: 'not-installed' }); }
       versions.set(bin, ver);
     }
