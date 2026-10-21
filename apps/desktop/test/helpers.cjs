@@ -21,7 +21,7 @@ const ALICE = ['-c', 'user.name=alice', '-c', 'user.email=a@example.test'];
 const CAROL = ['-c', 'user.name=carol', '-c', 'user.email=c@example.test'];
 const BOB2 = ['-c', 'user.name=bobby', '-c', 'user.email=b2@example.test'];   // .mailmap 이 bob <b@example.test> 로 바꾼다
 
-// main 에 base, feat 에서 alice(나)·bob 이 각각 커밋. 머지 충돌은 alice 가 푼다
+// main 에 base, feat 에서 alice(나)·bob 이 각각 커밋. 머지 충돌은 carol 이 푼다
 function makeOthersRepo() {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'viewed-others-')));
   const w = (f, t) => { mkdirSync(dirname(join(dir, f)), { recursive: true }); writeFileSync(join(dir, f), t); };

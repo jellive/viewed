@@ -189,7 +189,7 @@ test('authors and blameAuthors use the same mailmapped identity', async () => {
   const d = makeOthersRepo();
   const mb = rev(d, 'main'), head = rev(d, 'HEAD');
   const { files } = JSON.parse(await ops.authors(d, mb, head));
-  const lines = JSON.parse(await ops.blameAuthors(d, head, 'mix.ts', mb));
+  const lines = JSON.parse(await ops.blameAuthors(d, head, 'mix.ts', mb)).plain;
   assert.deepEqual(lines[3], BOB);   // b-line 은 b2@example.test 로 커밋됐다
   assert.ok(files['mix.ts'].some(([, e]) => e === lines[3][1]));
 });
@@ -197,7 +197,46 @@ test('authors and blameAuthors use the same mailmapped identity', async () => {
 test('blameAuthors returns null for boundary lines and the author for branch lines', async () => {
   const d = makeOthersRepo();
   const lines = JSON.parse(await ops.blameAuthors(d, rev(d, 'HEAD'), 'mix.ts', rev(d, 'main')));
-  assert.deepEqual(lines, [null, null, ALICE, BOB]);
+  assert.deepEqual(lines.plain, [null, null, ALICE, BOB]);
+  assert.deepEqual(lines.moved, [null, null, ALICE, BOB]);
+});
+
+// 줄 단위 판정은 두 blame 의 교집합이다 — 어느 쪽이든 내가 한 번이라도 닿았으면 '내 것'
+function makeBlameRepo() {
+  const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'viewed-blame-')));
+  const W = (f, t) => fs.writeFileSync(path.join(d, f), t);
+  const as = (who, ...a) => git(d, '-c', `user.name=${who}`, '-c', `user.email=${who[0]}@example.test`, ...a);
+  const blockA = ['const bobBlockLineNumberOne = 1;', 'const bobBlockLineNumberTwo = 2;', 'const bobBlockLineNumberThree = 3;'];
+  git(d, 'init', '-q', '-b', 'main');
+  W('moved.ts', 'start\nt1\nt2\nt3\nt4\nt5\n'); W('indent.ts', 'start\n'); W('fresh.ts', 'start\n');
+  as('alice', 'add', '.'); as('alice', 'commit', '-q', '-m', 'base');
+  git(d, 'checkout', '-q', '-b', 'feat');
+  W('moved.ts', ['start', ...blockA, 't1', 't2', 't3', 't4', 't5'].join('\n') + '\n'); as('bob', 'commit', '-q', '-am', 'bob block');
+  W('indent.ts', 'start\nconst aliceLineToBeIndentedLater = 2;\n'); as('alice', 'commit', '-q', '-am', 'alice line');
+  W('indent.ts', 'start\n    const aliceLineToBeIndentedLater = 2;\n'); as('bob', 'commit', '-q', '-am', 'bob reindent');
+  W('moved.ts', ['start', 't1', 't2', 't3', 't4', 't5', ...blockA].join('\n') + '\n'); as('alice', 'commit', '-q', '-am', 'alice moves bob block');
+  W('fresh.ts', 'start\nconst bobBrandNewLineHere = 3;\n'); as('bob', 'commit', '-q', '-am', 'bob new');
+  return d;
+}
+const names = (r) => ({ plain: r.plain.map((x) => x && x[0]), moved: r.moved.map((x) => x && x[0]) });
+
+test('blameAuthors: a block bob wrote that alice moved is plain=alice, moved=bob', async () => {
+  const d = makeBlameRepo();
+  const r = names(JSON.parse(await ops.blameAuthors(d, rev(d, 'HEAD'), 'moved.ts', rev(d, 'main'))));
+  assert.deepEqual(r.plain.slice(-3), ['alice', 'alice', 'alice']);
+  assert.deepEqual(r.moved.slice(-3), ['bob', 'bob', 'bob']);
+});
+
+test('blameAuthors: bob re-indenting alice\'s line is plain=bob, moved=alice', async () => {
+  const d = makeBlameRepo();
+  const r = names(JSON.parse(await ops.blameAuthors(d, rev(d, 'HEAD'), 'indent.ts', rev(d, 'main'))));
+  assert.deepEqual(r, { plain: [null, 'bob'], moved: [null, 'alice'] });
+});
+
+test('blameAuthors: bob\'s genuinely new line is bob in both', async () => {
+  const d = makeBlameRepo();
+  const r = names(JSON.parse(await ops.blameAuthors(d, rev(d, 'HEAD'), 'fresh.ts', rev(d, 'main'))));
+  assert.deepEqual(r, { plain: [null, 'bob'], moved: [null, 'bob'] });
 });
 
 test('blameAuthors returns null for a path missing at head', async () => {

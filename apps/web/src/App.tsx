@@ -57,9 +57,12 @@ export function App() {
     return () => clearInterval(timer);
   }, [loaded]);
   const pendingRefresh = useRef(false);
+  // 읽는 중인 로드가 있는지 — 그동안 저장된 '나' 이름은 그 로드가 못 봤을 수 있어, 도착한 뒤 한 번 더 읽는다
+  const loading = useRef(false);
   useEffect(() => {
-    if (pendingRefresh.current && settings && !editing) { pendingRefresh.current = false; refreshRef.current(); }
-  }, [settings, editing]);
+    // loaded 가 있어야 다시 읽을 수 있다 — 읽는 중에 저장했으면 로드가 도착해 loaded 가 바뀐 렌더에서 한 번 돈다
+    if (pendingRefresh.current && settings && !editing && loaded) { pendingRefresh.current = false; refreshRef.current(); }
+  }, [settings, editing, loaded]);
   useEffect(() => {
     loadSettings().then(setSettings).catch(() => { setLoadError(t.storedUnreadable); setSettings(null); });
   }, []);
@@ -73,8 +76,8 @@ export function App() {
     // gist 나 기기가 바뀌면 옛 저장소에 묶인 화면은 버린다 — 다시 열면 새 저장소를 쓴다
     // '나' 이름이 바뀌면 열린 리뷰를 다시 판정한다(설정이 반영된 다음 렌더에서 — 아래 effect)
     const norm = (x?: string[]) => (x ?? []).map((v) => v.trim().toLowerCase()).join('\n');
-    if (loaded && norm(s.extraMe) !== norm(settings?.extraMe)) pendingRefresh.current = true;
-    if (settings && (s.gistId !== settings.gistId || s.deviceId !== settings.deviceId || s.storage !== settings.storage)) { seq.current++; setLoaded(null); }
+    if ((loaded || loading.current) && norm(s.extraMe) !== norm(settings?.extraMe)) pendingRefresh.current = true;
+    if (settings && (s.gistId !== settings.gistId || s.deviceId !== settings.deviceId || s.storage !== settings.storage)) { seq.current++; loading.current = false; setLoaded(null); }
     setSettings(s); setEditing(false);
   }} />;
 
@@ -84,6 +87,7 @@ export function App() {
   // remember: 이 요청이 화면에 올라갔을 때 그 요청의 값으로 기록한다 — 폼의 지금 값이 아니다. 다시 읽기는 기록하지 않는다
   async function load(make: Make, refresh = false, remember?: () => void) {
     const mine = ++seq.current;
+    loading.current = true;
     setError(''); if (!refresh) setLoaded(null);
     const keep = (id: number) => (refresh && loaded ? loaded.id : id);
     try {
@@ -91,6 +95,7 @@ export function App() {
       if (settings!.storage === 'device') {
         const store = getDeviceStore(settings!.deviceId);
         if (mine !== seq.current) return;
+        loading.current = false;
         setLoaded({ id: keep(mine), snap, merged: store.own(), store, readBlob, make, head, repo, others, isMe });
         remember?.();
         return;
@@ -102,10 +107,12 @@ export function App() {
       store.absorb(all.own);
       const merged = mergeStates([all.merged, store.own()]);
       if (mine !== seq.current) return;
+      loading.current = false;
       setLoaded({ id: keep(mine), snap, merged, store, readBlob, make, head, repo, others, isMe });
       remember?.();
     } catch (e) {
       if (mine !== seq.current) return;
+      loading.current = false;
       setError(errorText(e));
     }
   }
@@ -137,7 +144,7 @@ export function App() {
       )}
       {localForm ? (
         <form data-testid="open-form" className="open-bar" onSubmit={(e) => e.preventDefault()}>
-          <LocalOpen onError={setError} onCancel={() => { seq.current++; }} recentRev={recentRev} takeAuto={() => { const a = auto.current; auto.current = undefined; return a; }} onOpen={(repo, info, branch, base) => load(async () => {
+          <LocalOpen onError={setError} onCancel={() => { seq.current++; loading.current = false; }} recentRev={recentRev} takeAuto={() => { const a = auto.current; auto.current = undefined; return a; }} onOpen={(repo, info, branch, base) => { let firstRun = true; load(async () => {
             const git = localGit(repo);
             // 스냅숏과 작성자 목록을 나란히 읽는다(둘 다 ~1초) — 그 사이 브랜치가 움직였으면 작성자는 버린다
             // 미리 읽기가 실패하면 작성자만 포기한다 — 오류는 스냅숏 읽기가 같은 말로 낸다
@@ -147,14 +154,16 @@ export function App() {
             const snap = await loadLocalSnapshot(git, repoIdFromRemote(info.remote, repo), branch, base);
             // 스냅숏이 끝난 뒤 작성자를 최대 1.5초만 더 기다린다 — 늦으면 전부 내 것으로 그리고 넘어간다
             const authors = await Promise.race([pending, new Promise<null>((r) => setTimeout(() => r(null), AUTHORS_GRACE_MS))]);
-            // '나' = git 사용자(이름·이메일) + 설정의 추가분. 다시 읽을 때마다 그때의 설정으로 다시 계산한다
-            const isMe = meMatcher([info.user?.name ?? '', info.user?.email ?? '', ...(settingsRef.current?.extraMe ?? [])]);
+            // '나' = git 사용자(이름·이메일) + 설정의 추가분. 첫 읽기는 방금 읽은 info 를 쓰고, 다시 읽을 때마다 git 사용자를 새로 읽는다(실패하면 열 때 잡은 info 로)
+            const user = (firstRun ? info : await desktopGit()!.info(repo).catch(() => info)).user;
+            firstRun = false;
+            const isMe = meMatcher([user?.name ?? '', user?.email ?? '', ...(settingsRef.current?.extraMe ?? [])]);
             const fresh = authors && snap.headSha === head && snap.mergeBase === mb;
             return {
               snap, readBlob: localBlob(repo), head: () => git.resolve(branch), repo, isMe,
               ...(fresh ? safeOthers(() => othersOf(snap.files, authors.files, isMe, authors.renames)) : {}),
             };
-          }, false, () => { rememberLocal(repo, branch, base); setRecentRev((n) => n + 1); })} />
+          }, false, () => { rememberLocal(repo, branch, base); setRecentRev((n) => n + 1); }); }} />
           <button type="button" data-testid="settings-open" onClick={() => setEditing(true)}>{t.settings}</button>
         </form>
       ) : (

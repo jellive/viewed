@@ -22,11 +22,16 @@ const pickNext = (app: ElectronApplication, p: string) =>
   app.evaluate(({ dialog }, p) => { dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [p] })) as never; }, p);
 
 // userData 를 넘기면 그 앱 데이터로 다시 띄운다 — 설정은 이미 저장돼 있다
+// launch 가 만든 임시 HOME — 테스트가 끝나면 지운다
+const homes: string[] = [];
+test.afterEach(() => { for (const h of homes.splice(0)) rmSync(h, { recursive: true, force: true }); });
+
 async function launch(repo: string, reuse?: string): Promise<{ app: ElectronApplication; win: Page; github: string[]; userData: string }> {
   const userData = reuse ?? mkdtempSync(join(tmpdir(), 'viewed-'));
+  const home = mkdtempSync(join(tmpdir(), 'viewed-home-')); homes.push(home);
   const app = await electron.launch({ args: ['.', '--lang=en-US', `--user-data-dir=${userData}`], cwd: join(__dirname, '..'),
     // 이 기기의 전역 git 신원(~/.gitconfig)이 테스트 레포 작성자('t')를 '남'으로 만들지 않게 — 신원이 없으면 전부 내 것이다
-    env: { ...process.env, HOME: mkdtempSync(join(tmpdir(), 'viewed-home-')), XDG_CONFIG_HOME: '' } });
+    env: { ...process.env, HOME: home, XDG_CONFIG_HOME: '' } });
   await pickNext(app, repo);
   const win = await app.firstWindow();
   const github: string[] = [];   // 기기 저장 + 로컬 폴더면 GitHub 에 한 건도 안 가야 한다
@@ -502,5 +507,10 @@ test('others-only files collapse with a real repo, and others\' added lines get 
   await expect(mix.locator('.ln.add.other')).toHaveCount(1);
   await expect(mix.locator('.ln.add.other')).toContainText('b-line');
   await expect(mix.locator('.ln.add').filter({ hasText: 'a-line' })).not.toHaveClass(/other/);
+  // alice 가 old.ts 를 고치고 bob 이 new.ts 로 이름만 바꿨다 — 새 경로는 남의 것이 아니다(이름 변경 쌍으로 이어 붙인다)
+  const renamed = win.getByTestId('file-row').filter({ hasText: 'new.ts' });
+  await expect(renamed).toHaveCount(1);
+  await expect(renamed.getByTestId('file-others')).toHaveCount(0);
+  await expect(renamed).toHaveAttribute('data-state', 'unread');
   await app.close();
 });

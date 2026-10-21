@@ -73,7 +73,7 @@ const en = {
   othersBadge: (names: string[]) => (names.length > 1 ? `${names[0]} +${names.length - 1}` : names[0] ?? ''),
   othersAuto: "Someone else's change, so it counts as viewed automatically",
   extraMe: 'Names that are also you',
-  extraMeHint: 'One name or email per line. Files only these people (plus your git user) touched are not treated as someone else\'s.',
+  extraMeHint: 'One name or email per line. Files that any of these people touched are never treated as someone else\'s.',
   accountsOptional: 'GitHub accounts are only needed to open repositories on GitHub. Local folders need none.',
   source: 'Where to read the branch from',
   sourceLocal: 'Local folder',

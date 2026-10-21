@@ -33,14 +33,17 @@ export async function localAuthors(repo: string, mergeBase: string, head: string
   } catch { return null; }
 }
 
-// head 의 줄마다 작성자 — 인덱스 n-1 이 head 줄 n. 경계·merge-base 이전 줄은 null. 실패·파싱 오류도 null(색을 안 입힌다)
-export async function localBlame(repo: string, head: string, path: string, mergeBase: string): Promise<(Author | null)[] | null> {
+// head 의 줄마다 작성자 두 벌 — 인덱스 n-1 이 head 줄 n. plain = 그대로, moved = 공백 무시·이동 추적. 경계·merge-base 이전 줄은 null.
+// 실패·파싱 오류도 null(색을 안 입힌다)
+export type LineBlame = { plain: (Author | null)[]; moved: (Author | null)[] };
+export async function localBlame(repo: string, head: string, path: string, mergeBase: string): Promise<LineBlame | null> {
   try {
     const raw = await desktopGit()!.run(repo, 'blameAuthors', head, path, mergeBase);
     if (!raw) return null;
-    const j = JSON.parse(raw) as unknown;
+    const j = JSON.parse(raw) as { plain?: unknown; moved?: unknown } | null;
     const pair = (x: unknown) => Array.isArray(x) && x.length === 2 && typeof x[0] === 'string' && typeof x[1] === 'string';
-    if (!Array.isArray(j) || !j.every((x) => x === null || pair(x))) return null;
-    return j as (Author | null)[];
+    const col = (v: unknown) => Array.isArray(v) && v.every((x) => x === null || pair(x));
+    if (!j || !col(j.plain) || !col(j.moved) || (j.plain as unknown[]).length !== (j.moved as unknown[]).length) return null;
+    return { plain: j.plain as (Author | null)[], moved: j.moved as (Author | null)[] };
   } catch { return null; }
 }

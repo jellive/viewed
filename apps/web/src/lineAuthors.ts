@@ -1,21 +1,21 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { Author } from '@viewed/core';
-import { localBlame } from './localSource';
+import { localBlame, type LineBlame } from './localSource';
 import { createQueue } from './blameQueue';
 
 export type BlameSrc = { repo: string; head: string; mergeBase: string; isMe: (a: Author) => boolean };
-type Blame = (Author | null)[];
+type Blame = LineBlame;
 type Entry = { p: Promise<Blame | null>; refs: number };
 
 const queue = createQueue(4);   // 앱 전체 동시 blame — 큰 리뷰가 git 프로세스를 줄줄이 띄우지 않게
 const CAP = 200;
 const cache = new Map<string, Entry>();   // 삽입 순서 = 최근 사용 순서(쓰면 뒤로)
 
-// 키에 mergeBase 가 든다 — 같은 head 라도 base 가 다르면 경계(null)가 달라진다
-const keyOf = (s: { head: string; mergeBase: string }, path: string) => `${s.head}\0${s.mergeBase}\0${path}`;
+// 키에 repo·mergeBase 가 든다 — 다른 폴더의 같은 sha(포크·복제)나 같은 head 의 다른 base(경계 null 이 달라짐)를 섞지 않는다
+const keyOf = (s: { repo: string; head: string; mergeBase: string }, path: string) => `${s.repo}\0${s.head}\0${s.mergeBase}\0${path}`;
 
 function evict(src: BlameSrc) {
-  const cur = `${src.head}\0${src.mergeBase}\0`;
+  const cur = `${src.repo}\0${src.head}\0${src.mergeBase}\0`;
   for (const [k, e] of cache) if (e.refs === 0 && !k.startsWith(cur)) cache.delete(k);   // 다른 리뷰의 것
   for (const [k, e] of cache) { if (cache.size <= CAP) break; if (e.refs === 0) cache.delete(k); }   // 가장 오래된 것부터
 }
@@ -31,9 +31,9 @@ function acquire(src: BlameSrc, path: string): { key: string; entry: Entry } {
       return r;
     });
     cache.set(key, e); entry = e;
-    evict(src);
   }
   entry.refs++;
+  evict(src);   // refs 를 올린 뒤에 — 방금 넣은 항목이 쫓겨나지 않게
   return { key, entry };
 }
 
@@ -50,9 +50,10 @@ export function useOtherLines(src: BlameSrc | undefined, path: string): Readonly
   }, [repo, head, mb, path]);
   const isMe = src?.isMe;
   return useMemo(() => {
-    if (!blame || !head || !isMe || !mb || blame.key !== keyOf({ head, mergeBase: mb }, path)) return undefined;
+    if (!blame || !repo || !head || !isMe || !mb || blame.key !== keyOf({ repo, head, mergeBase: mb }, path)) return undefined;
     const s = new Set<number>();
-    blame.v.forEach((a, i) => { if (a && !isMe(a)) s.add(i + 1); });
+    // 남의 줄 = 두 blame 이 모두 남이라고 할 때만. 한쪽이라도 나(또는 경계·모름)면 내 것
+    blame.v.plain.forEach((a, i) => { const b = blame.v.moved[i]; if (a && b && !isMe(a) && !isMe(b)) s.add(i + 1); });
     return s;
-  }, [blame, head, mb, path, isMe]);
+  }, [blame, repo, head, mb, path, isMe]);
 }

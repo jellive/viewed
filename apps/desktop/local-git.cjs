@@ -238,11 +238,14 @@ const ops = {
     collectAuthors(merges, files, renames, coMap, false);
     return JSON.stringify({ files, renames });
   },
-  // head 파일의 줄별 작성자 — 인덱스 n-1 이 줄 n. mergeBase 이전(경계) 줄과 실패는 null
+  // head 파일의 줄별 작성자 두 벌 — 인덱스 n-1 이 줄 n. plain = 그대로의 blame, moved = 공백 무시(-w)·이동 추적(-M) blame.
+  // 둘 중 하나라도 실패하면 전체가 null. 경계(mergeBase 이전) 줄은 각각 null. '남의 줄'은 둘 다 남일 때만(화면이 교집합을 낸다)
   blameAuthors: async (repo, head, p, mergeBase) => {
     const range = `${oid(mergeBase)}..${oid(head)}`;
-    const out = await git(repo, ['blame', '--porcelain', '--no-textconv', range, '--', checkPath(p)], { timeoutMs: 10_000 }).catch(soft);
-    return JSON.stringify(out === null ? null : parseBlame(out));
+    const path = checkPath(p);
+    const run = (extra) => git(repo, ['blame', '--porcelain', '--no-textconv', ...extra, range, '--', path], { timeoutMs: 10_000 }).catch(soft);
+    const [plain, moved] = await Promise.all([run([]), run(['-w', '-M'])]);
+    return JSON.stringify(plain === null || moved === null ? null : { plain: parseBlame(plain), moved: parseBlame(moved) });
   },
 };
 
