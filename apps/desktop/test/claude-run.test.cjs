@@ -158,7 +158,7 @@ test('readResult maps is_error, empty and login text', () => {
   assert.equal(C.readResult(j({ is_error: false, result: '' }), '').error, 'failed');
   assert.equal(C.readResult(j({ is_error: false }), '').error, 'failed');
   assert.equal(C.readResult(j({ is_error: true, result: 'Not logged in · Please run /login' }), '').error, 'login');
-  assert.equal(C.readResult(j({ is_error: true, result: 'API Error: 401 invalid' }), '').error, 'login');
+  assert.equal(C.readResult(j({ is_error: true, result: 'API Error: 401 Unauthorized' }), '').error, 'login');
   assert.equal(C.readResult('', 'Error: authentication failed').error, 'login');
   assert.match(C.readResult('', 'Please log in').message, /로그인/);
   assert.match(C.readResult('x', '').message, /못 받았/);
@@ -179,4 +179,55 @@ test('accountEmail prefers CLAUDE_CONFIG_DIR and returns null when unreadable', 
   assert.equal(C.accountEmail({}, mkdir('viewed-acct-empty-')), null);
   fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: 5 } }));
   assert.equal(C.accountEmail({}, home), null);
+});
+
+// ---- fix round 1 ----
+const TERM_DEAF = '( trap \'\' TERM; exec sleep 30 ) </dev/null >/dev/null 2>&1 &\necho $! > "$REC/child"\nsleep 30';
+
+test('a group member that ignores SIGTERM is SIGKILLed before runClaude resolves', async () => {
+  const f = fake(TERM_DEAF);
+  try {
+    const r = await C.runClaude(base(f, { timeoutMs: 500 }));
+    assert.deepEqual([r.ok, r.error], [false, 'timeout']);
+    const p = readPid(path.join(f.rec, 'child'));
+    assert.ok(p, 'child pid recorded');
+    assert.equal(await until(() => !alive(p), 200), true, 'term-deaf child dead at resolve');
+  } finally { reap(f); }
+});
+
+test('claudeVersion has a group deadline: a SIGTERM-ignoring binary gives null in time and is gone', async () => {
+  const f = fake('echo $$ > "$REC/self"\ntrap \'\' TERM\nwhile :; do sleep 1; done');
+  const env0 = process.env.REC; process.env.REC = f.rec;
+  const t0 = Date.now();
+  try {
+    assert.equal(await C.claudeVersion(f.bin, 300), null);
+    assert.ok(Date.now() - t0 < 300 + 2500);
+    const p = readPid(path.join(f.rec, 'self'));
+    assert.ok(p);
+    assert.equal(await until(() => !alive(p), 200), true, 'version process gone');
+  } finally { reap(f); if (env0 === undefined) delete process.env.REC; else process.env.REC = env0; }
+});
+
+test('readResult does not take substrings for login problems', () => {
+  assert.equal(C.readResult('', 'upstream timeout after 4010ms').error, 'failed');
+  assert.equal(C.readResult('{"is_error":true,"result":"catalog index is corrupt"}', '').error, 'failed');
+  assert.equal(C.readResult('{"is_error":true,"result":"dialog error"}', '').error, 'failed');
+  for (const s of ['Not logged in · Please run /login', 'Please run /login', 'Invalid API key', 'authentication failed', 'Authentication required', 'API Error: 401 Unauthorized']) {
+    assert.equal(C.readResult('', s).error, 'login', s);
+  }
+});
+
+test('runClaude defaults env to cleanEnv(process.env) and a missing timeoutMs does not fire at once', async () => {
+  const f = fake('echo "GD=${GIT_DIR-unset} H=${HOME-unset}"');
+  const prev = process.env.GIT_DIR; process.env.GIT_DIR = '/nope';
+  try {
+    const r = await C.runClaude({ bin: f.bin, args: [], stdin: '', signal: new AbortController().signal });
+    assert.equal(r.ok, true);
+    assert.match(r.stdout, /GD=unset/);
+    assert.doesNotMatch(r.stdout, /H=unset/);
+    for (const t of [undefined, NaN, 0, -5]) {
+      const g = await C.runClaude({ bin: f.bin, args: [], stdin: '', signal: new AbortController().signal, timeoutMs: t });
+      assert.equal(g.ok, true, `timeoutMs=${t}`);
+    }
+  } finally { if (prev === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = prev; }
 });

@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn, execFile } = require('node:child_process');
+const { spawn } = require('node:child_process');
 
 // Claude Code CLI 를 도구 없이·빈 임시 폴더에서 돌린다(spec §7). electron 에 의존하지 않는다 — 단위 테스트가 그대로 돌린다.
 // 원칙: 플래그를 빼고 돌리는 대체 경로는 없다. `--bare` 는 OAuth·키체인을 안 읽어 구독 로그인이 사라지므로 쓰지 않는다.
@@ -10,9 +10,11 @@ const MIN_VERSION = '2.1.248'; // --restricted 가 이 버전부터다
 const STDOUT_MAX = 1024 * 1024;
 const STDERR_MAX = 64 * 1024;
 const KILL_GRACE_MS = 2000;
-const VERSION_TIMEOUT_MS = 10000;
+const VERSION_TIMEOUT_MS = 5000;
+const DEFAULT_TIMEOUT_MS = 120000;
 
-const LOGIN_RE = /not logged in|log ?in|authenticat|401/i;
+// 명시적인 인증 문구만 로그인 문제로 본다 — 부분 문자열("4010ms", "catalog")에 걸리지 않게 단어 경계를 둔다
+const LOGIN_RE = /\bnot logged in\b|\bplease (run \/?login|log ?in|login)\b|\binvalid api key\b|\bauthenticat(e|ion) (failed|error|required)\b|\b401\b.*\b(unauthori[sz]ed|auth)/i;
 const MSG_LOGIN = 'Claude Code 로그인이 필요해요(터미널에서 claude 실행)';
 const MSG_FAILED = '답을 못 받았어요. 다시 시도해 주세요';
 
@@ -49,16 +51,12 @@ function cleanEnv(env) {
   return out;
 }
 
-function claudeVersion(bin) {
-  return new Promise((resolve) => {
-    try {
-      execFile(bin, ['--version'], { env: cleanEnv(process.env), timeout: VERSION_TIMEOUT_MS, encoding: 'utf8' }, (err, stdout) => {
-        if (err) return resolve(null);
-        const m = /\d+\.\d+\.\d+/.exec(String(stdout));
-        resolve(m ? m[0] : null);
-      });
-    } catch { resolve(null); }
-  });
+// runClaude 와 같은 방식(빈 임시 폴더·프로세스 그룹·SIGTERM→SIGKILL)으로 --version 을 읽는다
+async function claudeVersion(bin, timeoutMs = VERSION_TIMEOUT_MS) {
+  const r = await runClaude({ bin, args: ['--version'], stdin: '', timeoutMs, signal: new AbortController().signal, env: cleanEnv(process.env) });
+  if (!r.ok) return null;
+  const m = /\d+\.\d+\.\d+/.exec(r.stdout);
+  return m ? m[0] : null;
 }
 
 const parseVer = (v) => {
@@ -78,16 +76,18 @@ function buildArgs(instruction, systemPrompt) {
     '--no-session-persistence', '--max-turns', '2', '--append-system-prompt', systemPrompt];
 }
 
-// 셸 없이, 새 빈 임시 폴더에서, 프로세스 그룹 리더로 돌린다. 마감·취소·한도 초과면 그룹에 SIGTERM, 2초 뒤 SIGKILL.
+// env 를 안 주면 cleanEnv(process.env), timeoutMs 가 잘못되면 120초. 셸 없이, 새 빈 임시 폴더에서, 프로세스 그룹 리더로 돌린다. 마감·취소·한도 초과면 그룹에 SIGTERM, 2초 뒤 SIGKILL.
 // 종료코드는 보지 않는다 — 판정은 readResult 가 stdout JSON·stderr 로 한다. 'close' 뒤에야 cwd 를 지우고 돌려준다(슬롯 반납 시점)
 function runClaude(a) {
+  const env = a.env || cleanEnv(process.env);
+  const timeoutMs = Number.isFinite(a.timeoutMs) && a.timeoutMs > 0 ? a.timeoutMs : DEFAULT_TIMEOUT_MS;
   return new Promise((resolve) => {
     if (a.signal && a.signal.aborted) return resolve({ ok: false, error: 'cancelled' });
     let cwd;
     try { cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'viewed-ask-')); } catch { return resolve({ ok: false, error: 'spawn' }); }
     let child;
     try {
-      child = spawn(a.bin, a.args, { cwd, env: a.env, detached: true, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+      child = spawn(a.bin, a.args, { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
     } catch { try { fs.rmSync(cwd, { recursive: true, force: true }); } catch { /* 무시 */ } return resolve({ ok: false, error: 'spawn' }); }
 
     let settled = false, reason = null, outLen = 0, errLen = 0, killTimer = null;
@@ -100,7 +100,7 @@ function runClaude(a) {
       killTimer = setTimeout(() => sig('SIGKILL'), KILL_GRACE_MS);
     };
     const onAbort = () => stop('cancelled');
-    const deadline = setTimeout(() => stop('timeout'), a.timeoutMs);
+    const deadline = setTimeout(() => stop('timeout'), timeoutMs);
     const finish = (res) => {
       if (settled) return;
       settled = true;
@@ -117,7 +117,8 @@ function runClaude(a) {
     child.on('error', () => { finish({ ok: false, error: 'spawn' }); });
     child.on('close', () => {
       const stderr = Buffer.concat(err).toString('utf8');
-      if (reason) return finish({ ok: false, error: reason, stderr });
+      // 멈춘 뒤에는 리더가 죽었어도 SIGTERM 을 무시하는 그룹 구성원이 남을 수 있다 — 풀어주기 전에 그룹을 SIGKILL 한다
+      if (reason) { sig('SIGKILL'); return finish({ ok: false, error: reason, stderr }); }
       finish({ ok: true, stdout: Buffer.concat(out).toString('utf8'), stderr });
     });
     child.stdin.end(a.stdin || '');
