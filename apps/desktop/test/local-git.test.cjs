@@ -174,7 +174,7 @@ test('authors lists non-merge authors per path and adds merge-resolution authors
   const { files } = JSON.parse(await ops.authors(d, rev(d, 'main'), rev(d, 'HEAD')));
   assert.deepEqual(files['b.ts'], [BOB]);
   assert.deepEqual(files['폴더 a/파일.ts'], [BOB]);
-  assert.ok(files['conflict.ts'].some(([n]) => n === 'alice'), JSON.stringify(files['conflict.ts']));
+  assert.ok(files['conflict.ts'].some(([n, e]) => n === 'carol' && e === 'c@example.test'), JSON.stringify(files['conflict.ts']));   // carol 은 머지 커밋만 만들었다
   assert.deepEqual(files['mix.ts'].slice().sort(), [ALICE, BOB]);
   assert.equal(new Set(files['mix.ts'].map((x) => x.join())).size, files['mix.ts'].length);
 });
@@ -229,4 +229,17 @@ test('info returns git user name and email', async () => {
     process.env.HOME = saved.HOME;
     for (const [k, v] of [['XDG_CONFIG_HOME', saved.XDG], ['GIT_CONFIG_NOSYSTEM', saved.S]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   }
+});
+
+test('authors keeps odd path names intact (prototype keys, leading newlines, control bytes)', async () => {
+  const d = makeRepo();
+  const mb = rev(d, 'main');
+  const names = ['constructor', '__proto__', 'toString', '\na.ts', '\nb.ts', 'a\u0001b.ts', 'x\n'];
+  for (const n of names) fs.writeFileSync(path.join(d, n), 'x\n');
+  git(d, '-c', 'user.name=bob', '-c', 'user.email=b@example.test', 'add', '--', ...names);
+  git(d, '-c', 'user.name=bob', '-c', 'user.email=b@example.test', 'commit', '-q', '-m', 'odd');
+  const { files } = JSON.parse(await ops.authors(d, mb, rev(d, 'HEAD')));
+  for (const n of names) assert.deepEqual(files[n], [BOB], JSON.stringify(n));
+  assert.deepEqual(files['b.ts'], [['t', 't@t']]);   // makeRepo 의 feat 커밋만 — 개행 붙은 이름이 b.ts 로 깎이지 않았다
+  assert.equal(files['a'], undefined);
 });

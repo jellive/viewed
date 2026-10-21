@@ -119,11 +119,23 @@ const askGit = {
   },
 };
 
-// log 한 번의 -z 출력 → 경로별 작성자. 커밋은 \x01 로, 필드·경로는 NUL 로 나뉜다(머지 --cc 는 파일이 없는 커밋도 있다)
+// log 한 번의 -z 출력 → 경로별 작성자. 경로는 NUL 말고 아무 바이트나 가질 수 있으므로 NUL 토큰만으로 짠다:
+// 커밋 머리 = 빈 토큰 둘 + 'N'이름 + 'E'메일(경로는 비어 있을 수 없어 위조 불가). 머지 --cc 는 머리 뒤에 빈 토큰이 하나 더 끼고,
+// 머지가 아닌 커밋은 첫 경로 앞에 구분 개행이 하나 붙는다
+const AUTHOR_FMT = '--format=%x00%x00N%aN%x00E%aE';
 function collectAuthors(out, files) {
-  for (const chunk of out.split('\x01').slice(1)) {
-    const [name, email, ...rest] = chunk.split('\0');
-    for (const f of rest.map((x) => x.replace(/^\n/, '')).filter((x) => x !== '')) {
+  const t = out.split('\0');
+  let i = 0;
+  while (i < t.length) {
+    while (i < t.length && t[i] === '') i++;
+    if (i + 1 >= t.length) break;
+    const name = t[i].slice(1), email = t[i + 1].slice(1);
+    i += 2;
+    let first = true;
+    if (t[i] === '') { i++; first = false; }   // 머지: 구분 개행 없음
+    for (; i < t.length && t[i] !== ''; i++) {
+      const f = first && t[i].startsWith('\n') ? t[i].slice(1) : t[i];
+      first = false;
       const list = files[f] ?? (files[f] = []);
       if (!list.some(([n, e]) => n === name && e === email)) list.push([name, email]);
     }
@@ -166,13 +178,13 @@ const ops = {
   // mergeBase..head 에서 경로를 바꾼 작성자(.mailmap 적용). 머지 커밋은 --cc 로 충돌을 푼 사람만 잡힌다
   authors: async (repo, mergeBase, head) => {
     const range = `${oid(mergeBase)}..${oid(head)}`;
-    const fmt = '--format=%x01%aN%x00%aE';
+    const fmt = AUTHOR_FMT;
     const o = { timeoutMs: 10_000 };
     const [plain, merges] = await Promise.all([
       git(repo, ['log', '--no-merges', '-M', '-z', '--name-only', '--no-show-signature', '--no-textconv', '--no-ext-diff', fmt, range], o),
       git(repo, ['log', '--merges', '--cc', '-z', '--name-only', '--no-show-signature', '--no-textconv', '--no-ext-diff', fmt, range], o),
     ]);
-    const files = {};
+    const files = Object.create(null);   // constructor·__proto__ 같은 경로가 상속 속성으로 풀리지 않게
     collectAuthors(plain, files);
     collectAuthors(merges, files);
     return JSON.stringify({ files });

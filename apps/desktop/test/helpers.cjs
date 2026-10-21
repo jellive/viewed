@@ -18,6 +18,7 @@ function makeRepo() {
 }
 
 const ALICE = ['-c', 'user.name=alice', '-c', 'user.email=a@example.test'];
+const CAROL = ['-c', 'user.name=carol', '-c', 'user.email=c@example.test'];
 const BOB2 = ['-c', 'user.name=bobby', '-c', 'user.email=b2@example.test'];   // .mailmap 이 bob <b@example.test> 로 바꾼다
 
 // main 에 base, feat 에서 alice(나)·bob 이 각각 커밋. 머지 충돌은 alice 가 푼다
@@ -46,10 +47,10 @@ function makeOthersRepo() {
   git(dir, ...BOB2, 'commit', '-q', '-m', 'bob files');
   w('conflict.ts', 'c-alice\n');
   git(dir, ...ALICE, 'commit', '-q', '-am', 'alice conflict');
-  try { git(dir, ...ALICE, 'merge', '--no-ff', '-m', 'merge bobside', 'bobside'); } catch { /* 충돌이 정상 */ }
+  try { git(dir, ...CAROL, 'merge', '--no-ff', '-m', 'merge bobside', 'bobside'); } catch { /* 충돌이 정상 */ }
   w('conflict.ts', 'c-resolved\n');
-  git(dir, ...ALICE, 'add', 'conflict.ts');
-  git(dir, ...ALICE, 'commit', '-q', '--no-edit');
+  git(dir, ...CAROL, 'add', 'conflict.ts');
+  git(dir, ...CAROL, 'commit', '-q', '--no-edit');   // 이 파일을 머지 커밋으로만 닿은 사람
   return dir;
 }
 
