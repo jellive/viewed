@@ -11,6 +11,10 @@ export function meMatcher(ids: string[]): (a: Author) => boolean {
   return ([name, email]) => set.has(norm(name)) || set.has(norm(email));
 }
 
+// Claude 공동 작성자(Co-Authored-By 트레일러)는 사람이 아니다 — 배지에 안 넣고, Claude 만 닿은 파일은 내 파일로 둔다.
+// '나'인지는 빼기 전 목록으로 본다 — '나'에 Claude 를 넣은 사람의 파일이 남의 것이 되지 않게
+const isClaude = ([, email]: Author) => norm(email) === 'noreply@anthropic.com';
+
 // 키는 file.path. 작성자 = 이름 변경으로 이어진 모든 경로(renames 의 연결 요소)와 previousPath 의 작성자 합집합.
 // 과하게 합쳐도 '내 파일' 쪽으로만 기운다. 비었거나 '나'가 하나라도 있으면 맵에 없다
 export function othersOf(files: ChangedFile[], authors: Record<string, Author[]>, isMe: (a: Author) => boolean,
@@ -30,8 +34,10 @@ export function othersOf(files: ChangedFile[], authors: Record<string, Author[]>
       all.push(...own(p));
       for (const n of adj.get(p) ?? []) if (!seen.has(n)) { seen.add(n); stack.push(n); }
     }
-    if (all.length === 0 || all.some(isMe)) continue;
-    out.set(file.path, [...new Set(all.map(([name]) => name))]);
+    if (all.some(isMe)) continue;
+    const people = all.filter((a) => !isClaude(a));
+    if (people.length === 0) continue;
+    out.set(file.path, [...new Set(people.map(([name]) => name))]);
   }
   return out;
 }

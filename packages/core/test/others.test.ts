@@ -39,6 +39,17 @@ describe('othersOf', () => {
     expect(othersOf([f('n.ts', 'o.ts')], { 'n.ts': [bob], 'o.ts': [alice] }, isMe).has('n.ts')).toBe(false);
     expect(othersOf([f('n.ts', 'o.ts')], { 'n.ts': [bob], 'o.ts': [bob] }, isMe).get('n.ts')).toEqual(['Bob']);
   });
+  it('Claude co-authors are not people: not in the badge, and Claude alone is not others', () => {
+    const claude: Author = ['Claude Opus 5.5', 'NoReply@Anthropic.com'];
+    expect(othersOf([f('a.ts')], { 'a.ts': [bob, claude] }, isMe).get('a.ts')).toEqual(['Bob']);
+    expect(othersOf([f('a.ts')], { 'a.ts': [claude] }, isMe).has('a.ts')).toBe(false);
+    expect(othersOf([f('a.ts')], { 'a.ts': [alice, claude] }, isMe).has('a.ts')).toBe(false);
+  });
+  it('a me-list that names Claude still makes Claude-co-authored files mine', () => {
+    const claude: Author = ['Claude Opus 5.5', 'noreply@anthropic.com'];
+    expect(othersOf([f('a.ts')], { 'a.ts': [bob, claude] }, meMatcher(['noreply@anthropic.com'])).has('a.ts')).toBe(false);
+    expect(othersOf([f('n.ts')], { 'o.ts': [claude], 'n.ts': [bob] }, meMatcher(['Claude Opus 5.5']), [['o.ts', 'n.ts']]).has('n.ts')).toBe(false);
+  });
   it('prototype-named paths neither crash nor inherit', () => {
     const authors = JSON.parse('{"__proto__":[["Bob","bob@example.test"]]}') as Record<string, Author[]>;
     const m = othersOf([f('constructor'), f('toString'), f('__proto__')], authors, isMe);
