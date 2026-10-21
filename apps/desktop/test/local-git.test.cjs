@@ -279,3 +279,45 @@ test('info normalizes git user through the repo mailmap', async () => {
   git(d, 'config', 'user.name', 'zed'); git(d, 'config', 'user.email', 'z@example.test');
   assert.deepEqual((await info(d)).user, { name: 'zed', email: 'z@example.test' });
 });
+
+test('co-author mailmap lookup ignores path tokens that start with C', async () => {
+  const d = makeOthersRepo();
+  const mb = rev(d, 'main');
+  fs.writeFileSync(path.join(d, 'CONTRIBUTING.md'), 'x\n'); fs.writeFileSync(path.join(d, 'Classes.swift'), 'x\n');
+  gitAs(d, BOB, 'add', 'CONTRIBUTING.md', 'Classes.swift');
+  gitAs(d, BOB, 'commit', '-q', '-m', 'docs', '-m', 'Co-authored-by: bobby <b2@example.test>');
+  const { files } = JSON.parse(await ops.authors(d, mb, rev(d, 'HEAD')));
+  assert.deepEqual(files['CONTRIBUTING.md'], [BOB]);   // 별칭이 mailmap 으로 접혔다 = 조회가 통째로 버려지지 않았다
+  assert.deepEqual(files['Classes.swift'], [BOB]);
+});
+
+test('a name-only Co-authored-by trailer is kept as [name, ""]', async () => {
+  const d = makeOthersRepo();
+  const mb = rev(d, 'main');
+  fs.writeFileSync(path.join(d, 'solo.ts'), 'x\n');
+  gitAs(d, BOB, 'add', 'solo.ts');
+  gitAs(d, BOB, 'commit', '-q', '-m', 'solo', '-m', 'Co-authored-by: alice');
+  const { files } = JSON.parse(await ops.authors(d, mb, rev(d, 'HEAD')));
+  assert.deepEqual(files['solo.ts'].slice().sort(), [['alice', ''], BOB]);
+});
+
+test('info survives angle brackets in user.name', async () => {
+  const d = makeRepo();
+  git(d, 'config', 'user.name', 'Alice <work>'); git(d, 'config', 'user.email', 'a@example.test');
+  assert.deepEqual((await info(d)).user, { name: 'Alice <work>', email: 'a@example.test' });
+});
+
+test('mailmap still applies to a huge co-author batch (stdin, no E2BIG)', async () => {
+  const d = makeOthersRepo();
+  const mb = rev(d, 'main');
+  fs.writeFileSync(path.join(d, 'big.ts'), 'x\n');
+  gitAs(d, BOB, 'add', 'big.ts');
+  const lines = ['Co-authored-by: bobby <b2@example.test>'];
+  for (let i = 0; i < 40000; i++) lines.push(`Co-authored-by: user-number-${i} <user${i}@example.test>`);
+  const msg = path.join(os.tmpdir(), `viewed-msg-${process.pid}.txt`);
+  fs.writeFileSync(msg, `big\n\n${lines.join('\n')}\n`);
+  gitAs(d, BOB, 'commit', '-q', '-F', msg);
+  const { files } = JSON.parse(await ops.authors(d, mb, rev(d, 'HEAD')));
+  assert.ok(files['big.ts'].some(([n, e]) => n === 'bob' && e === 'b@example.test'));
+  assert.ok(!files['big.ts'].some(([, e]) => e === 'b2@example.test'), 'alias must be folded by mailmap');
+});

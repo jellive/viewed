@@ -15,15 +15,16 @@ function env() {
   return { ...e, GIT_OPTIONAL_LOCKS: '0', GIT_NO_LAZY_FETCH: '1', GIT_TERMINAL_PROMPT: '0' };
 }
 
-function git(repo, args, { timeoutMs = 60_000 } = {}) {
+function git(repo, args, { timeoutMs = 60_000, input } = {}) {
   return new Promise((resolve, reject) => {
     // execFile 은 0 을 '무제한'으로, 음수·소수는 동기 예외로 다룬다 — 마감이 지났으면 git 을 띄우지 않고 거절한다
     const t = Math.floor(timeoutMs);
     if (!Number.isFinite(t) || t < 1) { reject(new Error('deadline')); return; }
-    execFile('git', ['-C', repo, ...BASE, ...args], { env: env(), maxBuffer: 64 << 20, timeout: t, encoding: 'utf8' }, (err, stdout, stderr) => {
+    const child = execFile('git', ['-C', repo, ...BASE, ...args], { env: env(), maxBuffer: 64 << 20, timeout: t, encoding: 'utf8' }, (err, stdout, stderr) => {
       if (err) reject(new Error(`git ${args[0]} failed: ${(stderr || err.message).trim().slice(0, 300)}`));
       else resolve(stdout);
     });
+    if (input !== undefined) { child.stdin.on('error', () => {}); child.stdin.end(input); }   // 인자 길이 제한(E2BIG)을 피해 stdin 으로
   });
 }
 
@@ -63,9 +64,11 @@ async function info(repo) {
   const current = await git(repo, ['symbolic-ref', '-q', 'HEAD']).then((s) => s.trim(), () => '');
   const cfg = (k) => git(repo, ['config', '--get', k]).then((v) => v.replace(/\n$/, ''), () => '');   // 없으면 git 이 1 로 끝난다
   let user = { name: await cfg('user.name'), email: await cfg('user.email') };
-  if (user.email) {   // .mailmap 으로 작성자(%aN/%aE)와 같은 신원으로 맞춘다. 실패하면 설정 그대로
-    const hit = (await mailmapped(repo, [`${user.name} <${user.email}>`])).get(`${user.name} <${user.email}>`);
-    if (hit) user = { name: user.name ? hit[0] : user.name, email: hit[1] };
+  if (user.email) {   // .mailmap 으로 작성자(%aN/%aE)와 같은 신원으로 맞춘다. git 은 이름의 <> 를 커밋에 못 쓴다. 실패하면 설정 그대로
+    const bare = user.name.replace(/[<>]/g, '');
+    const contact = `${bare} <${user.email.replace(/[<>]/g, '')}>`;
+    const hit = (await mailmapped(repo, [contact])).get(contact);
+    if (hit) user = { name: user.name && hit[0] !== bare ? hit[0] : user.name, email: hit[1] };
   }
   return { refs, defaultBase: REF.test(head) ? head : null, current: REF.test(current) ? current : null, remote, user };
 }
@@ -129,8 +132,9 @@ const askGit = {
 // 머지가 아닌 커밋은 --name-status 라 항목이 상태 토큰(+경로 1~2개)이다. R 은 경로가 둘(옛, 새)
 const AUTHOR_FMT = '--format=%x00%x00N%aN%x00E%aE%x00C%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x01)';
 const CO = /^(.*?)\s*<([^<>]*)>\s*$/;
-function collectAuthors(out, files, renames, coMap, status) {
+function collectAuthors(out, files, renames, coMap, status, contacts) {
   const t = out.split('\0');
+  const renameSeen = new Set(renames.map(([a, b]) => `${a}\0${b}`));
   let i = 0;
   while (i < t.length) {
     while (i < t.length && t[i] === '') i++;
@@ -138,9 +142,12 @@ function collectAuthors(out, files, renames, coMap, status) {
     const name = t[i].slice(1), email = t[i + 1].slice(1), co = t[i + 2].slice(1);
     i += 3;
     const who = [[name, email]];
-    for (const c of co.split('\x01')) {
-      const m = CO.exec(c.trim());
-      if (m) who.push(coMap ? (coMap.get(c.trim()) ?? [m[1], m[2]]) : [m[1], m[2]]);
+    for (const c0 of co.split('\x01')) {
+      const c = c0.trim();
+      if (!c) continue;
+      const m = CO.exec(c);
+      if (m) { contacts?.add(c); who.push(coMap?.get(c) ?? [m[1], m[2]]); }
+      else who.push([c, '']);   // 이메일 없는 공저자 — 이름으로만 '나'와 대조된다
     }
     let first = true;
     if (t[i] === '') { i++; first = false; }   // 머지: 구분 개행 없음
@@ -156,7 +163,7 @@ function collectAuthors(out, files, renames, coMap, status) {
           const from = t[i++], to = t[i++];
           if (from === undefined || to === undefined) break;
           add(from); add(to);
-          if (st[0] === 'R' && !renames.some(([x, y]) => x === from && y === to)) renames.push([from, to]);
+          if (st[0] === 'R' && !renameSeen.has(`${from}\0${to}`)) { renameSeen.add(`${from}\0${to}`); renames.push([from, to]); }
         } else if (t[i] !== undefined) add(t[i++]);
       } else {
         const f = first && t[i].startsWith('\n') ? t[i].slice(1) : t[i];
@@ -167,12 +174,12 @@ function collectAuthors(out, files, renames, coMap, status) {
   }
 }
 
-// 공저자 "이름 <메일>" 을 레포 .mailmap 으로 정규화한다. 실패하면 원문 그대로 쓴다
-async function mailmapped(repo, contacts, o) {
+// "이름 <메일>" 을 레포 .mailmap 으로 정규화한다(stdin 으로 — 인자 길이 제한 없음). 실패하면 빈 맵 = 원문 그대로 쓴다
+async function mailmapped(repo, contacts, o = {}) {
   const map = new Map();
-  const list = [...new Set(contacts)].filter((c) => !c.includes('\n'));
+  const list = [...new Set(contacts)].filter((c) => CO.test(c) && !c.includes('\n'));
   if (list.length === 0) return map;
-  const out = await git(repo, ['check-mailmap', '--', ...list], o).catch(() => null);
+  const out = await git(repo, ['check-mailmap', '--stdin'], { ...o, input: list.join('\n') + '\n' }).catch(() => null);
   if (out === null) return map;
   const lines = out.split('\n');
   list.forEach((c, k) => { const m = CO.exec(lines[k] ?? ''); if (m) map.set(c, [m[1], m[2]]); });
@@ -223,8 +230,9 @@ const ops = {
     ]);
     const files = Object.create(null);   // constructor·__proto__ 같은 경로가 상속 속성으로 풀리지 않게
     const renames = [];
-    const cos = [];
-    for (const out of [plain, merges]) for (const m of out.matchAll(/\0C([^\0]+)/g)) for (const c of m[1].split('\x01')) if (c.trim()) cos.push(c.trim());
+    const cos = new Set();   // 머리의 C 토큰에서만 모은다(구조 파싱) — 경로 토큰이 섞이지 않게
+    collectAuthors(plain, Object.create(null), [], null, true, cos);
+    collectAuthors(merges, Object.create(null), [], null, false, cos);
     const coMap = await mailmapped(repo, cos, o);
     collectAuthors(plain, files, renames, coMap, true);
     collectAuthors(merges, files, renames, coMap, false);
