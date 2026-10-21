@@ -17,6 +17,9 @@ type Made = { snap: Snapshot; readBlob: ReadBlob; head?: () => Promise<string>; 
   others?: ReadonlyMap<string, string[]>; isMe?: (a: Author) => boolean };
 type Make = () => Promise<Made>;
 const LIVE_MS = 3000;
+const AUTHORS_GRACE_MS = 1500;
+// 작성자 판정이 무엇으로든 던지면 맵만 버린다 — 목록 읽기는 실패시키지 않는다
+const safeOthers = (f: () => Map<string, string[]>) => { try { return { others: f() }; } catch { return {}; } };
 // 기기 저장 기록은 기기 밖으로 안 나가 이름을 감출 필요가 없다 — 고정 키라 공유 비밀을 바꿔도 기록이 그대로 찾아진다
 const DEVICE_SECRET = 'viewed-device';
 
@@ -53,6 +56,10 @@ export function App() {
     }, LIVE_MS);
     return () => clearInterval(timer);
   }, [loaded]);
+  const pendingRefresh = useRef(false);
+  useEffect(() => {
+    if (pendingRefresh.current && settings && !editing) { pendingRefresh.current = false; refreshRef.current(); }
+  }, [settings, editing]);
   useEffect(() => {
     loadSettings().then(setSettings).catch(() => { setLoadError(t.storedUnreadable); setSettings(null); });
   }, []);
@@ -64,6 +71,9 @@ export function App() {
       : settings.accounts.length === 0 || !settings.accounts.some((a) => a.label === settings.gistAccount));
   if (incomplete || editing) return <Settings initial={settings} notice={loadError} onSaved={(s) => {
     // gist 나 기기가 바뀌면 옛 저장소에 묶인 화면은 버린다 — 다시 열면 새 저장소를 쓴다
+    // '나' 이름이 바뀌면 열린 리뷰를 다시 판정한다(설정이 반영된 다음 렌더에서 — 아래 effect)
+    const norm = (x?: string[]) => (x ?? []).map((v) => v.trim().toLowerCase()).join('\n');
+    if (loaded && norm(s.extraMe) !== norm(settings?.extraMe)) pendingRefresh.current = true;
     if (settings && (s.gistId !== settings.gistId || s.deviceId !== settings.deviceId || s.storage !== settings.storage)) { seq.current++; setLoaded(null); }
     setSettings(s); setEditing(false);
   }} />;
@@ -133,16 +143,16 @@ export function App() {
             // 미리 읽기가 실패하면 작성자만 포기한다 — 오류는 스냅숏 읽기가 같은 말로 낸다
             let head = '', mb = '';
             try { head = await git.resolve(branch); const baseSha = await git.resolve(base); mb = head && baseSha ? await git.mergeBase(baseSha, head) : ''; } catch { /* 위 */ }
-            const [snap, authors] = await Promise.all([
-              loadLocalSnapshot(git, repoIdFromRemote(info.remote, repo), branch, base),
-              mb ? localAuthors(repo, mb, head) : Promise.resolve(null),
-            ]);
+            const pending = mb ? localAuthors(repo, mb, head) : Promise.resolve(null);
+            const snap = await loadLocalSnapshot(git, repoIdFromRemote(info.remote, repo), branch, base);
+            // 스냅숏이 끝난 뒤 작성자를 최대 1.5초만 더 기다린다 — 늦으면 전부 내 것으로 그리고 넘어간다
+            const authors = await Promise.race([pending, new Promise<null>((r) => setTimeout(() => r(null), AUTHORS_GRACE_MS))]);
             // '나' = git 사용자(이름·이메일) + 설정의 추가분. 다시 읽을 때마다 그때의 설정으로 다시 계산한다
             const isMe = meMatcher([info.user?.name ?? '', info.user?.email ?? '', ...(settingsRef.current?.extraMe ?? [])]);
             const fresh = authors && snap.headSha === head && snap.mergeBase === mb;
             return {
               snap, readBlob: localBlob(repo), head: () => git.resolve(branch), repo, isMe,
-              ...(fresh ? { others: othersOf(snap.files, authors.files, isMe, authors.renames) } : {}),
+              ...(fresh ? safeOthers(() => othersOf(snap.files, authors.files, isMe, authors.renames)) : {}),
             };
           }, false, () => { rememberLocal(repo, branch, base); setRecentRev((n) => n + 1); })} />
           <button type="button" data-testid="settings-open" onClick={() => setEditing(true)}>{t.settings}</button>

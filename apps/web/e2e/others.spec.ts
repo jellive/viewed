@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { mockGitHub, seedSettings } from './fixtures';
 
 // 데스크톱 브리지를 흉내 낸다 — git 은 a.ts·b.ts 두 파일의 고정 diff, authors 는 테스트가 바꿀 수 있다
-async function fakeLocal(page: Page, o: { extraMe?: string[]; authorsFail?: boolean } = {}) {
+async function fakeLocal(page: Page, o: { extraMe?: string[]; authorsFail?: boolean; authorsHang?: boolean; authorsRaw?: string } = {}) {
   await page.addInitScript((o) => {
     localStorage.setItem('viewed.settings', JSON.stringify({ accounts: [], gistAccount: '', gistId: '', secret: '', deviceId: 'mac', storage: 'device', ...(o.extraMe ? { extraMe: o.extraMe } : {}) }));
     const oid = (c: string) => c.repeat(40);
@@ -11,7 +11,7 @@ async function fakeLocal(page: Page, o: { extraMe?: string[]; authorsFail?: bool
     const one = (p: string) => `diff --git a/${p} b/${p}\n--- a/${p}\n+++ b/${p}\n@@ -1,2 +1,2 @@\n ctx\n-old\n+new\n`;
     w.__git = { head: oid('f'), mb: oid('e'), raw, patch: one('src/a.ts') + one('src/b.ts') };
     w.__authors = { files: { 'src/a.ts': [['alice', 'a@example.test']], 'src/b.ts': [['bob', 'b@example.test']] }, renames: [] };
-    w.__authorsFail = !!o.authorsFail;
+    w.__authorsFail = !!o.authorsFail; w.__authorsHang = !!o.authorsHang; w.__authorsRaw = o.authorsRaw;
     w.viewedDesktop = {
       getSecret: async () => null,
       setSecret: async () => {},
@@ -20,7 +20,7 @@ async function fakeLocal(page: Page, o: { extraMe?: string[]; authorsFail?: bool
         list: async () => ['/r/a'],
         info: async () => ({ refs: ['refs/heads/feat', 'refs/heads/main'], defaultBase: null, current: 'refs/heads/feat', remote: null, user: { name: 'alice', email: 'a@example.test' } }),
         run: async (_repo: string, op: string, ref: string) => {
-          if (op === 'authors') { if (w.__authorsFail) throw new Error('boom'); return JSON.stringify(w.__authors); }
+          if (op === 'authors') { if (w.__authorsFail) throw new Error('boom'); if (w.__authorsHang) return new Promise(() => {}); return w.__authorsRaw ?? JSON.stringify(w.__authors); }
           return op === 'resolve' ? (ref === 'refs/heads/feat' ? w.__git.head : oid('d'))
             : op === 'mergeBase' ? w.__git.mb : op === 'rawDiff' ? w.__git.raw : op === 'patchDiff' ? w.__git.patch : null;
         },
@@ -100,4 +100,31 @@ test('GitHub mode shows no others badge', async ({ page }) => {
   await expect(page.getByTestId('progress')).toHaveText('0 / 1');
   await expect(page.getByTestId('file-others')).toHaveCount(0);
   await expect(page.locator('[data-others]')).toHaveCount(0);
+});
+
+test('authors that never answer do not hold the list back', async ({ page }) => {
+  await fakeLocal(page, { authorsHang: true });
+  await page.goto('/');
+  await expect(page.getByTestId('local-branch-select')).toHaveValue('refs/heads/feat');
+  await page.getByTestId('open-btn').click();
+  await expect(page.getByTestId('progress')).toHaveText('0 / 2', { timeout: 3500 });
+  await expect(page.getByTestId('file-others')).toHaveCount(0);
+});
+
+test('malformed authors drop the others map instead of failing the load', async ({ page }) => {
+  await fakeLocal(page, { authorsRaw: '{"files":{"src/b.ts":null},"renames":[]}' });
+  await openLocal(page, '0 / 2');
+  await expect(page.getByTestId('file-others')).toHaveCount(0);
+  await expect(page.getByTestId('error')).toHaveCount(0);
+});
+
+test('adding my name in settings while a review is open re-evaluates it without refresh', async ({ page }) => {
+  await fakeLocal(page);
+  await openLocal(page, '1 / 2');
+  await expect(row(page, 'src/b.ts')).toHaveAttribute('data-state', 'viewed');
+  await page.getByTestId('settings-open').click();
+  await page.getByTestId('extra-me').fill('bob');
+  await page.getByTestId('settings-save').click();
+  await expect(page.getByTestId('progress')).toHaveText('0 / 2');
+  await expect(row(page, 'src/b.ts')).toHaveAttribute('data-state', 'unread');
 });

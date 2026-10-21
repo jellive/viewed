@@ -25,7 +25,10 @@ export async function localAuthors(repo: string, mergeBase: string, head: string
     const raw = await desktopGit()!.run(repo, 'authors', mergeBase, head);
     if (!raw) return null;
     const j = JSON.parse(raw) as { files?: unknown; renames?: unknown };
+    const pair = (x: unknown) => Array.isArray(x) && x.length === 2 && typeof x[0] === 'string' && typeof x[1] === 'string';
     if (!j || typeof j.files !== 'object' || j.files === null || Array.isArray(j.files)) return null;
-    return { files: j.files as Record<string, Author[]>, renames: Array.isArray(j.renames) ? (j.renames as [string, string][]) : [] };
+    for (const v of Object.values(j.files)) if (!Array.isArray(v) || !v.every(pair)) return null;
+    if (!Array.isArray(j.renames) || !j.renames.every(pair)) return null;
+    return { files: j.files as Record<string, Author[]>, renames: j.renames as [string, string][] };
   } catch { return null; }
 }
