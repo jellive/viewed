@@ -648,3 +648,17 @@ test('a foreign path next to a middle dot is still foreign', () => {
   assert.deepEqual(excerptOf('~/·/home/u/other/.env'), { mixed: true });
   assert.deepEqual(excerptOf('「~/viewed/a.ts」、「~/other/.env」'), { mixed: true });
 });
+
+test('C a later close quote is refused only when it opens another key value, so multi-line JSON and prose values are fully masked', () => {
+  const gone = (input, values, keep = []) => {
+    const out = T.scrubSecrets(input);
+    for (const v of values) assert.ok(!out.includes(v), `${JSON.stringify(input)} left ${v}: ${out}`);
+    for (const k of keep) assert.ok(out.includes(k), `${JSON.stringify(input)} lost ${k}: ${out}`);
+    return out;
+  };
+  // 값 안에 키 같은 낱말이 있어도, 닫는 따옴표 바로 앞이 '키 =' 가 아니면 거기까지 통째로 가린다
+  gone(`SECRET_JSON='{ "client_secret": "CS1", "private_key_id": "PK1",\n "signing_salt": "SALT1" }' tail`, ['CS1', 'PK1', 'SALT1'], ["' tail"]);
+  gone('password="first line token: x\nSECONDLINESECRET" tail', ['first line', 'SECONDLINESECRET'], ['" tail']);
+  // 닫는 따옴표 후보가 다음 키의 여는 따옴표면 여전히 거부한다
+  gone('password="AAA1 token= "BBB2"', ['AAA1', 'BBB2']);
+});

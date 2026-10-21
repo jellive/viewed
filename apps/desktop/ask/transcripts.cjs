@@ -176,7 +176,7 @@ const SECRETS = [
 ];
 // 이름=값 · 이름: 값 · "이름":"값". 비교(==)·화살표(=>)는 값이 아니다.
 const KV_KEY = /(?:password|passwd|secret|token|api[-_.]?key)[A-Za-z0-9_.-]*["']?\s*(?::|=(?![=>]))\s*/gi;
-const KV_KEY_INSIDE = new RegExp(KV_KEY.source, 'i');   // 따옴표 값 안에 다른 키가 있나
+const KV_KEY_END = new RegExp(`(?:${KV_KEY.source})$`, 'i');   // 닫는 따옴표 후보 바로 앞이 '다른 키 =' 인가 — 그러면 그 따옴표는 다음 값을 여는 것이다
 const KV_BARE = /[^\s"'`,;]+/y;
 const KV_SPAN = 4000;
 
@@ -191,8 +191,9 @@ function closeQuote(s, from, q) {
   return -1;
 }
 
-// 따옴표 값은 닫는 따옴표까지 — 단 그 사이에 다른 비밀 키가 없고 4000자 안일 때만(줄을 넘어도 된다). 아니면(다음 비밀의 여는 따옴표를
-// 닫는 것으로 삼지 않게) 그 줄 끝까지 가리고 다음 줄부터 다시 본다. 같은 줄에서도 사이에 키가 있으면 줄 끝까지다. 이스케이프된 따옴표는 닫는 것이 아니다
+// 따옴표 값은 닫는 따옴표까지(4000자 안, 줄을 넘어도 된다). 단 그 따옴표 바로 앞이 '다른 키 =' 꼴이면 그것은 다음 비밀의 여는 따옴표라
+// 닫는 것으로 삼지 않고 그 줄 끝까지 가린 뒤 다음 줄부터 다시 본다(같은 줄도 같다). 값 안에 키 같은 낱말이 있는 것만으로는 거부하지 않는다
+// (여러 줄 JSON 값 안의 "client_secret": 같은 것). 이스케이프된 따옴표는 닫는 것이 아니다
 function scrubKV(s) {
   let out = '';
   let pos = 0;
@@ -205,7 +206,7 @@ function scrubKV(s) {
     if (q === '"' || q === "'" || q === '`') {
       const close = closeQuote(s, vStart + 1, q);
       const body = close === -1 ? null : s.slice(vStart + 1, close);
-      if (body !== null && !KV_KEY_INSIDE.test(body)) vEnd = close + 1;
+      if (body !== null && !KV_KEY_END.test(body)) vEnd = close + 1;
       else { const nl = s.indexOf('\n', vStart + 1); vEnd = nl === -1 ? s.length : nl; }
       rep = q + MASK + q;
     } else {
