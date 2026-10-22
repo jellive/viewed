@@ -514,3 +514,37 @@ test('others-only files collapse with a real repo, and others\' added lines get 
   await expect(renamed).toHaveAttribute('data-state', 'unread');
   await app.close();
 });
+
+test('a review opened against an older target keeps what was checked against the newer one', async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'viewed-carry-')));
+  const as = (who: string, ...a: string[]) => git(dir, '-c', `user.name=${who}`, '-c', `user.email=${who}@example.test`, ...a);
+  const put = (f: string, c: string) => writeFileSync(join(dir, f), c);
+  git(dir, 'init', '-q', '-b', 'main');
+  put('a.ts', 'a\n'); put('y.ts', 'y\n'); git(dir, 'add', '-A'); as('alice', 'commit', '-q', '-m', 'base');
+  git(dir, 'checkout', '-q', '-b', 'integ');
+  put('w.ts', 'w\n'); git(dir, 'add', '-A'); as('alice', 'commit', '-q', '-m', 'integ w');
+  put('y.ts', 'y-integ\n'); git(dir, 'add', '-A'); as('bob', 'commit', '-q', '-m', 'integ y');
+  git(dir, 'checkout', '-q', '-b', 'feat');
+  put('y.ts', 'y-feat\n'); put('z.ts', 'z\n'); git(dir, 'add', '-A'); as('alice', 'commit', '-q', '-m', 'feat');
+
+  const { app, win } = await launch(dir);
+  await win.getByTestId('local-add').click();
+  await expect(win.getByTestId('local-branch-select')).toHaveValue('refs/heads/feat');
+  await win.getByTestId('local-base-select').selectOption('refs/heads/integ');
+  await win.getByTestId('open-btn').click();
+  await expect(win.getByTestId('progress')).toHaveText('0 / 2');   // y, z
+  for (const row of await win.getByTestId('file-row').all()) await row.getByTestId('file-check').check();
+  await expect(win.getByTestId('progress')).toHaveText('2 / 2');
+
+  await win.getByTestId('local-base-select').selectOption('refs/heads/main');
+  await win.getByTestId('open-btn').click();
+  await expect(win.getByTestId('file-row')).toHaveCount(3);   // w, y, z
+  await expect(win.getByTestId('progress')).toHaveText('3 / 3');
+  for (const f of ['w.ts', 'y.ts', 'z.ts']) await expect(win.getByTestId('file-row').filter({ hasText: f })).toHaveAttribute('data-state', 'viewed');
+
+  put('z.ts', 'z2\n'); git(dir, 'add', '-A'); as('alice', 'commit', '-q', '-m', 'z again');
+  await win.getByTestId('open-btn').click();
+  await expect(win.getByTestId('file-row').filter({ hasText: 'z.ts' })).toHaveAttribute('data-state', 'changed-since-viewed');
+  for (const f of ['w.ts', 'y.ts']) await expect(win.getByTestId('file-row').filter({ hasText: f })).toHaveAttribute('data-state', 'viewed');
+  await app.close();
+});
