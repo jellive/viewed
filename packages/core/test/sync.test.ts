@@ -96,14 +96,23 @@ describe('gist io', () => {
     expect(Object.keys((await loadAll(new GitHub('t', f), 'g1', 'mac')).merged).sort()).toEqual(['a', 'b']);
   });
 
+  it('keeps a well-formed prev', async () => {
+    const prev = { base: 'c'.repeat(40), fp: 'd'.repeat(64) };
+    const { f } = gistFetch({ 'device-mac.json': { content: JSON.stringify({ a: { ...rec('2026-10-15T01:00:00Z'), prev } }), truncated: false, raw_url: '' } });
+    expect((await loadAll(new GitHub('t', f), 'g1', 'mac')).merged.a.prev).toEqual(prev);
+  });
+
   // 나중 버전이 선택 필드의 형식을 바꿔도 기기 파일 전체를 거부하지 않는다 — 그 필드만 빠진 기록은 옛 기록처럼 판정된다
   it.each([
     ['blocks not an array', 'blocks', { blocks: 'x' }],
     ['a block not 16 hex', 'blocks', { blocks: ['0123456789abcdef', 'xyz'] }],
     ['base not a hash', 'base', { base: 'main' }],
     ['meta not 16 hex', 'meta', { meta: 3 }],
+    ['prev base not a hash', 'prev', { prev: { base: 'main', fp: 'f'.repeat(64) } }],
+    ['prev fp not sha256 hex', 'prev', { prev: { base: 'b'.repeat(40), fp: 'zz' } }],
+    ['prev not an object', 'prev', { prev: 'x' }],
   ] as const)('drops only the field when a record has %s, and reads the rest', async (_, field, extra) => {
-    const full = { ...rec('2026-10-15T01:00:00Z'), blocks: ['0123456789abcdef'], base: 'a'.repeat(40), meta: 'fedcba9876543210' };
+    const full = { ...rec('2026-10-15T01:00:00Z'), blocks: ['0123456789abcdef'], base: 'a'.repeat(40), meta: 'fedcba9876543210', prev: { base: 'c'.repeat(40), fp: 'd'.repeat(64) } };
     const bad = { a: { ...full, ...extra }, b: rec('2026-10-15T01:00:00Z') };
     const { f } = gistFetch({ 'device-mac.json': { content: JSON.stringify(bad), truncated: false, raw_url: '' } });
     const r = await loadAll(new GitHub('t', f), 'g1', 'mac');

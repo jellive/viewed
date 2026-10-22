@@ -31,6 +31,8 @@ export async function buildReview(snap: Snapshot, state: DeviceState, secret: st
     if (names) st = 'viewed';   // 남의 표시가 기록보다 이긴다
     else if (!record || !record.viewed) st = 'unread';
     else if (record.fp === fp) st = 'viewed';
+    // 이어받기(b)로 새 대상에 옮겨 쓴 기록: 이전 대상으로 돌아가면 그때 확인한 그대로다
+    else if (record.prev && snap.mergeBase === record.prev.base && record.prev.fp === fp) st = 'viewed';
     // 옛 기록·patch 없는 파일·상태/mode 변경은 블록으로 판정하지 않는다(spec §5)
     else if (!record.blocks || !blocks || record.meta !== meta) st = 'changed-since-viewed';
     // base 가 그대로면 지문 변화는 전부 내 변경이다 — 블록으로 거를 소음이 없다(같은 블록을 다른 곳에 옮겨도 숨지 않게)
@@ -57,5 +59,6 @@ const MAX_STORED_BLOCKS = 300;
 
 export function markRecord(item: ReviewItem, headSha: string, viewed: boolean, now = new Date()): ViewRecord {
   return { fp: item.fp, blob: item.file.blobSha, head: headSha, at: now.toISOString(), viewed, meta: item.meta,
-    ...(item.blocks && item.blocks.length <= MAX_STORED_BLOCKS ? { blocks: item.blocks } : {}), ...(item.base ? { base: item.base } : {}) };
+    ...(item.blocks && item.blocks.length <= MAX_STORED_BLOCKS ? { blocks: item.blocks } : {}), ...(item.base ? { base: item.base } : {}),
+    ...(viewed && item.carryPrev ? { prev: item.carryPrev } : {}) };
 }

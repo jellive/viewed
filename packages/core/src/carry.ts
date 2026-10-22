@@ -1,14 +1,26 @@
 import { fingerprint } from './fingerprint';
 import type { ChangedFile, Review, ReviewItem } from './types';
 
-// 이어받을 후보 P: 확인한 기록이 가장 많이 걸린 base 순(동수면 문자열 오름차순), 최대 3개
+const MAX_CHECKED = 10, MAX_USED = 3;
+
+// 이어받을 후보 P: 확인한 기록이 가장 많이 걸린 base 순(동수면 문자열 오름차순). 조상 검사 전의 후보라 넉넉히 10개까지
 export function carryBases(review: Review, n: string): string[] {
   const count = new Map<string, number>();
   for (const i of review.items) {
     const r = i.record;
     if (r?.viewed && r.base && r.base !== n) count.set(r.base, (count.get(r.base) ?? 0) + 1);
   }
-  return [...count].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).slice(0, 3).map(([b]) => b);
+  return [...count].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).slice(0, MAX_CHECKED).map(([b]) => b);
+}
+
+// 후보 중 N 의 후손인 것만 기록 수 순으로 최대 3개. 조상 검사가 던지면 그 P 는 건너뛴다
+export async function selectCarryBases(review: Review, n: string, isAncestor: (p: string) => Promise<boolean>): Promise<string[]> {
+  const out: string[] = [];
+  for (const p of carryBases(review, n)) {
+    if (out.length >= MAX_USED) break;
+    try { if (p !== n && await isAncestor(p)) out.push(p); } catch { /* 이 P 는 건너뛴다 */ }
+  }
+  return out;
 }
 
 // 대상을 옛 대상 P 로 바꿔 연 리뷰에서 확인함으로 칠 item. P 가 N 의 후손인지는 호출자가 이미 확인했다.
@@ -25,13 +37,13 @@ export async function targetCarry(review: Review, n: string, prev: { base: strin
   });
   const out: ReviewItem[] = [];
   for (const item of cands) {
-    let ok = false;
+    let ok = false, prevOf: { base: string; fp: string } | undefined;
     for (const s of sets) {
       if (!s.touched.has(item.file.path) && !(item.file.previousPath !== undefined && s.touched.has(item.file.previousPath))) { ok = true; break; }
       const r = item.record, pf = s.byPath.get(item.file.path);
-      if (r?.viewed && r.base === s.base && pf && await fingerprint(pf) === r.fp) { ok = true; break; }
+      if (r?.viewed && r.base === s.base && pf && await fingerprint(pf) === r.fp) { ok = true; prevOf = { base: r.base, fp: r.fp }; break; }
     }
-    if (ok) out.push(item);
+    if (ok) out.push(prevOf ? { ...item, carryPrev: prevOf } : item);
   }
   return out;
 }

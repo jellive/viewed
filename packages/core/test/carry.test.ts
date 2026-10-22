@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildReview, markRecord } from '../src/review';
-import { carryBases, targetCarry } from '../src/carry';
+import { carryBases, selectCarryBases, targetCarry } from '../src/carry';
 import { fingerprint } from '../src/fingerprint';
 import type { ChangedFile, DeviceState, Review, Snapshot, ViewRecord } from '../src/types';
 
@@ -33,7 +33,7 @@ describe('carryBases', () => {
       { path: 'f', base: P3 }, { path: 'h', base: N }, { path: 'i', base: P1, viewed: false },
     ]);
     // P3:3, P2:2, then P4 and P1 tie at 1 (i is not viewed). P4's file comes first in the list, so only the tie-break puts P1 first
-    expect(carryBases(review, N)).toEqual([P3, P2, P1]);
+    expect(carryBases(review, N).slice(0, 3)).toEqual([P3, P2, P1]);
   });
   it('ignores records without base', async () => {
     const review = await reviewWith([file('a')], [{ path: 'a' }]);
@@ -41,7 +41,65 @@ describe('carryBases', () => {
   });
 });
 
+describe('selectCarryBases', () => {
+  it('a non-ancestor base with the most records does not crowd out valid bases', async () => {
+    const files = ['a', 'b', 'c', 'd', 'e', 'f'].map((p) => file(p));
+    const review = await reviewWith(files, [
+      { path: 'a', base: P4 }, { path: 'b', base: P4 }, { path: 'c', base: P3 }, { path: 'd', base: P3 }, { path: 'e', base: P2 }, { path: 'f', base: P1 },
+    ]);
+    const bad = new Set([P4, P3, P2]);   // top three by count are not ancestors
+    expect(await selectCarryBases(review, N, async (p) => !bad.has(p))).toEqual([P1]);
+    expect(await selectCarryBases(review, N, async () => true)).toEqual([P3, P4, P1]);   // at most 3; ties by string
+  });
+  it('a failing ancestor check skips that base', async () => {
+    const review = await reviewWith([file('a'), file('b')], [{ path: 'a', base: P1 }, { path: 'b', base: P2 }]);
+    expect(await selectCarryBases(review, N, async (p) => { if (p === P1) throw new Error('x'); return true; })).toEqual([P2]);
+  });
+  it('checks at most 10 distinct bases', async () => {
+    const bases = Array.from({ length: 12 }, (_, i) => String.fromCharCode(97 + i).repeat(40));
+    const files = bases.map((_, i) => file('f' + i));
+    const review = await reviewWith(files, bases.map((b, i) => ({ path: 'f' + i, base: b })));
+    let checked = 0;
+    await selectCarryBases(review, N, async () => { checked++; return false; });
+    expect(checked).toBe(10);
+  });
+});
+
 describe('targetCarry', () => {
+  it('(b) carried items remember the base and fingerprint they were viewed under; (a) ones do not', async () => {
+    const same = file('same.ts', 'x'), fpSame = await fingerprint(same);
+    const review = await reviewWith([file('same.ts', 'n'), file('a.ts')], [{ path: 'same.ts', base: P1, fp: fpSame }]);
+    const out = await targetCarry(review, N, [{ base: P1, files: [same] }]);
+    const byPath = Object.fromEntries(out.map((i) => [i.file.path, i]));
+    expect(markRecord(byPath['same.ts'], 'h', true).prev).toEqual({ base: P1, fp: fpSame });
+    expect(markRecord(byPath['same.ts'], 'h', true).base).toBe(N);
+    expect(markRecord(byPath['a.ts'], 'h', true)).not.toHaveProperty('prev');
+    // a plain toggle on the review item never carries prev forward
+    expect(markRecord(review.items.find((i) => i.file.path === 'same.ts')!, 'h', true)).not.toHaveProperty('prev');
+  });
+});
+
+describe('buildReview with prev', () => {
+  const f = file('y.ts', 'n');
+  async function withRec(extra: Partial<ViewRecord>, mergeBase = P1) {
+    const s = { ...snap([f]), mergeBase };
+    const it = (await buildReview(s, {}, S)).items[0];
+    const r = await buildReview(s, { [it.key]: { ...markRecord(it, 'old', true), fp: 'other', blocks: undefined, base: N, ...extra } }, S);
+    return r.items[0].state;
+  }
+  it('is viewed when back at prev.base with the same fingerprint', async () => {
+    expect(await withRec({ prev: { base: P1, fp: await fingerprint(f) } })).toBe('viewed');
+  });
+  it.each([
+    ['another base', async () => ({ prev: { base: P2, fp: await fingerprint(f) } })],
+    ['another fingerprint', async () => ({ prev: { base: P1, fp: 'zz' } })],
+    ['unchecked', async () => ({ viewed: false, prev: { base: P1, fp: await fingerprint(f) } })],
+  ])('is not viewed with %s', async (_, mk) => {
+    expect(await withRec(await mk())).not.toBe('viewed');
+  });
+});
+
+describe('targetCarry (cont.)', () => {
   it('(a) a file absent from the P-diff is carried', async () => {
     const review = await reviewWith([file('a'), file('b')], [{ path: 'a', base: P1 }]);
     const out = await targetCarry(review, N, [{ base: P1, files: [file('b')] }]);

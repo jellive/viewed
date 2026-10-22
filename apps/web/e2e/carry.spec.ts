@@ -17,7 +17,7 @@ async function fakeLocal(page: Page, o: Opts = {}) {
     const mod = (p: string, n: string) => `:100644 100644 ${oid('0').slice(1)}9 ${n} M\0${p}\0`;
     const add = (p: string, n: string) => `:000000 100644 ${oid('0')} ${n} A\0${p}\0`;
     const zOid = () => oid(w.__v.z === 'a' ? '5' : '6');
-    const forP = () => ({ raw: mod('y.ts', oid('3')) + mod('z.ts', zOid()), patch: body('y.ts', 'y1') + body('z.ts', 'z' + w.__v.z) });
+    const forP = () => ({ raw: (w.__v.wInP ? mod('w.ts', oid('4')) : '') + mod('y.ts', oid('3')) + mod('z.ts', zOid()), patch: (w.__v.wInP ? body('w.ts', 'w1') : '') + body('y.ts', 'y1') + body('z.ts', 'z' + w.__v.z) });
     const forN = () => ({ raw: mod('w.ts', oid('4')) + add('y.ts', oid('3')) + mod('z.ts', zOid()), patch: body('w.ts', 'w1') + body('y.ts', 'y1') + body('z.ts', 'z' + w.__v.z) });
     const forP2 = () => ({ raw: mod('z.ts', zOid()), patch: body('z.ts', 'z' + w.__v.z) });
     const P2 = oid('b');
@@ -167,4 +167,29 @@ test('a carry that never answers does not hide the list while snapshots keep arr
   });
   await openWith(page, 'test');
   await expect(page.getByTestId('progress')).toHaveText('0 / 3', { timeout: 8000 });
+});
+
+test('a carry that finished before the deadline does not run again on a snapshot that arrives right after display', async ({ page }) => {
+  await fakeLocal(page);
+  await seed(page);
+  await page.evaluate(() => { (window as any).__v.wInP = true; });   // 첫 판정: w 는 P-diff 에 있어 이어받지 않는다
+  await openWith(page, 'test', '1 / 3');
+  await expect(row(page, 'w.ts')).toHaveAttribute('data-state', 'unread');
+  await page.evaluate(() => { const v = (window as any).__v; v.wInP = false; v.head = 'd'.repeat(40); });
+  await page.getByTestId('refresh-btn').click();   // 마감(5초) 안에 새 스냅숏
+  await page.waitForTimeout(1500);
+  await expect(row(page, 'w.ts')).toHaveAttribute('data-state', 'unread');
+});
+
+test('going back to the old target keeps what was carried via (b) viewed, and only those records remember the old base', async ({ page }) => {
+  await fakeLocal(page);
+  await seed(page);
+  await openWith(page, 'test', '2 / 3');
+  const recs = await page.evaluate(() => Object.values(JSON.parse(localStorage.getItem('viewed.device.mac') ?? '{}')) as any[]);
+  const withPrev = recs.filter((r) => r.prev);
+  expect(withPrev).toHaveLength(1);                                        // y.ts (b) — w.ts (a) 와 z.ts(직접 확인)는 prev 가 없다
+  expect(withPrev[0].prev).toEqual({ base: '1'.repeat(40), fp: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  expect(recs.filter((r) => r.base === '2'.repeat(40) && r.viewed && !r.prev)).toHaveLength(1);   // w.ts
+  await openWith(page, 'integ');
+  await expect(row(page, 'y.ts')).toHaveAttribute('data-state', 'viewed');
 });

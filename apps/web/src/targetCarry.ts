@@ -1,4 +1,4 @@
-import { carryBases, loadLocalRange, targetCarry, type ChangedFile, type Review, type ReviewItem, type Snapshot } from '@viewed/core';
+import { selectCarryBases, loadLocalRange, targetCarry, type ChangedFile, type Review, type ReviewItem, type Snapshot } from '@viewed/core';
 import { localGit } from './localSource';
 
 // 로컬 모드: 대상을 옛 대상 P 보다 뒤처진 쪽(N)으로 바꿔 열었을 때 이어받을 item 을 가린다.
@@ -16,8 +16,7 @@ export function makeCarry(repo: string): (review: Review, snap: Snapshot) => Pro
     const n = snap.mergeBase;
     if (!n) return [];
     const prev: { base: string; files: ChangedFile[] }[] = [];
-    for (const p of carryBases(review, n)) {
-      try { if (p === n || (await git.mergeBase(n, p)) !== n) continue; } catch { continue; }
+    for (const p of await selectCarryBases(review, n, async (p) => (await git.mergeBase(n, p)) === n)) {
       const files = await range(p, snap.headSha);
       if (files) prev.push({ base: p, files });
     }
