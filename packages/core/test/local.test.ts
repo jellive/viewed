@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, chmodSync, renameSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadLocalSnapshot, repoIdFromRemote, type LocalGit } from '../src/local';
+import { loadLocalSnapshot, loadLocalRange, repoIdFromRemote, type LocalGit } from '../src/local';
 import { fingerprint } from '../src/fingerprint';
 
 // 데스크톱 main 과 같은 플래그로 진짜 git 을 부른다
@@ -84,6 +84,14 @@ describe('loadLocalSnapshot', () => {
   it('rejects a mismatch between the file list and the patch sections instead of pairing them wrong', async () => {
     const g = gitFor(dir);
     await expect(loadLocalSnapshot({ ...g, patchDiff: async () => '' }, 'r', 'refs/heads/feat', 'refs/heads/main')).rejects.toThrow(/patch/i);
+  });
+});
+
+describe('loadLocalRange', () => {
+  it('returns the same files as loadLocalSnapshot for mb..head', async () => {
+    const g = gitFor(dir);
+    const snap = await loadLocalSnapshot(g, 'r', 'refs/heads/feat', 'refs/heads/main');
+    expect(await loadLocalRange(g, snap.mergeBase!, snap.headSha)).toEqual(snap.files);
   });
 });
 

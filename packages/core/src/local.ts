@@ -51,19 +51,16 @@ function hunks(section: string[]): string | undefined {
   return body.join('\n');
 }
 
-export async function loadLocalSnapshot(git: LocalGit, repoId: string, branchRef: string, baseRef: string): Promise<Snapshot> {
-  // 처음에 해시로 고정하고 이후 명령은 해시만 쓴다 — 도중에 브랜치가 움직여도 섞이지 않는다
-  const head = await git.resolve(branchRef);
-  const base = await git.resolve(baseRef);
-  const mb = await git.mergeBase(base, head);
-  const [raw, patch] = await Promise.all([git.rawDiff(mb, head), git.patchDiff(mb, head)]);
+// from..head 사이의 변경 파일. 둘 다 커밋 해시다
+export async function loadLocalRange(git: LocalGit, from: string, head: string): Promise<ChangedFile[]> {
+  const [raw, patch] = await Promise.all([git.rawDiff(from, head), git.patchDiff(from, head)]);
   const entries = parseRawZ(raw);
   const sections = splitSections(patch);
   // 종류 변경(파일↔심볼릭 링크 등, T)은 raw 에선 한 줄인데 patch 에선 삭제+추가 두 섹션이다
   const want = entries.reduce((n, e) => n + (e.status === 'changed' ? 2 : 1), 0);
   if (sections.length !== want) throw new Error(`git patch sections (${sections.length}) don't match changed files (${want})`);
   let at = 0;
-  const files: ChangedFile[] = entries.map((e) => {
+  return entries.map((e) => {
     const removed = e.status === 'removed' || ZERO.test(e.newOid);
     const section = sections[at];
     at += e.status === 'changed' ? 2 : 1;
@@ -78,6 +75,14 @@ export async function loadLocalSnapshot(git: LocalGit, repoId: string, branchRef
       mode: removed ? undefined : e.newMode,
     };
   });
+}
+
+export async function loadLocalSnapshot(git: LocalGit, repoId: string, branchRef: string, baseRef: string): Promise<Snapshot> {
+  // 처음에 해시로 고정하고 이후 명령은 해시만 쓴다 — 도중에 브랜치가 움직여도 섞이지 않는다
+  const head = await git.resolve(branchRef);
+  const base = await git.resolve(baseRef);
+  const mb = await git.mergeBase(base, head);
+  const files = await loadLocalRange(git, mb, head);
   return { owner: 'local', repo: repoId, base: baseRef, branch: branchRef, headSha: head, files, truncated: false, mergeBase: mb };
 }
 
