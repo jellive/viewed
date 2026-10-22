@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const cwd = join(__dirname, '..');
-const launch = (dir: string) => electron.launch({ args: ['.', `--user-data-dir=${dir}`], cwd });
+const launch = (dir: string) => electron.launch({ args: ['.', '--use-mock-keychain', `--user-data-dir=${dir}`], cwd });
 const tmp = () => mkdtempSync(join(tmpdir(), 'viewed-'));
 
 let server: Server;

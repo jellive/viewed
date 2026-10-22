@@ -58,7 +58,7 @@ async function launch() {
   const userData = mkdtempSync(join(tmpdir(), 'viewed-'));
   const repo = makeRepo();
   const app = await electron.launch({
-    args: ['.', '--lang=en-US', `--user-data-dir=${userData}`], cwd: join(__dirname, '..'),
+    args: ['.', '--lang=en-US', '--use-mock-keychain', `--user-data-dir=${userData}`], cwd: join(__dirname, '..'),
     env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: '' },
   });
   opened.push({ app, dirs: [home, marker, userData, repo.dir] });

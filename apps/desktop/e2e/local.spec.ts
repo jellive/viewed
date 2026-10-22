@@ -29,7 +29,8 @@ test.afterEach(() => { for (const h of homes.splice(0)) rmSync(h, { recursive: t
 async function launch(repo: string, reuse?: string): Promise<{ app: ElectronApplication; win: Page; github: string[]; userData: string }> {
   const userData = reuse ?? mkdtempSync(join(tmpdir(), 'viewed-'));
   const home = mkdtempSync(join(tmpdir(), 'viewed-home-')); homes.push(home);
-  const app = await electron.launch({ args: ['.', '--lang=en-US', `--user-data-dir=${userData}`], cwd: join(__dirname, '..'),
+  // --use-mock-keychain: 설정 저장(safeStorage)이 진짜 키체인을 안 쓰게 — HOME 을 비우면 macOS 가 "키체인을 찾을 수 없음" 창을 띄운다
+  const app = await electron.launch({ args: ['.', '--lang=en-US', '--use-mock-keychain', `--user-data-dir=${userData}`], cwd: join(__dirname, '..'),
     // 이 기기의 전역 git 신원(~/.gitconfig)이 테스트 레포 작성자('t')를 '남'으로 만들지 않게 — 신원이 없으면 전부 내 것이다
     env: { ...process.env, HOME: home, XDG_CONFIG_HOME: '' } });
   await pickNext(app, repo);

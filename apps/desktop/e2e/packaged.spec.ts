@@ -15,7 +15,7 @@ test('the packaged app opens its bundled web build and reviews a local branch', 
   git('checkout', '-q', '-b', 'feat'); writeFileSync(join(repo, 'a.ts'), 'a2\n'); git('commit', '-q', '-am', 'f');
   // 이 기기의 전역 git 신원이 테스트 레포 작성자를 '남'으로 만들지 않게 HOME 을 비운다(local.spec.ts 와 같다)
   const home = mkdtempSync(join(tmpdir(), 'viewed-home-'));
-  const app = await electron.launch({ executablePath: exe, args: ['--lang=en-US', `--user-data-dir=${mkdtempSync(join(tmpdir(), 'viewed-'))}`],
+  const app = await electron.launch({ executablePath: exe, args: ['--lang=en-US', '--use-mock-keychain', `--user-data-dir=${mkdtempSync(join(tmpdir(), 'viewed-'))}`],
     env: { ...process.env, HOME: home, XDG_CONFIG_HOME: '' } });
   expect(await app.evaluate(({ app }) => app.isPackaged)).toBe(true);
   await app.evaluate(({ dialog }, p) => { dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [p] })) as never; }, repo);

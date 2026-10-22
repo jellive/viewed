@@ -20,7 +20,7 @@ test('the packaged app asks the real claude about a diff line, with a Finder-lik
   // Finder 가 앱을 띄울 때와 같게 — 최소 PATH, CLAUDE_CONFIG_DIR 없음
   const env: Record<string, string> = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' };
   for (const k of ['HOME', 'USER', 'LANG', 'TMPDIR']) if (process.env[k]) env[k] = process.env[k] as string;
-  const app = await electron.launch({ executablePath: exe, args: ['--lang=en-US', `--user-data-dir=${userData}`], env });
+  const app = await electron.launch({ executablePath: exe, args: ['--lang=en-US', '--use-mock-keychain', `--user-data-dir=${userData}`], env });
   try {
     await app.evaluate(({ dialog }, p) => { dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [p] })) as never; }, repo);
     const win = await app.firstWindow();
