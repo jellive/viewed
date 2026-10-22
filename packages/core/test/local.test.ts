@@ -88,10 +88,39 @@ describe('loadLocalSnapshot', () => {
 });
 
 describe('loadLocalRange', () => {
-  it('returns the same files as loadLocalSnapshot for mb..head', async () => {
-    const g = gitFor(dir);
-    const snap = await loadLocalSnapshot(g, 'r', 'refs/heads/feat', 'refs/heads/main');
-    expect(await loadLocalRange(g, snap.mergeBase!, snap.headSha)).toEqual(snap.files);
+  it('parses an explicit range: base commit -> an intermediate commit, and intermediate -> tip', async () => {
+    const d = mkdtempSync(join(tmpdir(), 'viewed-range-'));
+    const gg = (...a: string[]) => execFileSync('git', ['-C', d, '-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { encoding: 'utf8' });
+    gg('init', '-q', '-b', 'main');
+    writeFileSync(join(d, 'a.ts'), '1\n2\n3\n');
+    writeFileSync(join(d, 'old.ts'), 'one\ntwo\nthree\nfour\nfive\nsix\n');
+    gg('add', '-A'); gg('commit', '-q', '-m', 'c0');
+    const c0 = gg('rev-parse', 'HEAD').trim();
+    writeFileSync(join(d, 'a.ts'), '1\nTWO\n3\n');
+    writeFileSync(join(d, 'b.ts'), 'new\n');
+    gg('add', '-A'); gg('commit', '-q', '-m', 'c1');
+    const c1 = gg('rev-parse', 'HEAD').trim();
+    renameSync(join(d, 'old.ts'), join(d, 'new.ts'));
+    writeFileSync(join(d, 'new.ts'), 'one\ntwo\nthree\nfour\nfive\nSIX\n');
+    rmSync(join(d, 'a.ts'));
+    gg('add', '-A'); gg('commit', '-q', '-m', 'c2');
+    const c2 = gg('rev-parse', 'HEAD').trim();
+    const g = gitFor(d);
+
+    const r1 = await loadLocalRange(g, c0, c1);
+    expect(r1.map((f) => [f.path, f.status, f.previousPath])).toEqual([['a.ts', 'modified', undefined], ['b.ts', 'added', undefined]]);
+    expect(r1[0].patch).toBe('@@ -1,3 +1,3 @@\n 1\n-2\n+TWO\n 3');
+    expect(r1[0].blobSha).toBe(gg('rev-parse', `${c1}:a.ts`).trim());
+    expect(r1[1].patch).toBe('@@ -0,0 +1 @@\n+new');
+    expect(r1[1].blobSha).toBe(gg('rev-parse', `${c1}:b.ts`).trim());
+
+    const r2 = await loadLocalRange(g, c1, c2);
+    expect(r2.map((f) => [f.path, f.status, f.previousPath])).toEqual([['a.ts', 'removed', undefined], ['new.ts', 'renamed', 'old.ts']]);
+    expect(r2[0].blobSha).toBeNull();
+    expect(r2[0].patch).toBe('@@ -1,3 +0,0 @@\n-1\n-TWO\n-3');
+    expect(r2[1].patch).toBe('@@ -3,4 +3,4 @@ two\n three\n four\n five\n-six\n+SIX');
+    expect(r2[1].blobSha).toBe(gg('rev-parse', `${c2}:new.ts`).trim());
+    rmSync(d, { recursive: true, force: true });
   });
 });
 

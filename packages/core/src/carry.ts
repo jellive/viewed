@@ -12,7 +12,7 @@ export function carryBases(review: Review, n: string): string[] {
 }
 
 // 대상을 옛 대상 P 로 바꿔 연 리뷰에서 확인함으로 칠 item. P 가 N 의 후손인지는 호출자가 이미 확인했다.
-// (a) P-diff 에 경로(path·previousPath)가 없다 = 옛 대상과 같다  (b) P 기준으로 확인했고 P-diff 의 지문이 기록과 같다
+// (a) P-diff 쪽 path·previousPath 어디에도 이 파일의 path·previousPath 가 없다 = 옛 대상과 같다  (b) P 기준으로 확인했고 P-diff 의 지문이 기록과 같다
 export async function targetCarry(review: Review, n: string, prev: { base: string; files: ChangedFile[] }[]): Promise<ReviewItem[]> {
   const cands = review.items.filter((i) => i.state !== 'viewed' && !i.others && i.record?.viewed !== false && i.record?.base !== n);
   const sets = prev.map((p) => {
@@ -27,7 +27,7 @@ export async function targetCarry(review: Review, n: string, prev: { base: strin
   for (const item of cands) {
     let ok = false;
     for (const s of sets) {
-      if (!s.touched.has(item.file.path)) { ok = true; break; }
+      if (!s.touched.has(item.file.path) && !(item.file.previousPath !== undefined && s.touched.has(item.file.previousPath))) { ok = true; break; }
       const r = item.record, pf = s.byPath.get(item.file.path);
       if (r?.viewed && r.base === s.base && pf && await fingerprint(pf) === r.fp) { ok = true; break; }
     }

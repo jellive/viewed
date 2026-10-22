@@ -27,12 +27,12 @@ const paths = (items: { file: ChangedFile }[]) => items.map((i) => i.file.path).
 
 describe('carryBases', () => {
   it('picks viewed records whose base differs, most first, at most 3', async () => {
-    const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'].map((p) => file(p));
+    const files = ['g', 'a', 'b', 'c', 'd', 'e', 'f', 'h', 'i'].map((p) => file(p));   // 목록 순서 = 집계 삽입 순서: P4(g)가 P1(a)보다 먼저
     const review = await reviewWith(files, [
-      { path: 'a', base: P1 }, { path: 'b', base: P2 }, { path: 'c', base: P2 }, { path: 'd', base: P3 }, { path: 'e', base: P3 },
-      { path: 'f', base: P3 }, { path: 'g', base: P4 }, { path: 'h', base: N }, { path: 'i', base: P1, viewed: false },
+      { path: 'g', base: P4 }, { path: 'a', base: P1 }, { path: 'b', base: P2 }, { path: 'c', base: P2 }, { path: 'd', base: P3 }, { path: 'e', base: P3 },
+      { path: 'f', base: P3 }, { path: 'h', base: N }, { path: 'i', base: P1, viewed: false },
     ]);
-    // P3:3, P2:2, then P1 and P4 tie at... P1 has 1 viewed (i is not viewed), P4 has 1 -> string ascending
+    // P3:3, P2:2, then P4 and P1 tie at 1 (i is not viewed). P4's file comes first in the list, so only the tie-break puts P1 first
     expect(carryBases(review, N)).toEqual([P3, P2, P1]);
   });
   it('ignores records without base', async () => {
@@ -51,6 +51,12 @@ describe('targetCarry', () => {
     const review = await reviewWith([file('old.ts'), file('z.ts')], [{ path: 'old.ts', base: P1 }]);
     const pd = [file('new.ts', 'x', { status: 'renamed', previousPath: 'old.ts' })];
     expect(paths(await targetCarry(review, N, [{ base: P1, files: pd }]))).toEqual(['z.ts']);   // old.ts 는 빠지고 P-diff 에 없는 z.ts 만
+  });
+  it('(a) a renamed N-side item is not carried when the P-diff touches only its previousPath', async () => {
+    const renamed = file('new.ts', 'x', { status: 'renamed', previousPath: 'old.ts' });
+    const review = await reviewWith([renamed, file('z.ts')], [{ path: 'new.ts', base: P1 }]);
+    const out = await targetCarry(review, N, [{ base: P1, files: [file('old.ts', 'changed')] }]);
+    expect(paths(out)).toEqual(['z.ts']);
   });
   it('(a) also carries files nobody recorded, when absent from the P-diff', async () => {
     const review = await reviewWith([file('a'), file('b')], [{ path: 'b', base: P1 }]);
