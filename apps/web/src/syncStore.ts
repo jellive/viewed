@@ -11,6 +11,8 @@ export interface SyncStore {
   absorb(remoteOwn: DeviceState): void;
   /** 체크/해제를 기록한다. 미저장 기록은 동기로 남기고 1.5초 뒤 저장을 예약한다 */
   set(key: string, rec: ViewRecord): void;
+  /** set 을 여러 건 한 번에 — 복사·저장·알림이 각각 한 번이다 */
+  setMany(entries: readonly (readonly [string, ViewRecord])[]): void;
   /** 지금 보낸다. 저장 큐가 빌 때까지 기다린다 */
   flush(): Promise<void>;
 }
@@ -54,8 +56,10 @@ function create(gh0: GitHub, gistId: string, deviceId: string): SyncStore & { gh
       emit();
       if (version !== savedVersion) void store.flush();     // 열기 전부터 남아 있던 미저장 기록
     },
-    set(key, rec) {
-      own = { ...own, [key]: rec };
+    set(key, rec) { store.setMany([[key, rec]]); },
+    setMany(entries) {
+      if (!entries.length) return;
+      own = { ...own, ...Object.fromEntries(entries) };
       version += 1;
       try { localStorage.setItem(pendingKey(gistId, deviceId), JSON.stringify(own)); } catch { failed = true; }
       emit();
@@ -102,8 +106,10 @@ export function getDeviceStore(deviceId: string): SyncStore {
     status: () => st,
     subscribe: (fn) => { subs.add(fn); return () => { subs.delete(fn); }; },
     absorb: () => {},
-    set: (k, rec) => {
-      own = { ...own, [k]: rec };
+    set: (k, rec) => store.setMany([[k, rec]]),
+    setMany: (entries) => {
+      if (!entries.length) return;
+      own = { ...own, ...Object.fromEntries(entries) };
       try { localStorage.setItem(key, JSON.stringify(own)); st = 'idle'; } catch { st = 'error'; }
       subs.forEach((f) => f());
     },
