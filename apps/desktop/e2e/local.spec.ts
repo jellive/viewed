@@ -520,10 +520,10 @@ test('a review opened against an older target keeps what was checked against the
   const as = (who: string, ...a: string[]) => git(dir, '-c', `user.name=${who}`, '-c', `user.email=${who}@example.test`, ...a);
   const put = (f: string, c: string) => writeFileSync(join(dir, f), c);
   git(dir, 'init', '-q', '-b', 'main');
-  put('a.ts', 'a\n'); put('y.ts', 'y\n'); git(dir, 'add', '-A'); as('alice', 'commit', '-q', '-m', 'base');
+  put('a.ts', 'a\n'); git(dir, 'add', '-A'); as('alice', 'commit', '-q', '-m', 'base');
   git(dir, 'checkout', '-q', '-b', 'integ');
   put('w.ts', 'w\n'); git(dir, 'add', '-A'); as('alice', 'commit', '-q', '-m', 'integ w');
-  put('y.ts', 'y-integ\n'); git(dir, 'add', '-A'); as('bob', 'commit', '-q', '-m', 'integ y');
+  put('y.ts', 'y-integ\n'); git(dir, 'add', '-A'); as('bob', 'commit', '-q', '-m', 'integ y (new file)');   // vs integ: modified by alice, vs main: added
   git(dir, 'checkout', '-q', '-b', 'feat');
   put('y.ts', 'y-feat\n'); put('z.ts', 'z\n'); git(dir, 'add', '-A'); as('alice', 'commit', '-q', '-m', 'feat');
 
@@ -546,5 +546,12 @@ test('a review opened against an older target keeps what was checked against the
   await win.getByTestId('open-btn').click();
   await expect(win.getByTestId('file-row').filter({ hasText: 'z.ts' })).toHaveAttribute('data-state', 'changed-since-viewed');
   for (const f of ['w.ts', 'y.ts']) await expect(win.getByTestId('file-row').filter({ hasText: f })).toHaveAttribute('data-state', 'viewed');
+
+  // 왕복: 앞선 대상(integ)으로 다시 열면 거기서 확인했던 y.ts 는 그대로 확인함이다
+  await win.getByTestId('local-base-select').selectOption('refs/heads/integ');
+  await win.getByTestId('open-btn').click();
+  await expect(win.getByTestId('file-row')).toHaveCount(2);   // y, z
+  await expect(win.getByTestId('file-row').filter({ hasText: 'y.ts' })).toHaveAttribute('data-state', 'viewed');
+  await expect(win.getByTestId('file-row').filter({ hasText: 'z.ts' })).toHaveAttribute('data-state', 'changed-since-viewed');
   await app.close();
 });

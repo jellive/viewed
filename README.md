@@ -7,7 +7,7 @@ Two sources:
 - **GitHub** (desktop and PWA): a pushed branch, read through the GitHub API with a read-only token.
 - **Local folder** (desktop only): a local clone, read with `git` on your Mac. Unpushed commits show up, and no GitHub token is needed. Use it for repositories you can't get a token for. **Recent** reopens one of the last ten local reviews (folder, branch, base) in one click. On a local review you can also ask about a diff line (needs Claude Code 2.1.248 or later; it reads Claude session logs read-only, and the question goes to whichever account is logged in to Claude Code at that moment).
   In a local review, files touched only by other people's commits (judged by your `git config user.name`/`user.email`, with `.mailmap` applied) are marked viewed automatically and collapsed, and lines other people added get a different background. If you commit under other names or emails too, list them (one per line) in the settings field "Names that are also you" — a file any of them touched is never treated as someone else's.
-  If you switch the PR target of a local review to a branch that is behind (for example from an integration branch to `main`), what you already checked carries over.
+  If you switch the PR target of a local review to a branch that is behind (for example from an integration branch to `main`), what you already checked carries over. Files that are identical to the previous (newer) target are counted as viewed even if you never checked them. Going back to the previous target keeps everything you had checked there.
 
 Status: in development
 
