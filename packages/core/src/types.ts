@@ -26,3 +26,5 @@ export interface ReviewItem {
   others?: string[];   // 남의 커밋만 닿은 파일이라 확인한 것으로 친다 — 남 작성자 이름
 }
 export interface Review { items: ReviewItem[]; viewedCount: number; total: number; incomplete: boolean; complete: boolean }
+// 기록의 옛 merge-base → to(지금 merge-base) 사이 트리에서 바뀐 경로. null = 못 쟀다(git 실패·시간 초과)
+export interface BaseMoves { to: string; from: ReadonlyMap<string, ReadonlySet<string> | null> }

@@ -34,7 +34,7 @@ Check marks are kept either **on this device only** (no token, nothing leaves th
 - The desktop E2E runs locally only.
 - Local folder mode compares against your last `git fetch`; it never fetches. Submodules are listed without a diff.
 - Check marks from the two sources are kept apart, so one repository opened both ways is reviewed twice.
-- After a rebase or merge, changes since you viewed are shown by changed block (whole block), not line by line. Files the branch adds are still shown line by line. Records made before this version keep the old behavior until you check the file again.
+- After a rebase or merge, changes since you viewed are shown by changed block (whole block), not line by line. Files the branch adds are still shown line by line, and so are files the rebase or merge did not touch in a local review. Records made before this version keep the old behavior until you check the file again.
 
 ## Tests
 

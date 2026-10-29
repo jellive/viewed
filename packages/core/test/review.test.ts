@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildReview, markRecord } from '../src/review';
+import { buildReview, markRecord, movedBases } from '../src/review';
 import { recordKey } from '../src/keys';
 import { loadSnapshot } from '../src/snapshot';
 import { GitHub, type FetchLike } from '../src/github';
@@ -173,6 +173,61 @@ describe('buildReview — block judgment after a rebase or merge (spec §5)', ()
     const it = (await buildReview(added(ctx(['@@ -0,0 +1,2 @@', '+a', '+c']), 'mb2'), st, S)).items[0];
     expect(it.state).toBe('changed-since-viewed');
     expect(it.newBlocks).toBeUndefined();
+  });
+
+  // 옛 merge-base → 지금 merge-base 사이 바뀐 경로. 이 파일(a.ts)이 없으면 base 쪽 내용이 같으니 블록 판정 없이 줄 단위로 보인다
+  const moves = (paths: string[] | null, to = 'mb2', from = 'mb1') => ({ to, from: new Map([[from, paths && new Set(paths)]]) });
+
+  it('base moved without touching this file: changed-since-viewed with no block judgment', async () => {
+    const st = await viewedAt(snapAt(p1, 'mb1'));
+    const it = (await buildReview(snapAt(p3, 'mb2'), st, S, undefined, moves(['other.ts']))).items[0];
+    expect(it.state).toBe('changed-since-viewed');
+    expect(it.newBlocks).toBeUndefined();
+  });
+
+  it('base moved without touching this file and one of my blocks is gone: changed-since-viewed, not carried', async () => {
+    // base 쪽이 그대로면 블록이 사라진 것도 내 변경이다 — base 가 그대로일 때와 같다
+    const st = await viewedAt(snapAt(two, 'mb1'));
+    const it = (await buildReview(snapAt(one, 'mb2'), st, S, undefined, moves([]))).items[0];
+    expect(it.state).toBe('changed-since-viewed');
+    expect(it.carried).toBeUndefined();
+  });
+
+  it('keeps block judgment when the base touched the file, its previous path, another target, or is unknown', async () => {
+    const st = await viewedAt(snapAt(p1, 'mb1'));
+    const judged = async (s: Snapshot, m: Parameters<typeof buildReview>[4]) => (await buildReview(s, st, S, undefined, m)).items[0].newBlocks;
+    expect(await judged(snapAt(p3, 'mb2'), moves(['a.ts']))).toEqual([1]);
+    expect(await judged(snapAt(p3, 'mb2'), moves(['other.ts'], 'mb3'))).toEqual([1]);   // 다른 merge-base 를 두고 잰 근거
+    expect(await judged(snapAt(p3, 'mb2'), moves(null))).toEqual([1]);                  // git 실패·시간 초과 = 모름
+    expect(await judged(snapAt(p3, 'mb2'), moves(['other.ts'], 'mb2', 'mb0'))).toEqual([1]);   // 이 기록의 base 근거가 없다
+    const ren = { status: 'renamed' as const, previousPath: 'old.ts' };
+    const stRen = await viewedAt(snapAt(p1, 'mb1', ren));
+    const it = (await buildReview(snapAt(p3, 'mb2', ren), stRen, S, undefined, moves(['old.ts']))).items[0];
+    expect(it.newBlocks).toEqual([1]);
+  });
+
+  it('movedBases lists the old merge bases of files that went through block judgment, once each', async () => {
+    const st = await viewedAt(snapAt(p1, 'mb1'));
+    const k = Object.keys(st)[0];
+    const r = await buildReview(snap([
+      { path: 'a.ts', status: 'modified', blobSha: 'a2', patch: p3, mode: '100644' },
+      { path: 'n.ts', status: 'added', blobSha: 'n2', patch: '@@ -0,0 +1 @@\n+n2', mode: '100644' },
+    ]), { [k]: st[k] }, S);
+    expect(movedBases(r)).toEqual([]);   // mergeBase 없는 스냅숏 — 블록 판정이 없다
+    const at1 = async (path: string, mergeBase: string, status: 'modified' | 'added' = 'modified', patch = p1) =>
+      viewedAt({ ...snap([{ path, status, blobSha: `${path}1`, patch, mode: '100644' }]), mergeBase });
+    const st2 = { ...st, ...(await at1('n.ts', 'mb0', 'added', '@@ -0,0 +1 @@\n+n1')), ...(await at1('b.ts', 'mb3')), ...(await at1('c.ts', 'mb1')) };
+    const r2 = await buildReview({ ...snap([
+      { path: 'a.ts', status: 'modified', blobSha: 'a2', patch: p3, mode: '100644' },
+      { path: 'n.ts', status: 'added', blobSha: 'n2', patch: '@@ -0,0 +1 @@\n+n2', mode: '100644' },
+      { path: 'b.ts', status: 'modified', blobSha: 'b2', patch: p3, mode: '100644' },
+      { path: 'c.ts', status: 'modified', blobSha: 'c2', patch: p3, mode: '100644' },
+    ]), mergeBase: 'mb2' }, st2, S);
+    // 새 파일(mb0)은 블록 판정을 안 탄다. base 가 여럿이면 전부 — 상한이 있으면 남은 base 의 파일이 계속 블록으로 남는다
+    expect(movedBases(r2)).toEqual(['mb1', 'mb3']);
+    const r3 = await buildReview(snapAt(p1rebased, 'mb2'), st, S);
+    expect(r3.items[0].carried).toBe('same');
+    expect(movedBases(r3)).toEqual(['mb1']);   // 블록이 맞아 확인함이 된 파일도 블록 판정을 탔다
   });
 
   it('overlap: same + line but the base - line changed is a new block', async () => {

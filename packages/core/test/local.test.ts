@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, chmodSync, renameSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadLocalSnapshot, loadLocalRange, repoIdFromRemote, type LocalGit } from '../src/local';
+import { changedPaths, loadLocalSnapshot, loadLocalRange, repoIdFromRemote, type LocalGit } from '../src/local';
 import { fingerprint } from '../src/fingerprint';
 
 // 데스크톱 main 과 같은 플래그로 진짜 git 을 부른다
@@ -121,6 +121,20 @@ describe('loadLocalRange', () => {
     expect(r2[1].patch).toBe('@@ -3,4 +3,4 @@ two\n three\n four\n five\n-six\n+SIX');
     expect(r2[1].blobSha).toBe(gg('rev-parse', `${c2}:new.ts`).trim());
     rmSync(d, { recursive: true, force: true });
+  });
+});
+
+describe('changedPaths', () => {
+  it('lists every path that differs between two trees, both sides of a rename included', async () => {
+    const base = git('rev-parse', 'main~1').trim();
+    expect([...await changedPaths(gitFor(dir), base, git('rev-parse', 'feat').trim())].sort())
+      .toEqual(['*.ts', 'gone.ts', 'img.bin', 'keep.ts', 'new.ts', 'old.ts', 'run.sh', 'with space.ts']);
+    expect([...await changedPaths(gitFor(dir), base, git('rev-parse', 'main').trim())]).toEqual(['base-only.ts']);
+    expect([...await changedPaths(gitFor(dir), base, base)]).toEqual([]);
+  });
+
+  it('rejects when a commit is missing instead of reporting no changes', async () => {
+    await expect(changedPaths(gitFor(dir), 'f'.repeat(40), git('rev-parse', 'main').trim())).rejects.toThrow();
   });
 });
 

@@ -391,6 +391,39 @@ test('S4: merging base then deleting lines of a new file shows only the deleted 
   await app.close();
 });
 
+// 머지가 다른 파일만 건드렸으면 이 파일의 base 쪽은 그대로다 — 확인 후 변경을 줄 단위로, 바뀐 줄의 옛 내용까지(2026-10-29 실사용)
+test('S5: merging a base that touched only other files shows my changed line with its old version', async () => {
+  const repo = lineRepo([{ 8: 'line 8 FEAT' }]);
+  const { app, win, row } = await openAndCheck(repo);
+  git(repo, 'checkout', '-q', 'main');
+  writeFileSync(join(repo, 'g.ts'), 'g\n'); git(repo, 'add', 'g.ts'); git(repo, 'commit', '-q', '-m', 'main moves elsewhere');
+  git(repo, 'checkout', '-q', 'feat');
+  git(repo, 'merge', '-q', '--no-edit', 'main');
+  writeFileSync(join(repo, 'f.ts'), lines({ 8: 'line 8 FEAT2' })); git(repo, 'commit', '-q', '-am', 'again');
+  await win.getByTestId('open-btn').click();
+  await expect(row).toHaveAttribute('data-state', 'changed-since-viewed');
+  await expect(row.getByTestId('since-diff').locator('.ln.del, .ln.add')).toHaveText(['-line 8 FEAT', '+line 8 FEAT2']);
+  await expect(row.getByTestId('since-blocks')).toHaveCount(0);
+  await app.close();
+});
+
+// 옛 merge-base 커밋이 지워져 base 이동을 못 재면 블록 판정으로 돌아간다 — 리뷰가 멈추지 않는다
+test('S6: when the old merge base is gone, the review still opens with block judgment', async () => {
+  const repo = lineRepo([{ 8: 'line 8 FEAT' }]);
+  const { app, win, row } = await openAndCheck(repo);
+  const old = git(repo, 'rev-parse', 'main').trim();
+  git(repo, 'checkout', '-q', 'main'); git(repo, 'commit', '-q', '--amend', '-m', 'base rewritten');
+  git(repo, 'rebase', '-q', '--onto', 'main', old, 'feat');
+  git(repo, 'reflog', 'expire', '--expire=now', '--all'); git(repo, 'gc', '-q', '--prune=now');
+  expect(() => git(repo, 'cat-file', '-e', `${old}^{commit}`)).toThrow();   // 정말 지워졌다
+  writeFileSync(join(repo, 'f.ts'), lines({ 8: 'line 8 FEAT2' })); git(repo, 'commit', '-q', '-am', 'again');
+  await win.getByTestId('open-btn').click();
+  await expect(row).toHaveAttribute('data-state', 'changed-since-viewed');
+  await expect(row.getByTestId('since-blocks')).toBeVisible();
+  await expect(row.getByTestId('since-diff')).toContainText('+line 8 FEAT2');
+  await app.close();
+});
+
 // 최근 목록 — 열기에 성공한 조합을 최근 것부터 보이고, 누르면 그 조합을 바로 연다
 const storedHistory = (win: Page) => win.evaluate(() => JSON.parse(localStorage.getItem('viewed.recent') ?? '{}').history);
 const at = (repo: string, branch: string, base: string) => ({ repo, branch: `refs/heads/${branch}`, base: `refs/heads/${base}` });

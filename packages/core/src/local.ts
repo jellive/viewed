@@ -77,6 +77,16 @@ export async function loadLocalRange(git: LocalGit, from: string, head: string):
   });
 }
 
+// a → b 트리에서 바뀐 경로. 이름 변경은 원래·새 경로 둘 다. git 이 실패하면 던진다 — 빈 결과(바뀐 것 없음)와 섞지 않게
+export async function changedPaths(git: LocalGit, a: string, b: string): Promise<Set<string>> {
+  const out = new Set<string>();
+  for (const e of parseRawZ(await git.rawDiff(a, b))) {
+    out.add(e.path);
+    if (e.previousPath !== undefined) out.add(e.previousPath);
+  }
+  return out;
+}
+
 export async function loadLocalSnapshot(git: LocalGit, repoId: string, branchRef: string, baseRef: string): Promise<Snapshot> {
   // 처음에 해시로 고정하고 이후 명령은 해시만 쓴다 — 도중에 브랜치가 움직여도 섞이지 않는다
   const head = await git.resolve(branchRef);
