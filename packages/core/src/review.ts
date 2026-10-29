@@ -36,7 +36,8 @@ export async function buildReview(snap: Snapshot, state: DeviceState, secret: st
     // 옛 기록·patch 없는 파일·상태/mode 변경은 블록으로 판정하지 않는다(spec §5)
     else if (!record.blocks || !blocks || record.meta !== meta) st = 'changed-since-viewed';
     // base 가 그대로면 지문 변화는 전부 내 변경이다 — 블록으로 거를 소음이 없다(같은 블록을 다른 곳에 옮겨도 숨지 않게)
-    else if (!record.base || !snap.mergeBase || record.base === snap.mergeBase) st = 'changed-since-viewed';
+    // 새 파일도 그렇다 — base 쪽이 늘 빈 파일이라 base 가 움직여도 소음이 없고, diff 전체가 블록 하나라 블록으로 보면 파일 전체가 다시 뜬다
+    else if (!record.base || !snap.mergeBase || record.base === snap.mergeBase || file.status === 'added') st = 'changed-since-viewed';
     else {
       const miss = unmatchedBlocks(record.blocks, blocks);
       if (miss.length === 0) {

@@ -166,6 +166,15 @@ describe('buildReview — block judgment after a rebase or merge (spec §5)', ()
     expect(it.dropped).toBeUndefined();
   });
 
+  it('a new file changed after the base moved: changed-since-viewed with no block judgment', async () => {
+    // 새 파일은 diff 전체가 블록 하나라 블록으로 보면 한 줄만 바뀌어도 파일 전체가 다시 뜬다 — 지운 줄은 아예 안 보인다
+    const added = (patch: string, mergeBase: string) => snapAt(patch, mergeBase, { status: 'added' });
+    const st = await viewedAt(added(ctx(['@@ -0,0 +1,3 @@', '+a', '+b', '+c']), 'mb1'));
+    const it = (await buildReview(added(ctx(['@@ -0,0 +1,2 @@', '+a', '+c']), 'mb2'), st, S)).items[0];
+    expect(it.state).toBe('changed-since-viewed');
+    expect(it.newBlocks).toBeUndefined();
+  });
+
   it('overlap: same + line but the base - line changed is a new block', async () => {
     const st = await viewedAt(snapAt(ctx(['@@ -8 +8 @@', '-line 8', '+mine']), 'mb1'));
     const it = (await buildReview(snapAt(ctx(['@@ -8 +8 @@', '-line 8 DEV', '+mine']), 'mb2'), st, S)).items[0];

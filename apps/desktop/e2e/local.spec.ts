@@ -370,6 +370,27 @@ test('S3: merging base then changing a far line shows only the hunk with my new 
   await app.close();
 });
 
+// 새 파일은 diff 전체가 블록 하나다 — 머지 뒤 몇 줄만 지워도 파일 전체가 다시 뜨고 지운 줄은 안 보이던 것(2026-10-29 실사용)
+test('S4: merging base then deleting lines of a new file shows only the deleted lines', async () => {
+  const repo = lineRepo([{ 8: 'line 8 FEAT' }]);
+  writeFileSync(join(repo, 'n.ts'), lines({}, 14)); git(repo, 'add', 'n.ts'); git(repo, 'commit', '-q', '-m', 'new file');
+  const { app, win } = await launch(repo);
+  await win.getByTestId('local-add').click();
+  await openLocal(win);
+  const row = win.getByTestId('file-row').filter({ hasText: 'n.ts' });
+  await row.getByTestId('file-check').check();
+  await expect(win.getByTestId('progress')).toHaveText('1 / 2');
+  commitOnMain(repo, { 2: 'line 2 DEV' });
+  git(repo, 'merge', '-q', '--no-edit', 'main');
+  writeFileSync(join(repo, 'n.ts'), lines({}, 8)); git(repo, 'commit', '-q', '-am', 'drop 9-14');
+  await win.getByTestId('open-btn').click();
+  await expect(row).toHaveAttribute('data-state', 'changed-since-viewed');
+  await expect(row.getByTestId('since-diff').locator('.ln.del')).toHaveText(['-line 9', '-line 10', '-line 11', '-line 12', '-line 13', '-line 14']);
+  await expect(row.getByTestId('since-diff').locator('.ln.add')).toHaveCount(0);
+  await expect(row.getByTestId('since-blocks')).toHaveCount(0);
+  await app.close();
+});
+
 // 최근 목록 — 열기에 성공한 조합을 최근 것부터 보이고, 누르면 그 조합을 바로 연다
 const storedHistory = (win: Page) => win.evaluate(() => JSON.parse(localStorage.getItem('viewed.recent') ?? '{}').history);
 const at = (repo: string, branch: string, base: string) => ({ repo, branch: `refs/heads/${branch}`, base: `refs/heads/${base}` });

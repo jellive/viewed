@@ -200,6 +200,23 @@ test('the block notice shows only on the since-viewed tab', async ({ page }) => 
   await expect(row.getByTestId('since-blocks')).toBeVisible();
 });
 
+// 새 파일은 base 쪽이 늘 빈 파일이라 base 가 움직여도 blob 비교가 정확하다 — 블록으로 보면 파일 전체가 다시 뜨고 지운 줄은 안 보인다
+test('after a merge, a new file that lost a line shows only that line from blobs', async ({ page }) => {
+  await seedSettings(page);
+  await mockGitHub(page, {
+    head: 'h2', mergeBase: MB2,
+    files: [{ filename: 'n.ts', status: 'added', sha: 'n2', patch: '@@ -0,0 +1,2 @@\n+keep 1\n+keep 2' }],
+    blobs: { n1: 'keep 1\ngone\nkeep 2\n', n2: 'keep 1\nkeep 2\n' },
+    gistFiles: await viewedGist([{ filename: 'n.ts', status: 'added', sha: 'n1', patch: '@@ -0,0 +1,3 @@\n+keep 1\n+gone\n+keep 2' }], undefined, { base: MB1 }),
+  });
+  await open(page);
+  const row = page.getByTestId('file-row');
+  await expect(row).toHaveAttribute('data-state', 'changed-since-viewed');
+  await expect(row.getByTestId('since-diff').locator('.ln.del')).toHaveText(['-gone']);
+  await expect(row.getByTestId('since-diff').locator('.ln.add')).toHaveCount(0);
+  await expect(row.getByTestId('since-blocks')).toHaveCount(0);
+});
+
 test('base unchanged keeps the line-level since diff from blobs', async ({ page }) => {
   await seedSettings(page);
   await mockGitHub(page, {
