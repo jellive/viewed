@@ -24,6 +24,7 @@ export interface ReviewItem {
   state: FileState; record?: ViewRecord; newBlocks?: number[]; carried?: 'same' | 'shrunk'; dropped?: number;
   carryPrev?: { base: string; fp: string };   // targetCarry 가 (b) 로 고른 item 에만: 이어받기 전 기록의 base·지문
   others?: string[];   // 남의 커밋만 닿은 파일이라 확인한 것으로 친다 — 남 작성자 이름
+  elsewhere?: true;    // 기록이 없고 다른 브랜치에서 확인한 블록과 일부 겹친다 — newBlocks 만 보인다. 저장하지 않는다
 }
 export interface Review { items: ReviewItem[]; viewedCount: number; total: number; incomplete: boolean; complete: boolean }
 // 기록의 옛 merge-base → to(지금 merge-base) 사이 트리에서 바뀐 경로. null = 못 쟀다(git 실패·시간 초과)

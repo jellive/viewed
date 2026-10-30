@@ -1,5 +1,7 @@
 import { fingerprint } from './fingerprint';
-import type { ChangedFile, Review, ReviewItem } from './types';
+import { recordKey } from './keys';
+import { unmatchedBlocks } from './blocks';
+import type { ChangedFile, DeviceState, Review, ReviewItem, Snapshot, ViewRecord } from './types';
 
 const MAX_CHECKED = 10, MAX_USED = 3;
 
@@ -46,4 +48,29 @@ export async function targetCarry(review: Review, n: string, prev: { base: strin
     if (ok) out.push(prevOf ? { ...item, carryPrev: prevOf } : item);
   }
   return out;
+}
+
+// 기록 키에 브랜치가 들어 브랜치 이름이 바뀌면 기록을 하나도 못 찾는다. 이 브랜치에 기록이 없고 남 표시도 없는 파일마다
+// 다른 브랜치(branches — 같은 레포의 ref 이름)에서 같은 경로를 확인한 기록을 찾는다.
+// exact = diff 가 그때 본 것과 똑같다 / near = 아니면 변경 블록이 하나라도 겹치는 기록 중 가장 최근 것의 블록(경로별).
+// 어느 쪽이든 가장 최근 기록이 확인일 때만 — 다른 브랜치에서 나중에 푼 것이 그 전의 확인보다 이긴다.
+// patch 없는 파일(바이너리·서브모듈)의 지문은 결과 blob 뿐이라 base 가 같아야 같은 변경이다
+export async function branchMatches(review: Review, snap: Snapshot, state: DeviceState, secret: string, branches: readonly string[]):
+  Promise<{ exact: ReviewItem[]; near: Map<string, string[]> }> {
+  const names = [...new Set(branches)].filter((b) => b !== snap.branch);
+  const exact: ReviewItem[] = [], near = new Map<string, string[]>();
+  for (const item of review.items) {
+    if (item.record || item.others) continue;
+    let same: ViewRecord | undefined, best: ViewRecord | undefined;
+    const newer = (r: ViewRecord, than?: ViewRecord) => !than || Date.parse(r.at) > Date.parse(than.at);
+    for (const b of names) {
+      const r = state[await recordKey(secret, snap.owner, snap.repo, b, item.file.path)];
+      if (!r) continue;
+      if (r.fp === item.fp && (item.file.patch !== undefined || r.base === snap.mergeBase)) { if (newer(r, same)) same = r; }
+      else if (r.blocks && item.blocks && newer(r, best) && unmatchedBlocks(r.blocks, item.blocks).length < item.blocks.length) best = r;
+    }
+    if (same) { if (same.viewed) exact.push(item); }
+    else if (best?.viewed && best.blocks) near.set(item.file.path, best.blocks);
+  }
+  return { exact, near };
 }

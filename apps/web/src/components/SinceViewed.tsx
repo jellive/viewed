@@ -12,6 +12,11 @@ type S = { kind: 'loading' } | { kind: 'ok'; patch: string } | { kind: 'unavaila
 function blocksView(item: ReviewItem): { patch: string; seen: ReadonlySet<number> } | null {
   const same = !!item.record?.base && !!item.base && item.record.base === item.base;
   if (same || !item.newBlocks || item.file.patch === undefined) return null;
+  // 다른 브랜치에서 블록을 전부 봤지만 diff 가 다르다(elsewhere) — 덩어리를 빼지 않고 변경 줄을 전부 흐리게
+  if (!item.newBlocks.length) {
+    const lines = item.file.patch.split('\n');
+    return { patch: item.file.patch, seen: new Set(lines.flatMap((l, i) => (l[0] === '-' || l[0] === '+' || l[0] === '\\' ? [i] : []))) };
+  }
   const m = markedHunks(item.file.patch, item.newBlocks);
   return { patch: m.patch, seen: new Set(m.seen) };
 }
@@ -49,7 +54,7 @@ export function SinceViewed({ readBlob, item, ask, others }: { readBlob: (sha: s
   if (shown.kind === 'error') return <div><p data-testid="since-error" role="alert" className="flash err">{shown.msg}</p><DiffView patch={item.file.patch} ask={ask?.('full')} others={others} /></div>;
   return (
     <div>
-      {byBlocks !== null && tab === 'since' && <p data-testid="since-blocks" className="note">{t.sinceBlocks}</p>}
+      {byBlocks !== null && tab === 'since' && <p data-testid="since-blocks" className="note">{item.elsewhere ? (item.newBlocks?.length ? t.sinceElsewhere : t.sinceElsewhereAll) : t.sinceBlocks}</p>}
       <div className="tabs">
         <button data-testid="since-tab" aria-pressed={tab === 'since'} onClick={() => setTab('since')}>{t.sinceTab}</button>
         <button data-testid="full-tab" aria-pressed={tab === 'full'} onClick={() => setTab('full')}>{t.fullTab}</button>

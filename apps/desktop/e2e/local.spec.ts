@@ -424,6 +424,31 @@ test('S6: when the old merge base is gone, the review still opens with block jud
   await app.close();
 });
 
+// 같은 일을 새 이름 브랜치로 옮겨 열면 기록 키가 달라 전부 안 봄이 되던 것(2026-10-30 실사용) — 같은 diff 는 확인함, 덩어리를 더한 파일은 더한 덩어리만
+test('S7: the same work opened under a new branch name keeps the identical file viewed and shows only the hunk added there', async () => {
+  const repo = lineRepo([{ 8: 'line 8 FEAT' }], 30);
+  writeFileSync(join(repo, 'n.ts'), 'n\n'); git(repo, 'add', 'n.ts'); git(repo, 'commit', '-q', '-m', 'new file');
+  git(repo, 'checkout', '-q', '-b', 'feat2');
+  writeFileSync(join(repo, 'f.ts'), lines({ 8: 'line 8 FEAT', 20: 'line 20 FEAT2' }, 30)); git(repo, 'commit', '-q', '-am', 'more');
+  git(repo, 'checkout', '-q', 'feat');
+  const { app, win } = await launch(repo);
+  await win.getByTestId('local-add').click();
+  await openLocal(win);
+  const f = win.getByTestId('file-row').filter({ hasText: 'f.ts' }), n = win.getByTestId('file-row').filter({ hasText: 'n.ts' });
+  await f.getByTestId('file-check').check();
+  await n.getByTestId('file-check').check();
+  await expect(win.getByTestId('progress')).toHaveText('2 / 2');
+  await win.getByTestId('local-branch-select').selectOption('refs/heads/feat2');
+  await win.getByTestId('open-btn').click();
+  await expect(win.getByTestId('progress')).toHaveText('1 / 2');
+  await expect(n).toHaveAttribute('data-state', 'viewed');
+  await expect(f).toHaveAttribute('data-state', 'changed-since-viewed');
+  await expect(f.getByTestId('file-state')).toHaveText('Seen on another branch');
+  await expect(f.getByTestId('since-diff')).toContainText('+line 20 FEAT2');
+  await expect(f.getByTestId('since-diff')).not.toContainText('line 8 FEAT');
+  await app.close();
+});
+
 // 최근 목록 — 열기에 성공한 조합을 최근 것부터 보이고, 누르면 그 조합을 바로 연다
 const storedHistory = (win: Page) => win.evaluate(() => JSON.parse(localStorage.getItem('viewed.recent') ?? '{}').history);
 const at = (repo: string, branch: string, base: string) => ({ repo, branch: `refs/heads/${branch}`, base: `refs/heads/${base}` });

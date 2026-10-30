@@ -14,10 +14,14 @@ type ReadBlob = (sha: string) => Promise<string | null>;
 // repo: 로컬로 연 리뷰의 폴더 — 줄에 질문하기(+)는 이게 있는 리뷰에만(폼의 소스 버튼이 아니라 연 리뷰를 따른다)
 type Made = { snap: Snapshot; readBlob: ReadBlob; head?: () => Promise<string>; repo?: string;
   // 남의 변경만 닿은 파일(경로 → 작성자 이름)과 '나' 판정 — 로컬 모드만
-  others?: ReadonlyMap<string, string[]>; isMe?: (a: Author) => boolean };
+  others?: ReadonlyMap<string, string[]>; isMe?: (a: Author) => boolean;
+  // 같은 레포의 다른 브랜치 — 기록 키에 브랜치가 들어 브랜치를 옮기면 기록을 못 찾는다. 로컬 모드만
+  branches?: readonly string[] };
 type Make = () => Promise<Made>;
 const LIVE_MS = 3000;
 const AUTHORS_GRACE_MS = 1500;
+// 이 폴더에서 연 브랜치(최근 순) 다음 로컬 브랜치. 파일마다 후보 수만큼 키를 만든다 — 첫 화면 마감 안에 들게 상한을 둔다
+const MAX_BRANCHES = 30;
 // 작성자 판정이 무엇으로든 던지면 맵만 버린다 — 목록 읽기는 실패시키지 않는다
 const safeOthers = (f: () => Map<string, string[]>) => { try { return { others: f() }; } catch { return {}; } };
 // 기기 저장 기록은 기기 밖으로 안 나가 이름을 감출 필요가 없다 — 고정 키라 공유 비밀을 바꿔도 기록이 그대로 찾아진다
@@ -29,7 +33,7 @@ export function App() {
   const [last] = useState(() => readRecent().last);
   const [form, setForm] = useState(() => last?.source === 'github'
     ? { account: last.account, repo: last.repo, branch: last.branch, base: last.base } : { account: '', repo: '', branch: '', base: '' });
-  const [loaded, setLoaded] = useState<{ id: number; snap: Snapshot; merged: DeviceState; store: SyncStore; readBlob: ReadBlob; make: Make; head?: () => Promise<string>; repo?: string; others?: ReadonlyMap<string, string[]>; isMe?: (a: Author) => boolean } | null>(null);
+  const [loaded, setLoaded] = useState<{ id: number; snap: Snapshot; merged: DeviceState; store: SyncStore; readBlob: ReadBlob; make: Make; head?: () => Promise<string>; repo?: string; others?: ReadonlyMap<string, string[]>; isMe?: (a: Author) => boolean; branches?: readonly string[] } | null>(null);
   const [source, setSource] = useState<'github' | 'local'>(() => (desktopGit() && last?.source !== 'github' ? 'local' : 'github'));
   // 마지막 로컬 리뷰를 켤 때 한 번 자동으로 여는 권한. 실행당 1회라 App 이 든다 — 설정·소스 전환으로 LocalOpen 이 다시 마운트돼도 다시 안 준다
   const auto = useRef(last?.source === 'local' ? last : undefined);
@@ -91,12 +95,12 @@ export function App() {
     setError(''); if (!refresh) setLoaded(null);
     const keep = (id: number) => (refresh && loaded ? loaded.id : id);
     try {
-      const { snap, readBlob, head, repo, others, isMe } = await make();
+      const { snap, readBlob, head, repo, others, isMe, branches } = await make();
       if (settings!.storage === 'device') {
         const store = getDeviceStore(settings!.deviceId);
         if (mine !== seq.current) return;
         loading.current = false;
-        setLoaded({ id: keep(mine), snap, merged: store.own(), store, readBlob, make, head, repo, others, isMe });
+        setLoaded({ id: keep(mine), snap, merged: store.own(), store, readBlob, make, head, repo, others, isMe, branches });
         remember?.();
         return;
       }
@@ -108,7 +112,7 @@ export function App() {
       const merged = mergeStates([all.merged, store.own()]);
       if (mine !== seq.current) return;
       loading.current = false;
-      setLoaded({ id: keep(mine), snap, merged, store, readBlob, make, head, repo, others, isMe });
+      setLoaded({ id: keep(mine), snap, merged, store, readBlob, make, head, repo, others, isMe, branches });
       remember?.();
     } catch (e) {
       if (mine !== seq.current) return;
@@ -144,7 +148,11 @@ export function App() {
       )}
       {localForm ? (
         <form data-testid="open-form" className="open-bar" onSubmit={(e) => e.preventDefault()}>
-          <LocalOpen onError={setError} onCancel={() => { seq.current++; loading.current = false; }} recentRev={recentRev} takeAuto={() => { const a = auto.current; auto.current = undefined; return a; }} onOpen={(repo, info, branch, base) => { let firstRun = true; load(async () => {
+          <LocalOpen onError={setError} onCancel={() => { seq.current++; loading.current = false; }} recentRev={recentRev} takeAuto={() => { const a = auto.current; auto.current = undefined; return a; }} onOpen={(repo, info, branch, base) => { let firstRun = true;
+          // 연 때 한 번 정한다 — 다시 읽기마다 새 배열이면 리뷰 효과가 공연히 다시 돈다
+          const branches = [...new Set([...readRecent().history.filter((h) => h.repo === repo).map((h) => h.branch), ...info.refs.filter((r) => r.startsWith('refs/heads/'))])]
+            .filter((b) => b !== branch).slice(0, MAX_BRANCHES);
+          load(async () => {
             const git = localGit(repo);
             // 스냅숏과 작성자 목록을 나란히 읽는다(둘 다 ~1초) — 그 사이 브랜치가 움직였으면 작성자는 버린다
             // 미리 읽기가 실패하면 작성자만 포기한다 — 오류는 스냅숏 읽기가 같은 말로 낸다
@@ -160,7 +168,7 @@ export function App() {
             const isMe = meMatcher([user?.name ?? '', user?.email ?? '', ...(settingsRef.current?.extraMe ?? [])]);
             const fresh = authors && snap.headSha === head && snap.mergeBase === mb;
             return {
-              snap, readBlob: localBlob(repo), head: () => git.resolve(branch), repo, isMe,
+              snap, readBlob: localBlob(repo), head: () => git.resolve(branch), repo, isMe, branches,
               ...(fresh ? safeOthers(() => othersOf(snap.files, authors.files, isMe, authors.renames)) : {}),
             };
           }, false, () => { rememberLocal(repo, branch, base); setRecentRev((n) => n + 1); }); }} />
@@ -180,7 +188,7 @@ export function App() {
       {localForm && <p className="hint">{t.localFetchHint}</p>}
       {error && <p data-testid="error" role="alert" className="flash err">{error}</p>}
       {loaded && (
-        <ReviewView key={loaded.id} snap={loaded.snap} merged={loaded.merged} secret={device ? DEVICE_SECRET : settings.secret} store={loaded.store} readBlob={loaded.readBlob} onRefresh={() => refreshRef.current()} live={!!loaded.head} askRepo={loaded.repo} others={loaded.others} isMe={loaded.isMe} />
+        <ReviewView key={loaded.id} snap={loaded.snap} merged={loaded.merged} secret={device ? DEVICE_SECRET : settings.secret} store={loaded.store} readBlob={loaded.readBlob} onRefresh={() => refreshRef.current()} live={!!loaded.head} askRepo={loaded.repo} others={loaded.others} isMe={loaded.isMe} branches={loaded.branches} />
       )}
     </main>
   );

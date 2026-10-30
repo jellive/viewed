@@ -35,6 +35,7 @@ Check marks are kept either **on this device only** (no token, nothing leaves th
 - Local folder mode compares against your last `git fetch`; it never fetches. Submodules are listed without a diff.
 - Check marks from the two sources are kept apart, so one repository opened both ways is reviewed twice.
 - After a rebase or merge, changes since you viewed are shown by changed block (whole block), not line by line. Files the branch adds are still shown line by line, and so are files the rebase or merge did not touch in a local review. Records made before this version keep the old behavior until you check the file again.
+- Check marks are kept per branch name. In a local review, a branch with no mark for a file looks at the other local branches and the branches you opened recently in that folder (up to 30): a file whose diff is exactly one you viewed there is marked viewed, and a file sharing some changed blocks shows only the blocks you have not seen, without being saved. A file whose blocks were all seen elsewhere but whose diff differs is not marked viewed; it shows the whole diff dimmed, since the same block can sit at another place in the file. A later uncheck on another branch wins over an earlier check, and a file without a text diff matches only on the same merge base. A seen block repeated elsewhere in the file with the same neighboring lines is still treated as seen. Branches deleted and no longer in the recent list, other clones, and GitHub reviews are not searched.
 
 ## Tests
 

@@ -22,8 +22,9 @@ function untouched(moves: BaseMoves | undefined, from: string, to: string, file:
   return !!s && !s.has(file.path) && !(file.previousPath !== undefined && s.has(file.previousPath));
 }
 
+// near: 경로 → 다른 브랜치에서 확인한 기록의 블록 서명(branchMatches). 이 브랜치에 기록이 아예 없는 파일에만 쓴다
 export async function buildReview(snap: Snapshot, state: DeviceState, secret: string,
-  others?: ReadonlyMap<string, string[]>, moves?: BaseMoves): Promise<Review> {
+  others?: ReadonlyMap<string, string[]>, moves?: BaseMoves, near?: ReadonlyMap<string, string[]>): Promise<Review> {
   const items: ReviewItem[] = [];
   for (const file of snap.files) {
     const key = await recordKey(secret, snap.owner, snap.repo, snap.branch, file.path);
@@ -33,9 +34,17 @@ export async function buildReview(snap: Snapshot, state: DeviceState, secret: st
     const record = state[key];
     const names = others?.get(file.path);
     let st: FileState;
-    let newBlocks: number[] | undefined, carried: ReviewItem['carried'], dropped: number | undefined;
+    let newBlocks: number[] | undefined, carried: ReviewItem['carried'], dropped: number | undefined, elsewhere = false;
     if (names) st = 'viewed';   // 남의 표시가 기록보다 이긴다
-    else if (!record || !record.viewed) st = 'unread';
+    else if (!record) {
+      // 다른 브랜치에서 본 블록과 겹치면 안 맞는 블록만 보인다. 전부 맞아도(newBlocks 빈 배열) 확인함으로 치지 않는다 —
+      // 서명에 위치가 없어 같은 변경이 파일의 다른 곳에 있을 수 있다. 그때는 전부 흐리게 보인다
+      const seen = near?.get(file.path);
+      const miss = seen && blocks ? unmatchedBlocks(seen, blocks) : undefined;
+      if (miss && blocks && miss.length < blocks.length) { st = 'changed-since-viewed'; newBlocks = miss; elsewhere = true; }
+      else st = 'unread';
+    }
+    else if (!record.viewed) st = 'unread';
     else if (record.fp === fp) st = 'viewed';
     // 이어받기(b)로 새 대상에 옮겨 쓴 기록: 이전 대상으로 돌아가면 그때 확인한 그대로다
     else if (record.prev && snap.mergeBase === record.prev.base && record.prev.fp === fp) st = 'viewed';
@@ -56,7 +65,8 @@ export async function buildReview(snap: Snapshot, state: DeviceState, secret: st
       else { st = 'changed-since-viewed'; newBlocks = miss; }
     }
     items.push({ file, key, fp, meta, ...(blocks ? { blocks } : {}), ...(snap.mergeBase ? { base: snap.mergeBase } : {}),
-      state: st, record, ...(names ? { others: names } : {}), ...(newBlocks ? { newBlocks } : {}), ...(carried ? { carried } : {}), ...(dropped ? { dropped } : {}) });
+      state: st, record, ...(names ? { others: names } : {}), ...(newBlocks ? { newBlocks } : {}), ...(carried ? { carried } : {}), ...(dropped ? { dropped } : {}),
+      ...(elsewhere ? { elsewhere: true as const } : {}) });
   }
   const viewedCount = items.filter((i) => i.state === 'viewed').length;
   return { items, viewedCount, total: items.length, incomplete: snap.truncated,

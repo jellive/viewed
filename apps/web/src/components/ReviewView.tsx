@@ -13,7 +13,8 @@ import { useOtherLines, type BlameSrc } from '../lineAuthors';
 import type { DiffAsk, View } from '../ask';
 import type { ReviewItem } from '@viewed/core';
 
-export function ReviewView(a: { snap: Snapshot; merged: DeviceState; secret: string; store: SyncStore; readBlob: (sha: string) => Promise<string | null>; onRefresh: () => void; live: boolean; askRepo?: string; others?: ReadonlyMap<string, string[]>; isMe?: (a: Author) => boolean }) {
+// branches: 로컬 모드에서 같은 레포의 다른 브랜치 이름 — 브랜치를 옮겨 와도 거기서 확인한 것을 찾는다
+export function ReviewView(a: { snap: Snapshot; merged: DeviceState; secret: string; store: SyncStore; readBlob: (sha: string) => Promise<string | null>; onRefresh: () => void; live: boolean; askRepo?: string; others?: ReadonlyMap<string, string[]>; isMe?: (a: Author) => boolean; branches?: readonly string[] }) {
   const carry = useMemo(() => (a.askRepo ? makeCarry(a.askRepo) : undefined), [a.askRepo]);
   const moves = useMemo(() => (a.askRepo ? makeMoves(a.askRepo) : undefined), [a.askRepo]);
   const { review, shownSnap, toggle, sync } = useReview({ ...a, carry, moves });
