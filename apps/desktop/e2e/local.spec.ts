@@ -345,7 +345,19 @@ test('S2: part of my work squashed into base, then rebase — still viewed', asy
   commitOnMain(repo, { 3: 'line 3 A' });
   git(repo, 'rebase', '-q', 'main');   // 첫 커밋은 main 에 같은 내용이 있어 git 이 건너뛴다
   await win.getByTestId('open-btn').click();
-  // 확인한 블록 2개 중 line 3 이 base 로 들어가 diff 에서 빠졌다 — 확인함으로 두되 경고 배지
+  // 확인한 블록 2개 중 line 3 이 base 로 들어가 diff 에서 빠졌다. 결과 파일이 그대로라 잃은 것이 없다 — 경고하지 않는다
+  await expect(row.getByTestId('file-state')).toHaveText('Reviewed changes unchanged');
+  await expect(row).toHaveAttribute('data-state', 'viewed');
+  await app.close();
+});
+
+test('S2b: a viewed change lost in a rebase, so the file differs too, still warns', async () => {
+  const repo = lineRepo([{ 3: 'line 3 A', 10: 'line 10 B' }]);
+  const { app, win, row } = await openAndCheck(repo);
+  commitOnMain(repo, { 6: 'line 6 DEV' });
+  git(repo, 'rebase', '-q', 'main');
+  writeFileSync(join(repo, 'f.ts'), lines({ 6: 'line 6 DEV', 10: 'line 10 B' })); git(repo, 'commit', '-q', '-am', 'drop line 3 change');
+  await win.getByTestId('open-btn').click();
   await expect(row.getByTestId('file-state')).toHaveText('1 reviewed change dropped');
   await expect(row).toHaveAttribute('data-state', 'viewed');
   await app.close();
@@ -665,6 +677,64 @@ test('S8: a changed file can be shown whole against the merge base, a renamed on
 });
 
 // 새 파일이 다른 브랜치에서 한 줄만 달라졌다 — 통째로 안 봄이 되던 것(2026-11-01 실사용). 그 줄만 보인다
+// 대상을 옮겨 diff 만 달라졌다. 결과 파일은 그대로다
+function targetRepo(mid: Record<number, string>, result: Record<number, string>) {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'viewed-target-')));
+  git(dir, 'init', '-q', '-b', 'main');
+  writeFileSync(join(dir, 'f.ts'), lines({}, 30)); git(dir, 'add', '-A'); git(dir, 'commit', '-q', '-m', 'base');
+  git(dir, 'checkout', '-q', '-b', 'test');
+  writeFileSync(join(dir, 'f.ts'), lines(mid, 30)); git(dir, 'commit', '-q', '-am', 'target moves');
+  git(dir, 'checkout', '-q', '-b', 'feat', 'main');
+  writeFileSync(join(dir, 'f.ts'), lines(result, 30)); git(dir, 'commit', '-q', '-am', 'feat');
+  git(dir, 'merge', '-q', '--no-commit', '-s', 'ours', 'test');
+  writeFileSync(join(dir, 'f.ts'), lines(result, 30)); git(dir, 'add', '-A'); git(dir, 'commit', '-q', '-m', 'merge target');
+  return dir;
+}
+
+test('S10: moving the target keeps a file with nothing new to read viewed, and shows one with a line never seen', async () => {
+  const { app, win, row } = await openAndCheck(targetRepo({ 10: 'NEW 10' }, { 10: 'NEW 10', 11: 'NEW 11', 20: 'NEW 20' }));
+  await win.getByTestId('local-base-select').selectOption('refs/heads/test');
+  await win.getByTestId('open-btn').click();
+  await expect(row.getByTestId('file-state')).toHaveText('Carried over');
+  await expect(row).toHaveAttribute('data-state', 'viewed');
+  await expect(win.getByTestId('auto-filter')).toHaveText('1 automatic');
+  await win.getByTestId('local-base-select').selectOption('refs/heads/main');
+  await win.getByTestId('open-btn').click();
+  await expect(win.getByTestId('auto-filter')).toHaveCount(0);   // 옛 대상으로 돌아가면 내가 체크한 그대로
+  await expect(row).toHaveAttribute('data-state', 'viewed');
+  await app.close();
+
+  // 대상이 지운 줄을 내 브랜치가 그대로 둬 지금 diff 에 처음 나오는 추가 줄
+  const second = await openAndCheck(targetRepo({ 11: 'CHANGED BY TARGET' }, { 20: 'NEW 20' }));
+  await second.win.getByTestId('local-base-select').selectOption('refs/heads/test');
+  await second.win.getByTestId('open-btn').click();
+  await expect(second.row).toHaveAttribute('data-state', 'changed-since-viewed');
+  await expect(second.row.getByTestId('since-diff')).toContainText('+line 11');
+  await second.app.close();
+});
+
+test('S11: a file that first appears on a new commit while the review is open finds the check on another branch', async () => {
+  const repo = lineRepo([{ 8: 'line 8 FEAT' }], 30);
+  writeFileSync(join(repo, 'n.ts'), lines({}, 5)); git(repo, 'add', 'n.ts'); git(repo, 'commit', '-q', '-m', 'new file');
+  git(repo, 'checkout', '-q', '-b', 'feat2', 'main');
+  writeFileSync(join(repo, 'g.ts'), 'g\n'); git(repo, 'add', 'g.ts'); git(repo, 'commit', '-q', '-m', 'other work');
+  git(repo, 'checkout', '-q', 'feat');
+  const { app, win } = await launch(repo);
+  await win.getByTestId('local-add').click();
+  await openLocal(win);
+  const n = win.getByTestId('file-row').filter({ hasText: 'n.ts' });
+  await n.getByTestId('file-check').check();
+  await expect(win.getByTestId('progress')).toHaveText('1 / 2');
+  await win.getByTestId('local-branch-select').selectOption('refs/heads/feat2');
+  await win.getByTestId('open-btn').click();
+  await expect(win.getByTestId('progress')).toHaveText('0 / 1');
+  git(repo, 'checkout', '-q', 'feat2');
+  writeFileSync(join(repo, 'n.ts'), lines({}, 5)); git(repo, 'add', 'n.ts'); git(repo, 'commit', '-q', '-m', 'same new file');
+  await expect(win.getByTestId('progress')).toHaveText('1 / 2', { timeout: 8000 });   // 3초마다 head 를 본다
+  await expect(n.getByTestId('file-state')).toHaveText('Carried over');
+  await app.close();
+});
+
 test('S9: a new file viewed on another branch shows only the lines that differ there', async () => {
   const repo = lineRepo([{ 8: 'line 8 FEAT' }], 30);
   writeFileSync(join(repo, 'n.ts'), lines({}, 40)); git(repo, 'add', 'n.ts'); git(repo, 'commit', '-q', '-m', 'new file');

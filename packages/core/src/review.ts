@@ -60,8 +60,9 @@ export async function buildReview(snap: Snapshot, state: DeviceState, secret: st
     else {
       const miss = unmatchedBlocks(record.blocks, blocks);
       if (miss.length === 0) {
-        // 지금 블록이 전부 맞으면 사라진 확인 블록 수 = 확인 블록 수 - 지금 블록 수
-        const gone = record.blocks.length - blocks.length;
+        // 지금 블록이 전부 맞으면 사라진 확인 블록 수 = 확인 블록 수 - 지금 블록 수.
+        // 결과 파일이 그때와 같으면 잃은 것이 없다 — 내가 본 변경이 파일에 그대로 있고 대상이 가져갔을 뿐이다
+        const gone = record.blob === file.blobSha ? 0 : record.blocks.length - blocks.length;
         st = 'viewed'; carried = gone > 0 ? 'shrunk' : 'same'; if (gone > 0) dropped = gone;
       }
       else { st = 'changed-since-viewed'; newBlocks = miss; }

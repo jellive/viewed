@@ -1,12 +1,12 @@
-import { it, expect } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadLocalSnapshot, loadLocalRange, type LocalGit } from '../src/local';
 import { buildReview, markRecord } from '../src/review';
 import { mergeStates } from '../src/sync';
-import { carryBases, targetCarry } from '../src/carry';
+import { carryBases, sameResultCarry, targetCarry } from '../src/carry';
 import type { DeviceState, Snapshot } from '../src/types';
 
 function gitFor(dir: string): LocalGit {
@@ -70,4 +70,72 @@ it('round trip integ -> main (carry) -> integ keeps files carried via (b) viewed
   // (b) 로 이어받은 y.ts 만 prev 를 갖는다 — (a) 로 이어받은 w.ts 는 P-diff 에 없어 돌아가도 목록에 없다
   expect(Object.values(s2).filter((r) => r.prev).length).toBe(1);
   expect(Object.values(s2).filter((r) => r.base === snapN.mergeBase).length).toBe(2);
+});
+
+describe('moving to a target that has part of the branch (real git)', () => {
+  const lines = (n: number, edit: Record<number, string | null> = {}) => {
+    const out: string[] = [];
+    for (let i = 1; i <= n; i++) { const e = edit[i]; if (e !== null) out.push(e ?? `line ${i}`); }
+    return out.join('\n') + '\n';
+  };
+  // main 에서 feat 를 따서 result 로 만들고, 그 사이 target 은 main 에서 갈라져 mid 가 된다. feat 는 target 을 머지해 결과를 result 로 맞춘다.
+  // 그러면 main 대비 diff 와 target 대비 diff 의 결과 파일이 같다
+  function repo(a: { start: string; mid: string; result: string; midMode?: string }) {
+    const dir = mkdtempSync(join(tmpdir(), 'viewed-probe-'));
+    const g = (...x: string[]) => execFileSync('git', ['-C', dir, '-c', 'user.name=a', '-c', 'user.email=a@example.test', ...x], { encoding: 'utf8' });
+    const put = (c: string) => writeFileSync(join(dir, 'a.ts'), c);
+    g('init', '-q', '-b', 'main');
+    put(a.start); g('add', '-A'); g('commit', '-q', '-m', 'base');
+    g('checkout', '-q', '-b', 'target');
+    put(a.mid); if (a.midMode) chmodSync(join(dir, 'a.ts'), a.midMode); g('add', '-A'); g('commit', '-q', '-m', 'target');
+    g('checkout', '-q', '-b', 'feat', 'main');
+    put(a.result); g('add', '-A'); g('commit', '-q', '-m', 'feat');
+    g('merge', '-q', '--no-commit', '-s', 'ours', 'target');
+    put(a.result); chmodSync(join(dir, 'a.ts'), '644'); g('add', '-A'); g('commit', '-q', '-m', 'merge target');
+    return gitFor(dir);
+  }
+  async function open(git: LocalGit) {
+    const before = await loadLocalSnapshot(git, 'r', 'refs/heads/feat', 'refs/heads/main');
+    const first = await buildReview(before, {}, S);
+    const state: DeviceState = Object.fromEntries(first.items.map((it) => [it.key, markRecord(it, before.headSha, true)]));
+    const now = await loadLocalSnapshot(git, 'r', 'refs/heads/feat', 'refs/heads/target');
+    const review = await buildReview(now, state, S);
+    expect(now.mergeBase).not.toBe(before.mergeBase);
+    expect(review.items[0].state).toBe('changed-since-viewed');
+    return { before, now, state, review, carried: await sameResultCarry(review, now.mergeBase!, (p) => loadLocalRange(git, p, now.headSha)) };
+  }
+
+  it('a two-line block whose first line the target already has is carried, and viewed again back on the old target', async () => {
+    const git = repo({ start: lines(30), mid: lines(30, { 10: 'NEW 10' }), result: lines(30, { 10: 'NEW 10', 11: 'NEW 11', 20: 'NEW 20' }) });
+    const { before, now, state, review, carried } = await open(git);
+    expect(review.items[0].file.patch).toContain('-line 11');
+    expect(review.items[0].file.patch).not.toContain('-line 10');
+    expect(carried.map((i) => i.file.path)).toEqual(['a.ts']);
+    const s2 = mergeStates([state, Object.fromEntries(carried.map((it) => [it.key, markRecord(it, now.headSha, true)]))]);
+    expect(states(await buildReview(now, s2, S))).toEqual({ 'a.ts': 'viewed' });
+    expect(states(await buildReview(before, s2, S))).toEqual({ 'a.ts': 'viewed' });
+  });
+
+  it('the same text removed in another function on the new target is not carried', async () => {
+    const fns = (a: string, b: string) => ['function sandbox() {', ...(a ? [a] : []), '  runSandbox();', '}', ...Array.from({ length: 12 }, (_, i) => `// ${i}`), 'function production() {', ...(b ? [b] : []), '  runProduction();', '}', ''].join('\n');
+    const git = repo({ start: fns('  authorize();', ''), mid: fns('', '  authorize();'), result: fns('', '') });
+    const { review, carried } = await open(git);
+    expect(review.items[0].file.patch).toContain('-  authorize();');
+    expect(carried).toEqual([]);
+  });
+
+  it('a line the diff adds for the first time is not carried', async () => {
+    // 그때는 11줄이 main 에도 있어 문맥이었다. target 이 그 줄을 지워 지금 diff 에는 추가로 나온다
+    const git = repo({ start: lines(30), mid: lines(30, { 11: null }), result: lines(30, { 20: 'NEW 20' }) });
+    const { review, carried } = await open(git);
+    expect(review.items[0].file.patch).toContain('+line 11');
+    expect(carried).toEqual([]);
+  });
+
+  it('a mode change that was not in the viewed diff is not carried', async () => {
+    const git = repo({ start: lines(30), mid: lines(30, { 10: 'NEW 10' }), midMode: '755', result: lines(30, { 10: 'NEW 10', 11: 'NEW 11', 20: 'NEW 20' }) });
+    const { review, carried } = await open(git);
+    expect([review.items[0].file.oldMode, review.items[0].file.mode]).toEqual(['100755', '100644']);
+    expect(carried).toEqual([]);
+  });
 });

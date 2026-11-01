@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { branchMatches, buildReview, markRecord, mergeStates, movedBases, type BaseMoves, type DeviceState, type NearMatch, type Review, type ReviewItem, type Snapshot } from '@viewed/core';
 import type { SyncStore } from './syncStore';
+import type { CarryStep } from './targetCarry';
 
 export type { SyncStatus } from './syncStore';
 
@@ -16,7 +17,7 @@ function within<T>(p: Promise<T>, ms: number): Promise<T | null> {
 
 // 저장·미저장 기록은 기기당 하나인 SyncStore 가 갖는다 — 이 훅은 그것을 보여 주기만 한다
 export function useReview(a: { snap: Snapshot; merged: DeviceState; secret: string; store: SyncStore; others?: ReadonlyMap<string, string[]>;
-  carry?: (review: Review, snap: Snapshot) => Promise<ReviewItem[]>; moves?: (from: string, to: string) => Promise<ReadonlySet<string>>;
+  carry?: readonly CarryStep[]; moves?: (from: string, to: string) => Promise<ReadonlySet<string>>;
   branches?: readonly string[] }) {
   const { store } = a;
   const own = useSyncExternalStore(store.subscribe, store.own);
@@ -25,11 +26,12 @@ export function useReview(a: { snap: Snapshot; merged: DeviceState; secret: stri
   // 보이는 리뷰와 그것을 만든 스냅숏을 같이 든다 — 새로고침 중엔 옛 리뷰가 남고 a.snap 만 먼저 바뀐다
   const [shown, setShown] = useState<{ review: Review; snap: Snapshot } | null>(null);
 
-  const judged = useRef(false);                 // 이어받기 판정은 이 인스턴스가 첫 화면을 내기 전에만 한다 — 보이는 뒤엔 파일이 저절로 뒤집히지 않는다
+  const judged = useRef(0);                     // 끝낸 이어받기 단계 수. 이어받기는 이 인스턴스가 첫 화면을 내기 전에만 한다 — 보이는 뒤엔 파일이 저절로 뒤집히지 않는다
   const waitStart = useRef<number | null>(null); // 처음 기다리기 시작한 때 — 스냅숏이 계속 들어와도 마감은 늘어나지 않는다
   const displayed = useRef(false);
-  // 다른 브랜치 기록 찾기도 첫 화면 전에 한 번만. near 는 저장하지 않으니 이 인스턴스가 들고 build 마다 넘긴다
-  const branched = useRef(false);
+  // 다른 브랜치 기록은 경로마다 처음 그리기 전에 한 번만 찾는다 — 찾은 경로는 다시 안 찾으니 보이는 파일이 뒤집히지 않는다.
+  // 새 커밋으로 처음 나타난 경로는 아직 안 보였으니 그때 찾는다. near 는 저장하지 않으니 이 인스턴스가 들고 build 마다 넘긴다
+  const searched = useRef(new Set<string>());
   const near = useRef<ReadonlyMap<string, NearMatch> | undefined>(undefined);
   // base 이동 근거: 지금 merge-base → (옛 merge-base → 바뀐 경로, null = 못 쟀다). 쌍마다 처음 물을 때 마감을 걸어 한 번 정하고
   // 이 인스턴스 안에서는 다시 묻지 않는다 — 늦은 git 이 보이는 파일을 뒤집지 않게, 스냅숏이 계속 들어와도 다시 기다리지 않게. 못 잰 쌍은 리뷰를 다시 열면 다시 잰다
@@ -67,32 +69,30 @@ export function useReview(a: { snap: Snapshot; merged: DeviceState; secret: stri
         if (!live) return;
       }
       // 브랜치 이름이 바뀌어 기록이 없는 파일: diff 가 똑같으면 이 브랜치 기록으로 쓰고, 겹치면 near 로 안 본 블록만 보인다.
-      // 판정은 이 실행이 살아 있을 때만 확정한다 — 취소된 실행이 판정을 먹거나 낡은 결과를 쓰지 않게
-      if (a.branches?.length && !branched.current) {
-        const m = await within(branchMatches(r, snap, state, a.secret, a.branches), firstLeft());
+      // 판정은 이 실행이 살아 있을 때만 확정한다 — 취소된 실행이 판정을 먹거나 낡은 결과를 쓰지 않게. 마감을 넘겨도 찾은 것으로 친다 — 곧 그려진다
+      const fresh = a.branches?.length ? r.items.filter((i) => !searched.current.has(i.file.path)) : [];
+      if (a.branches?.length && fresh.length) {
+        const m = await within(branchMatches({ ...r, items: fresh }, snap, state, a.secret, a.branches), displayed.current ? MOVES_DEADLINE_MS : firstLeft());
         if (!live) return;
-        branched.current = true;
-        near.current = m?.near;
+        for (const i of fresh) searched.current.add(i.file.path);
+        if (m?.near.size) near.current = new Map([...(near.current ?? []), ...m.near]);
         const recs = (m?.exact ?? []).map((it) => [it.key, { ...markRecord(it, snap.headSha, true), via: 'branch' as const }] as const);
         if (recs.length) { store.setMany(recs); state = mergeStates([state, Object.fromEntries(recs)]); }
         r = await build(state);
         if (!live) return;
       }
-      if (a.carry && !judged.current) {
+      // 단계마다 남은 마감 안에서 돌고 그때그때 쓴다 — 뒤 단계가 늦어도 앞 단계가 이어받은 것은 남는다
+      while (a.carry && judged.current < a.carry.length) {
         const left = firstLeft();
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const items = await Promise.race([
-          left > 0 ? a.carry(r, snap).catch(() => [] as ReviewItem[]) : Promise.resolve([] as ReviewItem[]),
-          new Promise<ReviewItem[]>((res) => { timer = setTimeout(() => res([]), left); }),
-        ]);
-        clearTimeout(timer);
+        const items = left > 0 ? await within(a.carry[judged.current](r, snap), left) : null;
         if (!live) return;
-        judged.current = true;
-        if (items.length) {
+        judged.current++;
+        if (items?.length) {
           const recs = items.map((it) => [it.key, { ...markRecord(it, snap.headSha, true), via: 'target' as const }] as const);
           store.setMany(recs);
-          r = await build(mergeStates([state, Object.fromEntries(recs)]));
-          if (!live) return;   // 기록은 이미 써졌다 — 바뀐 merged 로 다시 도는 효과가 화면을 낸다
+          state = mergeStates([state, Object.fromEntries(recs)]);
+          r = await build(state);
+          if (!live) return;   // 기록은 이미 써졌다 — 바뀐 merged 로 다시 도는 효과가 다음 단계와 화면을 맡는다
         }
       }
       displayed.current = true;

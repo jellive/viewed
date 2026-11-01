@@ -6,6 +6,7 @@ export interface ChangedFile {
   blobSha: string | null;   // removed 면 null
   patch?: string;           // 바이너리·대용량이면 없음
   mode?: string;            // tree 에서 채움, 없으면 undefined
+  oldMode?: string;         // 로컬 모드만: base 쪽 mode. 지문에 안 든다
 }
 export interface Snapshot {
   owner: string; repo: string; base: string; branch: string;
@@ -23,7 +24,7 @@ export type FileState = 'viewed' | 'unread' | 'changed-since-viewed';
 export interface ReviewItem {
   file: ChangedFile; key: string; fp: string; meta: string; blocks?: string[]; base?: string;
   state: FileState; record?: ViewRecord; newBlocks?: number[]; carried?: 'same' | 'shrunk'; dropped?: number;
-  carryPrev?: { base: string; fp: string; via?: 'branch' | 'target' };   // targetCarry 가 (b) 로 고른 item 에만: 이어받기 전 기록의 base·지문·출처
+  carryPrev?: { base: string; fp: string; via?: 'branch' | 'target' };   // 대상 전환 이어받기 중 옛 대상에서 본 diff 가 확인된 item 에만(targetCarry (b)·sameResultCarry): 이어받기 전 기록의 base·지문·출처
   others?: string[];   // 남의 커밋만 닿은 파일이라 확인한 것으로 친다 — 남 작성자 이름
   elsewhere?: true;    // 기록이 없고 다른 브랜치에서 확인한 것과 겹친다 — newBlocks 나 seenBlob 이후 바뀐 줄만 보인다. 저장하지 않는다
   seenBlob?: string;   // elsewhere 중 양쪽 다 새 파일일 때: 거기서 확인한 blob. 블록 하나짜리라 줄 단위로 비교한다

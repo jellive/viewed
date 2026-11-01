@@ -11,7 +11,7 @@ export interface LocalGit {
 const STATUS: Record<string, FileStatus> = { A: 'added', D: 'removed', M: 'modified', T: 'changed', R: 'renamed', C: 'copied' };
 const ZERO = /^0+$/;
 
-interface RawEntry { status: FileStatus; path: string; previousPath?: string; newMode: string; newOid: string }
+interface RawEntry { status: FileStatus; path: string; previousPath?: string; oldMode: string; newMode: string; newOid: string }
 
 // ":<old mode> <new mode> <old oid> <new oid> <status><score>\0<path>\0[<path2>\0]"
 function parseRawZ(out: string): RawEntry[] {
@@ -26,7 +26,7 @@ function parseRawZ(out: string): RawEntry[] {
     const two = m[5] === 'R' || m[5] === 'C';
     const src = t[i + 1], dst = two ? t[i + 2] : src;
     if (src === undefined || dst === undefined) throw new Error('truncated git raw output');
-    entries.push({ status, path: dst, previousPath: two ? src : undefined, newMode: m[2], newOid: m[4] });
+    entries.push({ status, path: dst, previousPath: two ? src : undefined, oldMode: m[1], newMode: m[2], newOid: m[4] });
     i += two ? 3 : 2;
   }
   return entries;
@@ -79,6 +79,7 @@ export async function loadLocalRange(git: LocalGit, from: string, head: string):
       blobSha: removed ? null : e.newOid,
       ...(patchText !== undefined ? { patch: patchText } : {}),
       mode: removed ? undefined : e.newMode,
+      oldMode: e.oldMode,
     };
   });
 }

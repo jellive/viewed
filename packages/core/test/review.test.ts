@@ -131,6 +131,15 @@ describe('buildReview — block judgment after a rebase or merge (spec §5)', ()
     expect(it.dropped).toBe(1);
   });
 
+  it('blocks left the diff but the file is byte-identical to what was viewed: nothing was lost, so no warning', async () => {
+    // 대상이 그 변경을 가져간 것뿐이다 — 내가 본 변경은 결과 파일에 그대로 있다
+    const st = await viewedAt(snapAt(two, 'mb1', { blobSha: 'same' }));
+    const it = (await buildReview(snapAt(one, 'mb2', { blobSha: 'same' }), st, S)).items[0];
+    expect(it.state).toBe('viewed');
+    expect(it.carried).toBe('same');
+    expect(it.dropped).toBeUndefined();
+  });
+
   it('base unchanged and one of my blocks removed: changed-since-viewed (no block judgment)', async () => {
     // base 가 그대로면 블록이 사라진 것도 내 변경이다 — 확인함으로 숨기지 않는다
     const st = await viewedAt(snapAt(two, 'mb1'));

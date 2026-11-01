@@ -16,6 +16,81 @@ export function carryBases(review: Review, n: string): string[] {
   return [...count].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).slice(0, MAX_CHECKED).map(([b]) => b);
 }
 
+// 결과 파일 줄 번호로 편 변경: 추가한 줄 번호와, 블록마다 결과 파일에서 차지한 구간(from~to)·지운 줄. hunk 머리를 못 읽으면 null
+interface PlacedBlock { from: number; to: number; removed: { at: number; text: string }[] }
+function placeChanges(patch: string): { added: Set<number>; blocks: PlacedBlock[] } | null {
+  const added = new Set<number>(), blocks: PlacedBlock[] = [];
+  let at = 0, cur: PlacedBlock | null = null, prev: string | undefined;
+  for (const line of patch.split('\n')) {
+    const c = line[0];
+    if (line.startsWith('@@')) {
+      const h = /^@@ -\d+(?:,\d+)? \+(\d+)/.exec(line);
+      if (!h) return null;
+      at = Number(h[1]);
+      cur = null;
+    } else if (c === '-' || c === '+') {
+      if (!cur) { cur = { from: at, to: at, removed: [] }; blocks.push(cur); }
+      if (c === '+') { added.add(at); cur.to = ++at; }
+      else cur.removed.push({ at, text: line });
+    } else if (c === '\\') {
+      // 끝 개행 표시는 지운 줄의 일부다. 추가 줄에 붙은 표시는 결과 파일이 같으니 볼 것이 없다
+      if (prev === '-' && cur) cur.removed[cur.removed.length - 1].text += `\n${line}`;
+    } else {
+      if (c === ' ') at++;
+      cur = null;
+    }
+    prev = c;
+  }
+  return { added, blocks };
+}
+
+// 지금 diff 의 변경이 전부 그때 본 diff 의 같은 자리에 있었나. 결과 파일이 같아야 줄 번호를 맞댈 수 있다.
+// 추가 줄은 같은 번호, 지운 줄은 그때 그 글자를 지운 블록의 구간 안 — 대상이 블록 일부를 이미 가지면 지운 줄의 자리가 그 구간 안에서 밀린다.
+// 글자만 맞대면 다른 함수에서 같은 글자를 지운 것이 숨는다
+function changesWereSeen(now: string, seen: string): boolean {
+  const c = placeChanges(now), s = placeChanges(seen);
+  if (!c || !s) return false;
+  for (const n of c.added) if (!s.added.has(n)) return false;
+  const left = s.blocks.map((b) => {
+    const m = new Map<string, number>();
+    for (const r of b.removed) m.set(r.text, (m.get(r.text) ?? 0) + 1);
+    return m;
+  });
+  for (const b of c.blocks) for (const r of b.removed) {
+    const i = s.blocks.findIndex((v) => v.from <= r.at && r.at <= v.to);
+    const n = i < 0 ? 0 : left[i].get(r.text) ?? 0;
+    if (!n) return false;
+    left[i].set(r.text, n - 1);
+  }
+  return true;
+}
+
+// 대상을 옮겨 diff 만 달라진 파일: 결과 파일이 확인 때 그대로이고 지금 변경이 전부 그때 본 변경이면 새로 볼 것이 없다.
+// load(P) = P..head diff. 그 파일의 지문이 기록과 같아야 '그때 본 diff' 다. 근거가 결과 파일이 같다는 것이라 대상의 조상 관계는 안 본다.
+// 후보가 많은 옛 대상 순으로 최대 3개만 읽는다(동수면 문자열 오름차순). 못 읽은 대상의 파일은 그대로 둔다
+export async function sameResultCarry(review: Review, n: string, load: (base: string) => Promise<ChangedFile[] | null>): Promise<ReviewItem[]> {
+  const cands = review.items.filter((i) => i.state !== 'viewed' && i.file.patch !== undefined && i.record?.viewed
+    && i.record.base && i.record.base !== n && i.record.blob === i.file.blobSha);
+  const count = new Map<string, number>();
+  for (const i of cands) count.set(i.record!.base!, (count.get(i.record!.base!) ?? 0) + 1);
+  const bases = [...count].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).slice(0, MAX_USED).map(([b]) => b);
+  const seen = new Map<string, Map<string, ChangedFile>>();
+  for (const b of bases) {
+    const files = await load(b).catch(() => null);
+    if (files) seen.set(b, new Map(files.map((f) => [f.path, f])));
+  }
+  const out: ReviewItem[] = [];
+  for (const item of cands) {
+    const r = item.record!, f = item.file, pf = seen.get(r.base!)?.get(f.path);
+    if (pf?.patch === undefined || await fingerprint(pf) !== r.fp) continue;
+    if (pf.previousPath !== f.previousPath || pf.mode !== f.mode) continue;
+    // 지금 diff 에 mode 변경이 있으면 그때 본 변경이어야 한다 — 결과 mode 만 맞대면 대상의 실행 권한을 없애는 변경이 숨는다
+    if (f.oldMode !== f.mode && f.oldMode !== pf.oldMode) continue;
+    if (changesWereSeen(f.patch!, pf.patch)) out.push({ ...item, carryPrev: { base: r.base!, fp: r.fp, ...(r.via ? { via: r.via } : {}) } });
+  }
+  return out;
+}
+
 // 후보 중 N 의 후손인 것만 기록 수 순으로 최대 3개. 조상 검사가 던지면 그 P 는 건너뛴다
 export async function selectCarryBases(review: Review, n: string, isAncestor: (p: string) => Promise<boolean>): Promise<string[]> {
   const out: string[] = [];

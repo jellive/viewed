@@ -90,7 +90,7 @@ export function FileList({ review, syncOk, onToggle, renderDiff }: { review: Rev
                 </button>
                 <span className="path">{it.file.path}</span>
                 {/* carried: 리베이스·머지로 diff 는 바뀌었지만 지금 블록은 전부 본 것. 'same' 은 중립 배지,
-                    'shrunk' 는 확인한 블록이 일부 빠진 것이라(base 흡수인지 유실인지 서명으로는 못 가름) 경고색 */}
+                    'shrunk' 는 확인한 블록이 일부 빠지고 결과 파일도 달라진 것이라(base 흡수인지 유실인지 못 가름) 경고색 */}
                 <span data-testid="file-state" className={it.carried === 'same' || it.carriedOver ? 'badge muted' : 'badge'}>
                   {it.carried === 'same' ? t.carried : it.carried === 'shrunk' ? t.carriedDropped(it.dropped ?? 0) : it.elsewhere ? t.elsewhere : it.carriedOver ? t.carriedOver : MARK[it.state]}
                 </span>
