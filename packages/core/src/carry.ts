@@ -1,7 +1,7 @@
 import { fingerprint } from './fingerprint';
 import { recordKey } from './keys';
 import { unmatchedBlocks } from './blocks';
-import type { ChangedFile, DeviceState, NearMatch, Review, ReviewItem, Snapshot, ViewRecord } from './types';
+import type { ChangedFile, DeviceState, NearMatch, NewLines, Review, ReviewItem, Snapshot, ViewRecord } from './types';
 
 const MAX_CHECKED = 10, MAX_USED = 3;
 
@@ -16,12 +16,12 @@ export function carryBases(review: Review, n: string): string[] {
   return [...count].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).slice(0, MAX_CHECKED).map(([b]) => b);
 }
 
-// 결과 파일 줄 번호로 편 변경: 추가한 줄 번호와, 블록마다 결과 파일에서 차지한 구간(from~to)·지운 줄. hunk 머리를 못 읽으면 null
-interface PlacedBlock { from: number; to: number; removed: { at: number; text: string }[] }
-function placeChanges(patch: string): { added: Set<number>; blocks: PlacedBlock[] } | null {
-  const added = new Set<number>(), blocks: PlacedBlock[] = [];
+// 결과 파일 줄 번호로 편 변경: 추가한 줄(결과 파일 번호 → patch 줄 번호)과, 블록마다 결과 파일에서 차지한 구간(from~to)·지운 줄. hunk 머리를 못 읽으면 null
+interface PlacedBlock { from: number; to: number; removed: { at: number; text: string; line: number }[] }
+function placeChanges(patch: string): { added: Map<number, number>; blocks: PlacedBlock[] } | null {
+  const added = new Map<number, number>(), blocks: PlacedBlock[] = [];
   let at = 0, cur: PlacedBlock | null = null, prev: string | undefined;
-  for (const line of patch.split('\n')) {
+  for (const [i, line] of patch.split('\n').entries()) {
     const c = line[0];
     if (line.startsWith('@@')) {
       const h = /^@@ -\d+(?:,\d+)? \+(\d+)/.exec(line);
@@ -30,8 +30,8 @@ function placeChanges(patch: string): { added: Set<number>; blocks: PlacedBlock[
       cur = null;
     } else if (c === '-' || c === '+') {
       if (!cur) { cur = { from: at, to: at, removed: [] }; blocks.push(cur); }
-      if (c === '+') { added.add(at); cur.to = ++at; }
-      else cur.removed.push({ at, text: line });
+      if (c === '+') { added.set(at, i); cur.to = ++at; }
+      else cur.removed.push({ at, text: line, line: i });
     } else if (c === '\\') {
       // 끝 개행 표시는 지운 줄의 일부다. 추가 줄에 붙은 표시는 결과 파일이 같으니 볼 것이 없다
       if (prev === '-' && cur) cur.removed[cur.removed.length - 1].text += `\n${line}`;
@@ -44,13 +44,14 @@ function placeChanges(patch: string): { added: Set<number>; blocks: PlacedBlock[
   return { added, blocks };
 }
 
-// 지금 diff 의 변경이 전부 그때 본 diff 의 같은 자리에 있었나. 결과 파일이 같아야 줄 번호를 맞댈 수 있다.
+// 지금 diff 의 변경 중 그때 본 diff 의 같은 자리에 없던 것의 patch 줄 번호. 빈 배열 = 전부 본 것, null = 못 읽었다. 결과 파일이 같아야 줄 번호를 맞댈 수 있다.
 // 추가 줄은 같은 번호, 지운 줄은 그때 그 글자를 지운 블록의 구간 안 — 대상이 블록 일부를 이미 가지면 지운 줄의 자리가 그 구간 안에서 밀린다.
 // 글자만 맞대면 다른 함수에서 같은 글자를 지운 것이 숨는다
-function changesWereSeen(now: string, seen: string): boolean {
+function unseenLines(now: string, seen: string): number[] | null {
   const c = placeChanges(now), s = placeChanges(seen);
-  if (!c || !s) return false;
-  for (const n of c.added) if (!s.added.has(n)) return false;
+  if (!c || !s) return null;
+  const out: number[] = [];
+  for (const [n, line] of c.added) if (!s.added.has(n)) out.push(line);
   const left = s.blocks.map((b) => {
     const m = new Map<string, number>();
     for (const r of b.removed) m.set(r.text, (m.get(r.text) ?? 0) + 1);
@@ -59,36 +60,62 @@ function changesWereSeen(now: string, seen: string): boolean {
   for (const b of c.blocks) for (const r of b.removed) {
     const i = s.blocks.findIndex((v) => v.from <= r.at && r.at <= v.to);
     const n = i < 0 ? 0 : left[i].get(r.text) ?? 0;
-    if (!n) return false;
-    left[i].set(r.text, n - 1);
+    if (n) left[i].set(r.text, n - 1);
+    else out.push(r.line);
   }
-  return true;
+  return out.sort((x, y) => x - y);
 }
 
-// 대상을 옮겨 diff 만 달라진 파일: 결과 파일이 확인 때 그대로이고 지금 변경이 전부 그때 본 변경이면 새로 볼 것이 없다.
-// load(P) = P..head diff. 그 파일의 지문이 기록과 같아야 '그때 본 diff' 다. 근거가 결과 파일이 같다는 것이라 대상의 조상 관계는 안 본다.
+// 결과 파일이 기록과 같은 파일들을 그때 본 diff 와 맞댄다. load(P) = P..head diff. 그 파일의 지문이 기록과 같아야 '그때 본 diff' 다.
+// 근거가 결과 파일이 같다는 것이라 대상의 조상 관계도, 어느 브랜치에서 봤는지도 안 본다.
 // 후보가 많은 옛 대상 순으로 최대 3개만 읽는다(동수면 문자열 오름차순). 못 읽은 대상의 파일은 그대로 둔다
-export async function sameResultCarry(review: Review, n: string, load: (base: string) => Promise<ChangedFile[] | null>): Promise<ReviewItem[]> {
-  const cands = review.items.filter((i) => i.state !== 'viewed' && i.file.patch !== undefined && i.record?.viewed
-    && i.record.base && i.record.base !== n && i.record.blob === i.file.blobSha);
+async function compareWithViewed<T extends { item: ReviewItem; rec: ViewRecord }>(cands: T[], load: (base: string) => Promise<ChangedFile[] | null>): Promise<{ seen: T[]; lines: NewLines }> {
   const count = new Map<string, number>();
-  for (const i of cands) count.set(i.record!.base!, (count.get(i.record!.base!) ?? 0) + 1);
+  for (const { rec } of cands) count.set(rec.base!, (count.get(rec.base!) ?? 0) + 1);
   const bases = [...count].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).slice(0, MAX_USED).map(([b]) => b);
-  const seen = new Map<string, Map<string, ChangedFile>>();
+  const viewed = new Map<string, Map<string, ChangedFile>>();
   for (const b of bases) {
     const files = await load(b).catch(() => null);
-    if (files) seen.set(b, new Map(files.map((f) => [f.path, f])));
+    if (files) viewed.set(b, new Map(files.map((f) => [f.path, f])));
   }
-  const out: ReviewItem[] = [];
-  for (const item of cands) {
-    const r = item.record!, f = item.file, pf = seen.get(r.base!)?.get(f.path);
-    if (pf?.patch === undefined || await fingerprint(pf) !== r.fp) continue;
+  const seen: T[] = [], lines = new Map<string, { fp: string; lines: number[] }>();
+  for (const c of cands) {
+    const f = c.item.file, pf = viewed.get(c.rec.base!)?.get(f.path);
+    if (pf?.patch === undefined || await fingerprint(pf) !== c.rec.fp) continue;
     if (pf.previousPath !== f.previousPath || pf.mode !== f.mode) continue;
     // 지금 diff 에 mode 변경이 있으면 그때 본 변경이어야 한다 — 결과 mode 만 맞대면 대상의 실행 권한을 없애는 변경이 숨는다
     if (f.oldMode !== f.mode && f.oldMode !== pf.oldMode) continue;
-    if (changesWereSeen(f.patch!, pf.patch)) out.push({ ...item, carryPrev: { base: r.base!, fp: r.fp, ...(r.via ? { via: r.via } : {}) } });
+    const fresh = unseenLines(f.patch!, pf.patch);
+    if (fresh?.length === 0) seen.push(c);
+    else if (fresh) lines.set(f.path, { fp: c.item.fp, lines: fresh });
   }
-  return out;
+  return { seen, lines };
+}
+
+// 대상을 옮겨 diff 만 달라진 파일: 결과 파일이 확인 때 그대로이고 지금 변경이 전부 그때 본 변경이면 새로 볼 것이 없다. 처음 보는 줄이 있으면 그 줄을 알려 준다
+export async function sameResultCarry(review: Review, n: string, load: (base: string) => Promise<ChangedFile[] | null>): Promise<{ carried: ReviewItem[]; lines: NewLines }> {
+  const cands = review.items.flatMap((item) => (item.state !== 'viewed' && item.file.patch !== undefined && item.record?.viewed
+    && item.record.base && item.record.base !== n && item.record.blob === item.file.blobSha ? [{ item, rec: item.record }] : []));
+  const { seen, lines } = await compareWithViewed(cands, load);
+  return { carried: seen.map(({ item, rec }) => ({ ...item, carryPrev: { base: rec.base!, fp: rec.fp, ...(rec.via ? { via: rec.via } : {}) } })), lines };
+}
+
+// 같은 규칙을 다른 브랜치 기록에: 이 브랜치에 기록이 아예 없는 파일(체크를 푼 기록이 있으면 그것이 이긴다)만, 결과 파일이 같은 기록 중 가장 최근 것이 확인일 때.
+// 결과 파일이 다른 기록의 체크 풀기는 이 내용에 대한 판단이 아니라 보지 않는다
+export async function otherBranchCarry(review: Review, snap: Snapshot, state: DeviceState, secret: string, branches: readonly string[], load: (base: string) => Promise<ChangedFile[] | null>): Promise<{ carried: ReviewItem[]; lines: NewLines }> {
+  const names = [...new Set(branches)].filter((b) => b !== snap.branch);
+  const cands: { item: ReviewItem; rec: ViewRecord }[] = [];
+  for (const item of review.items) {
+    if (item.record || item.state === 'viewed' || item.file.patch === undefined) continue;
+    let best: ViewRecord | undefined;
+    for (const b of names) {
+      const r = state[await recordKey(secret, snap.owner, snap.repo, b, item.file.path)];
+      if (r && r.blob === item.file.blobSha && (!best || Date.parse(r.at) > Date.parse(best.at))) best = r;
+    }
+    if (best?.viewed && best.base && best.base !== snap.mergeBase) cands.push({ item, rec: best });
+  }
+  const { seen, lines } = await compareWithViewed(cands, load);
+  return { carried: seen.map(({ item }) => item), lines };
 }
 
 // 후보 중 N 의 후손인 것만 기록 수 순으로 최대 3개. 조상 검사가 던지면 그 P 는 건너뛴다

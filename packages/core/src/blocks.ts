@@ -62,27 +62,41 @@ export function unmatchedBlocks(prev: string[], cur: string[]): number[] {
   return out;
 }
 
-// want 번 블록이 든 덩어리만 남기고, 남긴 patch 의 줄 번호(\n 으로 나눈) 중 want 밖 블록의 -/+/\ 줄을 seen 으로 돌려준다
-// — 같은 덩어리에 든 이미 확인한 블록을 흐리게 그리려고. 블록 번호는 blockSigs 의 서명 순서와 같은 규칙으로 센다
-export function markedHunks(patch: string, want: number[]): { patch: string; seen: number[] } {
+// want 번 줄(patch 를 \n 으로 나눈 번호)이 든 덩어리만 남기고, 남긴 patch 의 줄 번호 중 want 밖의 -/+ 줄과 거기 붙은 \ 줄을 seen 으로 돌려준다
+// — 같은 덩어리에 든 이미 확인한 변경을 흐리게 그리려고. 덩어리 머리를 그대로 두니 줄 번호 좌표는 안 바뀐다
+export function markedLines(patch: string, want: readonly number[]): { patch: string; seen: number[] } {
   const keep = new Set(want);
   const out: string[] = [], seen: number[] = [];
-  let hunk: string[] = [], marks: number[] = [], hit = false, b = -1, inBlock = false;
+  let hunk: string[] = [], marks: number[] = [], hit = false, prevSeen = false;
   const flush = () => {
     if (hit) { for (const k of marks) seen.push(out.length + k); out.push(...hunk); }
     hunk = []; marks = []; hit = false;
   };
-  for (const line of patch.split('\n')) {
-    if (line.startsWith('@@')) { flush(); hunk.push(line); inBlock = false; continue; }
+  for (const [i, line] of patch.split('\n').entries()) {
+    if (line.startsWith('@@')) { flush(); hunk.push(line); prevSeen = false; continue; }
     const c = line[0];
     if (c === '-' || c === '+') {
-      if (!inBlock) { b++; inBlock = true; }
-      if (keep.has(b)) hit = true;
-      else marks.push(hunk.length);
-    } else if (c === '\\') { if (inBlock && !keep.has(b)) marks.push(hunk.length); }
-    else inBlock = false;
+      prevSeen = !keep.has(i);
+      if (prevSeen) marks.push(hunk.length); else hit = true;
+    } else if (c === '\\') { if (prevSeen) marks.push(hunk.length); }
+    else prevSeen = false;
     hunk.push(line);
   }
   flush();
   return { patch: out.join('\n'), seen };
+}
+
+// want 번 블록이 든 덩어리만 남긴다(markedLines). 블록 번호는 blockSigs 의 서명 순서와 같은 규칙으로 센다
+export function markedHunks(patch: string, want: number[]): { patch: string; seen: number[] } {
+  const keep = new Set(want), lines: number[] = [];
+  let b = -1, inBlock = false;
+  for (const [i, line] of patch.split('\n').entries()) {
+    const c = line[0];
+    if (line.startsWith('@@')) inBlock = false;
+    else if (c === '-' || c === '+') {
+      if (!inBlock) { b++; inBlock = true; }
+      if (keep.has(b)) lines.push(i);
+    } else if (c !== '\\') inBlock = false;
+  }
+  return markedLines(patch, lines);
 }

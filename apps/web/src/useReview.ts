@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { branchMatches, buildReview, markRecord, mergeStates, movedBases, type BaseMoves, type DeviceState, type NearMatch, type Review, type ReviewItem, type Snapshot } from '@viewed/core';
+import { branchMatches, buildReview, markRecord, mergeStates, movedBases, type BaseMoves, type DeviceState, type NearMatch, type NewLines, type Review, type ReviewItem, type Snapshot } from '@viewed/core';
 import type { SyncStore } from './syncStore';
 import type { CarryStep } from './targetCarry';
 
@@ -33,6 +33,8 @@ export function useReview(a: { snap: Snapshot; merged: DeviceState; secret: stri
   // 새 커밋으로 처음 나타난 경로는 아직 안 보였으니 그때 찾는다. near 는 저장하지 않으니 이 인스턴스가 들고 build 마다 넘긴다
   const searched = useRef(new Set<string>());
   const near = useRef<ReadonlyMap<string, NearMatch> | undefined>(undefined);
+  // 결과 파일이 그때 본 것과 같은 파일의 처음 보는 줄. 저장하지 않고, 지문이 바뀌면 buildReview 가 안 쓴다
+  const unseen = useRef<NewLines>(new Map());
   // base 이동 근거: 지금 merge-base → (옛 merge-base → 바뀐 경로, null = 못 쟀다). 쌍마다 처음 물을 때 마감을 걸어 한 번 정하고
   // 이 인스턴스 안에서는 다시 묻지 않는다 — 늦은 git 이 보이는 파일을 뒤집지 않게, 스냅숏이 계속 들어와도 다시 기다리지 않게. 못 잰 쌍은 리뷰를 다시 열면 다시 잰다
   const moved = useRef(new Map<string, Map<string, ReadonlySet<string> | null>>());
@@ -47,7 +49,7 @@ export function useReview(a: { snap: Snapshot; merged: DeviceState; secret: stri
       if (!from) moved.current.set(to, from = new Map());
     }
     const mv: BaseMoves | undefined = from && to ? { to, from } : undefined;
-    const build = (state: DeviceState) => buildReview(snap, state, a.secret, a.others, mv, near.current);
+    const build = (state: DeviceState) => buildReview(snap, state, a.secret, a.others, mv, near.current, unseen.current);
     // 첫 화면 전에는 base 이동 재기·다른 브랜치 기록 찾기·이어받기가 이 순서로 마감 하나를 나눠 쓴다.
     // base 이동을 먼저 — 못 재면 이 브랜치 기록이 블록 판정으로 가 옮긴 변경이 숨을 수 있다. 다른 브랜치 찾기는 못 해도 안 봄으로 남을 뿐이다
     const firstLeft = () => { waitStart.current ??= Date.now(); return Math.max(0, CARRY_DEADLINE_MS - (Date.now() - waitStart.current)); };
@@ -81,19 +83,19 @@ export function useReview(a: { snap: Snapshot; merged: DeviceState; secret: stri
         r = await build(state);
         if (!live) return;
       }
-      // 단계마다 남은 마감 안에서 돌고 그때그때 쓴다 — 뒤 단계가 늦어도 앞 단계가 이어받은 것은 남는다
+      // 단계마다 남은 마감 안에서 돌고 그때그때 쓴다 — 뒤 단계가 늦어도 앞 단계가 이어받은 것은 남는다.
+      // 기록을 쓰면 바뀐 merged 로 효과가 다시 돌아 이 실행이 취소되니, 단계 완료와 처음 보는 줄을 먼저 확정한다. 다음 단계와 화면은 그 실행이 맡는다
       while (a.carry && judged.current < a.carry.length) {
         const left = firstLeft();
-        const items = left > 0 ? await within(a.carry[judged.current](r, snap), left) : null;
+        const got = left > 0 ? await within(a.carry[judged.current](r, snap, { state, secret: a.secret, branches: a.branches ?? [] }), left) : null;
         if (!live) return;
         judged.current++;
-        if (items?.length) {
-          const recs = items.map((it) => [it.key, { ...markRecord(it, snap.headSha, true), via: 'target' as const }] as const);
-          store.setMany(recs);
-          state = mergeStates([state, Object.fromEntries(recs)]);
-          r = await build(state);
-          if (!live) return;   // 기록은 이미 써졌다 — 바뀐 merged 로 다시 도는 효과가 다음 단계와 화면을 맡는다
-        }
+        if (!got) continue;
+        const hinted = !!got.lines?.size;
+        if (got.lines?.size) unseen.current = new Map([...unseen.current, ...got.lines]);
+        const recs = got.carried.map((it) => [it.key, { ...markRecord(it, snap.headSha, true), via: got.via }] as const);
+        if (recs.length) { store.setMany(recs); state = mergeStates([state, Object.fromEntries(recs)]); }
+        if (recs.length || hinted) { r = await build(state); if (!live) return; }
       }
       displayed.current = true;
       setShown({ review: r, snap });

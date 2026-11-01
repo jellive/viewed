@@ -33,9 +33,13 @@ async function fakeLocal(page: Page, o: { rename?: boolean; accounts?: boolean; 
         pick: async () => null,
         list: async () => ['/r/a'],
         info: async () => ({ refs: ['refs/heads/feat', 'refs/heads/main'], defaultBase: null, current: 'refs/heads/feat', remote: null }),
-        run: async (_repo: string, op: string, ref: string) => op === 'resolve' ? (ref === 'refs/heads/feat' ? w.__git.head : oid('d'))
-          : op === 'mergeBase' ? (o.noMergeBase ? null : w.__git.mb) : op === 'rawDiff' ? w.__git.raw : op === 'patchDiff' ? w.__git.patch
-          : op === 'blob' ? (w.__git.blobs[ref] ?? null) : null,
+        run: async (_repo: string, op: string, ref: string) => {
+          // 옛 merge-base 에서 재는 base 이동을 테스트가 풀 때까지 붙든다 — 새 스냅숏을 받고도 옛 화면이 남아 있는 동안
+          if (op === 'rawDiff' && ref === w.__git.holdFrom) await new Promise((res) => { w.__release = res; });
+          return op === 'resolve' ? (ref === 'refs/heads/feat' ? w.__git.head : oid('d'))
+            : op === 'mergeBase' ? (o.noMergeBase ? null : w.__git.mb) : op === 'rawDiff' ? w.__git.raw : op === 'patchDiff' ? w.__git.patch
+            : op === 'blob' ? (w.__git.blobs[ref] ?? null) : null;
+        },
       },
       ask: {
         start: (req: { id: string }) => new Promise((res) => { w.__asks.push(req); waiting[req.id] = res; }),
@@ -54,7 +58,7 @@ async function openLocal(page: Page) {
 }
 
 // 저장소를 바꾼다(새 head·merge-base·diff·blob) — 다시 읽기 버튼을 눌러야 화면에 오른다
-const moveRepo = (page: Page, g: { head?: string; mb?: string; raw?: string; patch?: string; blobs?: Record<string, string> }) =>
+const moveRepo = (page: Page, g: { head?: string; mb?: string; raw?: string; patch?: string; blobs?: Record<string, string>; holdFrom?: string }) =>
   page.evaluate((g) => { Object.assign((window as any).__git, g); }, g);
 const refresh = (page: Page) => page.getByTestId('refresh-btn').click();
 
@@ -89,6 +93,28 @@ test('a + on a local review asks that line and shows the answer under it with so
   // 진행 표시가 사라져도 답이 온 것을 화면 낭독기에 알린다
   await expect(thread.getByTestId('thread-live')).toHaveText('Answer arrived.');
   await expect(thread.getByTestId('thread-live')).toHaveAttribute('aria-live', 'polite');
+});
+
+test('while a new commit is still being judged, a line on the old screen asks about the old snapshot', async ({ page }) => {
+  await fakeLocal(page);
+  await openLocal(page);
+  await page.getByTestId('file-check').check();
+  await page.getByTestId('file-expand').click();
+  await expect(line(page, 'add', 'new')).toBeVisible();
+  // 새 커밋: 앞에 줄이 늘어 같은 글자가 다른 줄 번호가 된다. 옛 화면의 2번 줄을 새 head 의 2번 줄로 물으면 다른 줄이다
+  await moveRepo(page, { head: oid('c'), mb: oid('b'), holdFrom: MB, patch: 'diff --git a/src/a.ts b/src/a.ts\n--- a/x\n+++ b/x\n@@ -1,2 +1,3 @@\n ctx\n+added\n-old\n+new\n' });
+  await refresh(page);
+  await expect.poll(() => page.evaluate(() => !!(window as any).__release)).toBe(true);   // 새 스냅숏을 받았고 판정 중이다
+  await expect(line(page, 'add', 'new')).toBeVisible();
+  await expect(line(page, 'add', 'added')).toHaveCount(0);
+  await ask(page, 'add', 'new', 'why?');
+  const [req] = await asks(page);
+  expect(req).toMatchObject({ head: HEAD, mergeBase: MB, side: 'R', line: 2, lineText: 'new' });
+  // 새 화면이 오르면 옛 스냅숏의 질문은 끝난다
+  await page.evaluate(() => (window as any).__release());
+  await expect(line(page, 'add', 'added')).toBeVisible();
+  await expect(page.getByTestId('thread')).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).__cancelled)).toEqual([req.id]);
 });
 
 test('a deleted line of a renamed file asks the merge-base side with the previous path', async ({ page }) => {

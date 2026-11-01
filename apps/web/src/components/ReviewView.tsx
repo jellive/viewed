@@ -19,8 +19,9 @@ export function ReviewView(a: { snap: Snapshot; merged: DeviceState; secret: str
   const carry = useMemo(() => (a.askRepo ? makeCarry(a.askRepo) : undefined), [a.askRepo]);
   const moves = useMemo(() => (a.askRepo ? makeMoves(a.askRepo) : undefined), [a.askRepo]);
   const { review, shownSnap, toggle, sync } = useReview({ ...a, carry, moves });
-  // 스레드는 여기(FileList 위)에 둔다 — 접기·필터로 diff 가 사라져도 남게. 로컬로 연 리뷰(askRepo)에만 + 가 붙는다
-  const { forFile } = useThreads({ repo: a.askRepo, snap: a.snap, bridge: window.viewedDesktop?.ask });
+  // 스레드는 여기(FileList 위)에 둔다 — 접기·필터로 diff 가 사라져도 남게. 로컬로 연 리뷰(askRepo)에만 + 가 붙는다.
+  // 보이는 리뷰의 스냅숏으로 묻는다 — 새 커밋을 판정하는 동안 남아 있는 옛 화면의 줄 번호를 새 head 로 물으면 다른 줄이다
+  const { forFile } = useThreads({ repo: a.askRepo, snap: shownSnap ?? a.snap, bridge: window.viewedDesktop?.ask });
   if (!review) return <p data-testid="review-loading" className="hint">{t.loading}</p>;
   // 파일 전체 보기는 보이는 리뷰의 merge-base·head 로 읽는다 — 새 커밋을 읽는 중에도 화면의 diff 와 맞게
   const repo = a.askRepo, base = shownSnap?.mergeBase, head = shownSnap?.headSha;

@@ -102,7 +102,7 @@ describe('moving to a target that has part of the branch (real git)', () => {
     const review = await buildReview(now, state, S);
     expect(now.mergeBase).not.toBe(before.mergeBase);
     expect(review.items[0].state).toBe('changed-since-viewed');
-    return { before, now, state, review, carried: await sameResultCarry(review, now.mergeBase!, (p) => loadLocalRange(git, p, now.headSha)) };
+    return { before, now, state, review, carried: (await sameResultCarry(review, now.mergeBase!, (p) => loadLocalRange(git, p, now.headSha))).carried };
   }
 
   it('a two-line block whose first line the target already has is carried, and viewed again back on the old target', async () => {

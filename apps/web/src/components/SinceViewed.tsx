@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { structuredPatch } from 'diff';
-import { markedHunks, type ReviewItem } from '@viewed/core';
+import { markedHunks, markedLines, type ReviewItem } from '@viewed/core';
 import { DiffView } from './DiffView';
 import { BaseDiff, type ReadContext } from './BaseDiff';
 import { errorText, t } from '../i18n';
@@ -11,6 +11,11 @@ type S = { kind: 'loading' } | { kind: 'ok'; patch: string } | { kind: 'unavaila
 // base 가 그대로면 확인 당시 blob → 지금 blob(줄 단위). 움직였으면(리베이스·머지) blob 비교에 base 변경이 섞이므로
 // 지금 patch 에서 확인 안 한 블록이 든 덩어리만 보인다 — blob 을 안 읽는다(spec §6). 같은 덩어리의 확인한 블록 줄은 seen(흐리게)
 function blocksView(item: ReviewItem): { patch: string; seen: ReadonlySet<number> } | null {
+  // 결과 파일이 그때와 같아 처음 보는 줄을 정확히 안다 — 그 줄이 든 덩어리만, 나머지 변경은 흐리게
+  if (item.newLines && item.file.patch !== undefined) {
+    const m = markedLines(item.file.patch, item.newLines);
+    return { patch: m.patch, seen: new Set(m.seen) };
+  }
   const same = !!item.record?.base && !!item.base && item.record.base === item.base;
   if (same || !item.newBlocks || item.file.patch === undefined) return null;
   // 다른 브랜치에서 블록을 전부 봤지만 diff 가 다르다(elsewhere) — 덩어리를 빼지 않고 변경 줄을 전부 흐리게
@@ -57,7 +62,7 @@ export function SinceViewed({ readBlob, item, ask, others, readContext, contextK
   if (shown.kind === 'error') return <div><p data-testid="since-error" role="alert" className="flash err">{shown.msg}</p>{full}</div>;
   return (
     <div>
-      {byBlocks !== null && tab === 'since' && <p data-testid="since-blocks" className="note">{item.elsewhere ? (item.newBlocks?.length ? t.sinceElsewhere : t.sinceElsewhereAll) : t.sinceBlocks}</p>}
+      {byBlocks !== null && tab === 'since' && <p data-testid="since-blocks" className="note">{item.newLines ? (item.elsewhere ? t.sinceNewLinesElsewhere : t.sinceNewLines) : item.elsewhere ? (item.newBlocks?.length ? t.sinceElsewhere : t.sinceElsewhereAll) : t.sinceBlocks}</p>}
       {item.seenBlob && tab === 'since' && <p data-testid="since-elsewhere-lines" className="note">{t.sinceElsewhereLines}</p>}
       <div className="tabs">
         <button data-testid="since-tab" aria-pressed={tab === 'since'} onClick={() => setTab('since')}>{t.sinceTab}</button>

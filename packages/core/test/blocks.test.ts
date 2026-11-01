@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { blockSigs, metaSig, unmatchedBlocks, markedHunks } from '../src/blocks';
+import { blockSigs, metaSig, unmatchedBlocks, markedHunks, markedLines } from '../src/blocks';
 import { hmacHex, recordKey } from '../src/keys';
 
 const P = [
@@ -159,5 +159,26 @@ describe('markedHunks', () => {
     const R = ['@@ -1,3 +1,3 @@', '-a', '+A', ' mid', '-last', '\\ No newline at end of file', '+last2', '\\ No newline at end of file'].join('\n');
     expect(markedHunks(R, [0]).seen).toEqual([4, 5, 6, 7]);
     expect(markedHunks(R, [1]).seen).toEqual([1, 2]);
+  });
+});
+
+describe('markedLines', () => {
+  // 0 머리, 1 c, 2 -a, 3 +A, 4 c, 5 머리, 6 c, 7 -b, 8 \, 9 +B, 10 \
+  const P = ['@@ -1,3 +1,3 @@', ' c', '-a', '+A', ' c', '@@ -9,2 +9,2 @@', ' c', '-b', '\\ No newline at end of file', '+B', '\\ No newline at end of file'].join('\n');
+  const part = (from: number, to?: number) => P.split('\n').slice(from, to).join('\n');
+
+  it('keeps only the hunks with a wanted line and dims the other changes there, by the kept patch\'s line numbers', () => {
+    expect(markedLines(P, [2])).toEqual({ patch: part(0, 5), seen: [3] });
+    expect(markedLines(P, [3])).toEqual({ patch: part(0, 5), seen: [2] });
+  });
+  it('dims the end-of-file marker with its line, and not with a wanted one', () => {
+    expect(markedLines(P, [7])).toEqual({ patch: part(5), seen: [4, 5] });
+    expect(markedLines(P, [9])).toEqual({ patch: part(5), seen: [2, 3] });
+  });
+  it('never dims a wanted line or context', () => {
+    expect(markedLines(P, [2, 3, 7, 9])).toEqual({ patch: P, seen: [] });
+  });
+  it('keeps nothing when nothing is wanted', () => {
+    expect(markedLines(P, [])).toEqual({ patch: '', seen: [] });
   });
 });

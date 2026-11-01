@@ -709,8 +709,23 @@ test('S10: moving the target keeps a file with nothing new to read viewed, and s
   await second.win.getByTestId('local-base-select').selectOption('refs/heads/test');
   await second.win.getByTestId('open-btn').click();
   await expect(second.row).toHaveAttribute('data-state', 'changed-since-viewed');
-  await expect(second.row.getByTestId('since-diff')).toContainText('+line 11');
+  // 처음 보는 줄만 남는다 — 그때 본 line 20 은 다른 덩어리라 빠진다
+  await expect(second.row.getByTestId('since-blocks')).toContainText('lines you have not seen');
+  await expect(second.row.getByTestId('since-diff').locator('.ln.add:not(.seen), .ln.del:not(.seen)')).toHaveText(['-CHANGED BY TARGET', '+line 11']);
+  await expect(second.row.getByTestId('since-diff')).not.toContainText('NEW 20');
   await second.app.close();
+});
+
+test('S10b: another branch with the same file content uses the same rule on another target', async () => {
+  const repo = targetRepo({ 10: 'NEW 10' }, { 10: 'NEW 10', 11: 'NEW 11', 20: 'NEW 20' });
+  git(repo, 'branch', 'feat2', 'feat');
+  const { app, win, row } = await openAndCheck(repo);
+  await win.getByTestId('local-branch-select').selectOption('refs/heads/feat2');
+  await win.getByTestId('local-base-select').selectOption('refs/heads/test');
+  await win.getByTestId('open-btn').click();
+  await expect(row.getByTestId('file-state')).toHaveText('Carried over');
+  await expect(row).toHaveAttribute('data-state', 'viewed');
+  await app.close();
 });
 
 test('S11: a file that first appears on a new commit while the review is open finds the check on another branch', async () => {
