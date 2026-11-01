@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 
-// 긴 파일을 읽는 화면. f.ts 는 200줄에서 100번째 줄만 바꿨고, g.ts 는 짧은 수정, n.ts 는 새 파일, p.png 는 바이너리다
+// 긴 파일을 읽는 화면. f.ts 는 200줄에서 100번째 줄만 바꿨고, g.ts 는 짧은 수정, n.ts 는 새 파일, p.png 는 바이너리다.
+// z.ts 는 맨 끝의 긴 diff — 위 파일을 접어도 문서가 길게 남아, 브라우저의 스크롤 끝 맞춤이 대신 맞춰 주는 일이 없다
 const LINES = 200;
 async function fakeLocal(page: Page) {
   await page.addInitScript((LINES) => {
@@ -17,11 +18,13 @@ async function fakeLocal(page: Page) {
     const entries = () => `:100644 100644 ${oid('0').slice(1)}1 ${blobOf(w.__v.changed)} M\0f.ts\0` +
       `:100644 100644 ${oid('0').slice(1)}2 ${oid('5')} M\0g.ts\0` +
       `:000000 100644 ${oid('0')} ${oid('6')} A\0n.ts\0` +
-      `:100644 100644 ${oid('0').slice(1)}3 ${oid('7')} M\0p.png\0`;
+      `:100644 100644 ${oid('0').slice(1)}3 ${oid('7')} M\0p.png\0` +
+      `:100644 100644 ${oid('0').slice(1)}4 ${oid('8')} M\0z.ts\0`;
     const patch = () => head('f.ts') + short(w.__v.changed) +
       head('g.ts') + '@@ -1,2 +1,2 @@\n ctx\n-old\n+new\n' +
       head('n.ts') + '@@ -0,0 +1,1 @@\n+fresh\n' +
-      'diff --git a/p.png b/p.png\nBinary files a/p.png and b/p.png differ\n';
+      'diff --git a/p.png b/p.png\nBinary files a/p.png and b/p.png differ\n' +
+      head('z.ts') + `@@ -1,${LINES} +1,${LINES} @@\n-old\n+new\n` + text(LINES - 1).map((l) => ` ${l}`).join('\n') + '\n';
     w.viewedDesktop = {
       getSecret: async () => null, setSecret: async () => {},
       git: {
@@ -60,7 +63,7 @@ async function open(page: Page) {
   await page.goto('/');
   await expect(page.getByTestId('local-branch-select')).toHaveValue('refs/heads/feat');
   await page.getByTestId('open-btn').click();
-  await expect(page.getByTestId('progress')).toHaveText('0 / 4');
+  await expect(page.getByTestId('progress')).toHaveText('0 / 5');
 }
 const lastCall = (page: Page) => page.evaluate(() => (window as any).__v.last);
 
@@ -79,14 +82,14 @@ test.describe('whole file', () => {
     await expect(f.locator('.ln.add')).toHaveText(['+LINE 100']);
     // 보이는 리뷰의 merge-base·head 로 그 파일만 읽는다
     expect(await lastCall(page)).toEqual({ a: '2'.repeat(40), b: 'f'.repeat(40), c: 'f.ts' });
-    await expect(page.getByTestId('progress')).toHaveText('0 / 4');
+    await expect(page.getByTestId('progress')).toHaveText('0 / 5');
 
     // 켠 채로 체크해도 지문은 그대로 — 다시 읽어도 확인함이다
     await f.getByTestId('file-check').check();
-    await expect(page.getByTestId('progress')).toHaveText('1 / 4');
+    await expect(page.getByTestId('progress')).toHaveText('1 / 5');
     await page.getByTestId('refresh-btn').click();
     await expect(f).toHaveAttribute('data-state', 'viewed');
-    await expect(page.getByTestId('progress')).toHaveText('1 / 4');
+    await expect(page.getByTestId('progress')).toHaveText('1 / 5');
 
     await f.getByTestId('file-expand').click();
     await f.getByTestId('context-toggle').click();
@@ -165,4 +168,104 @@ test.describe('whole file', () => {
     const req = await page.evaluate(() => (window as any).__asks[0]);
     expect(req).toMatchObject({ path: 'f.ts', side: 'R', line: 5, lineText: 'line 5' });
   });
+});
+
+// 긴 diff 를 읽는 중에도 파일 이름과 체크칸이 보인다. 체크칸이 진짜 눌리는 자리에 있는지는 elementFromPoint 로 본다
+test.describe('file head', () => {
+  const rect = (page: Page, sel: string) => page.locator(sel).first().evaluate((e) => { const r = e.getBoundingClientRect(); return { top: r.top, bottom: r.bottom }; });
+  const barBottom = async (page: Page) => (await rect(page, '.progress')).bottom;
+  const headOf = (path: string) => `li.file:has(.path:text-is("${path}")) .file-head`;
+  const rowOf = (path: string) => `li.file:has(.path:text-is("${path}"))`;
+  // f.ts 를 전체로 펼치고 그 한가운데로 스크롤한다 — 머리의 원래 자리는 화면 위로 올라가 있다
+  async function readingMiddle(page: Page) {
+    await open(page);
+    const f = row(page, 'f.ts');
+    await f.getByTestId('context-toggle').click();
+    await expect(f.locator('.ln.ctx')).toHaveCount(LINES - 1);
+    await f.locator('.ln.ctx[data-n="90"]').evaluate((e) => e.scrollIntoView({ block: 'center' }));
+    expect((await rect(page, rowOf('f.ts'))).top).toBeLessThan(0);
+    return f;
+  }
+  async function expectCheckReachable(page: Page, path: string) {
+    const ok = await row(page, path).getByTestId('file-check').evaluate((input) => {
+      const r = input.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return hit === input;
+    });
+    expect(ok).toBe(true);
+  }
+
+  test('stays right under the progress bar and can be clicked while reading the middle of a long diff', async ({ page }) => {
+    await page.setViewportSize({ width: 1000, height: 600 });
+    await fakeLocal(page);
+    const f = await readingMiddle(page);
+    expect((await rect(page, '.progress')).top).toBe(0);
+    expect((await rect(page, headOf('f.ts'))).top).toBeCloseTo(await barBottom(page), 0);
+    await expectCheckReachable(page, 'f.ts');
+    await expect(f.locator('.path')).toBeInViewport();
+    // 다음 파일로 넘어가면 그 파일 머리가 그 자리를 잇는다
+    await row(page, 'g.ts').locator('.ln.add').evaluate((e) => e.scrollIntoView({ block: 'center' }));
+    await expectCheckReachable(page, 'g.ts');
+  });
+
+  test('follows the height of the progress bar when a narrow window wraps it', async ({ page }) => {
+    await page.setViewportSize({ width: 1000, height: 600 });
+    await fakeLocal(page);
+    await readingMiddle(page);
+    const wide = await barBottom(page);
+    await page.setViewportSize({ width: 480, height: 600 });
+    await row(page, 'f.ts').locator('.ln.ctx[data-n="90"]').evaluate((e) => e.scrollIntoView({ block: 'center' }));
+    await expect.poll(() => barBottom(page)).toBeGreaterThan(wide);   // 좁으면 검색칸이 아랫줄로 내려간다
+    await expect.poll(async () => Math.round((await rect(page, headOf('f.ts'))).top)).toBe(Math.round(await barBottom(page)));
+    await expectCheckReachable(page, 'f.ts');
+  });
+
+  test('checking from the middle of a long diff lands on the next file, not several files later', async ({ page }) => {
+    await page.setViewportSize({ width: 1000, height: 600 });
+    await fakeLocal(page);
+    const f = await readingMiddle(page);
+    await f.getByTestId('file-check').check();
+    await expect(f.locator('.file-body')).toHaveCount(0);
+    expect((await rect(page, rowOf('f.ts'))).top).toBeCloseTo(await barBottom(page), 0);
+    await expect(row(page, 'g.ts').locator('.path')).toBeInViewport();
+    await expectCheckReachable(page, 'g.ts');
+  });
+
+  test('collapsing with the chevron from the middle of a long diff does the same', async ({ page }) => {
+    await page.setViewportSize({ width: 1000, height: 600 });
+    await fakeLocal(page);
+    const f = await readingMiddle(page);
+    await f.getByTestId('file-expand').click();
+    await expect(f.locator('.file-body')).toHaveCount(0);
+    expect((await rect(page, rowOf('f.ts'))).top).toBeCloseTo(await barBottom(page), 0);
+    await expect(row(page, 'g.ts').locator('.path')).toBeInViewport();
+  });
+
+  test('checking a file whose head is in its normal place does not move the page', async ({ page }) => {
+    await page.setViewportSize({ width: 1000, height: 600 });
+    await fakeLocal(page);
+    await open(page);
+    const before = await page.evaluate(() => window.scrollY);
+    await row(page, 'f.ts').getByTestId('file-check').check();
+    await expect(row(page, 'f.ts').locator('.file-body')).toHaveCount(0);
+    expect(await page.evaluate(() => window.scrollY)).toBe(before);
+  });
+});
+
+test('the recent menu opens over the progress bar, not under it', async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 600 });
+  await page.addInitScript(() => {
+    const history = Array.from({ length: 8 }, (_, i) => ({ repo: '/r/a', branch: 'refs/heads/feat', base: `refs/heads/b${i}` }));
+    localStorage.setItem('viewed.recent', JSON.stringify({ history }));
+  });
+  await fakeLocal(page);
+  await open(page);
+  await page.getByTestId('local-recent').locator('summary').click();
+  const covered = await page.getByTestId('recent-item').evaluateAll((items) => {
+    const bar = document.querySelector('.progress')!.getBoundingClientRect();
+    const over = items.filter((e) => { const r = e.getBoundingClientRect(); return r.top < bar.bottom && r.bottom > bar.top; });
+    return { over: over.length, hitsItem: over.every((e) => { const r = e.getBoundingClientRect(); const y = Math.max(r.top, bar.top) + 2; return e.contains(document.elementFromPoint(r.left + r.width / 2, y)); }) };
+  });
+  expect(covered.over).toBeGreaterThan(0);   // 겹치는 자리가 있어야 이 테스트가 뜻이 있다
+  expect(covered.hitsItem).toBe(true);
 });

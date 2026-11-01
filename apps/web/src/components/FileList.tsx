@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { Review, ReviewItem } from '@viewed/core';
 import { t } from '../i18n';
 
@@ -12,14 +12,38 @@ export function FileList({ review, syncOk, onToggle, renderDiff }: { review: Rev
   // 머리를 눌러 펼치고 접은 것. 그때의 지문이 지금과 같을 때만 따른다 — 새 커밋이 바꾼 파일은 기본값(펼침)으로 돌아가 바뀐 줄이 숨지 않는다
   const [picked, setPicked] = useState<Record<string, { open: boolean; fp: string }>>({});
   const isOpen = (it: ReviewItem) => (picked[it.key]?.fp === it.fp ? picked[it.key].open : it.state !== 'viewed');
+  // 파일 머리는 진행 막대 바로 아래에 붙는다 — 막대 높이는 창 폭에 따라 줄바꿈으로 달라져서 재서 넘긴다
+  const root = useRef<HTMLElement>(null), bar = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const s = root.current, b = bar.current;
+    if (!s || !b) return;
+    const apply = () => s.style.setProperty('--progress-h', `${b.offsetHeight}px`);
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(b);
+    return () => ro.disconnect();
+  }, []);
+  // 머리가 붙은 채로(긴 diff 중간에서) 접으면 문서가 줄어 화면이 몇 파일 뒤로 밀린다 — 접은 파일의 머리를 막대 아래로 되돌린다.
+  // 머리가 제자리에 있으면 그대로 둔다
+  const realign = useRef<Element | null>(null);
+  const willCollapse = (el: Element) => {
+    const li = el.closest('li');
+    if (li && li.getBoundingClientRect().top < (bar.current?.offsetHeight ?? 0)) realign.current = li;
+  };
+  useLayoutEffect(() => {
+    const li = realign.current;
+    if (!li) return;
+    realign.current = null;
+    if (li.isConnected) window.scrollBy(0, li.getBoundingClientRect().top - (bar.current?.offsetHeight ?? 0));
+  });
   // 확인한 블록이 빠진 파일(shrunk)은 확인함이지만 경고가 붙은 것 — 숨기면 그 경고를 볼 곳이 없다
   const byState = onlyUnviewed ? review.items.filter((it) => it.state !== 'viewed' || it.carried === 'shrunk') : review.items;
   // 검색은 보이는 목록만 좁힌다 — 진행률·완료는 review 전체 기준 그대로. 경로에 글자가 그대로 들어간 것만(퍼지 아님), 대소문자·앞뒤 공백 무시
   const needle = query.trim().toLowerCase();
   const shown = needle ? byState.filter((it) => it.file.path.toLowerCase().includes(needle)) : byState;
   return (
-    <section className="review">
-      <div className="progress">
+    <section className="review" ref={root}>
+      <div className="progress" ref={bar}>
         <span><b data-testid="progress">{review.viewedCount} / {review.total}</b> {t.filesViewed}</span>
         <span className="meter" aria-hidden="true"><span style={{ width: `${pct}%` }} /></span>
         <input type="search" className="search" data-testid="file-search" aria-label={t.aria.searchFiles} placeholder={t.searchFiles} value={query} onChange={(e) => setQuery(e.target.value)} />
@@ -30,7 +54,10 @@ export function FileList({ review, syncOk, onToggle, renderDiff }: { review: Rev
       <ul className="files">
         {shown.map((it) => {
           const open = isOpen(it);
-          const flip = () => setPicked((p) => ({ ...p, [it.key]: { open: !open, fp: it.fp } }));
+          const flip = (el: Element) => {
+            if (open) willCollapse(el);
+            setPicked((p) => ({ ...p, [it.key]: { open: !open, fp: it.fp } }));
+          };
           return (
             <li key={it.key} data-testid="file-row" data-state={it.state} className="file" {...(it.others ? { 'data-others': '1' } : {})}>
               {/* 머리 빈 곳을 눌러도 꺾쇠처럼 펼친다. 체크 라벨·버튼·링크는 각자 일하고(겹치면 두 번 바뀐다), 경로 글자는 고르는 데만 쓴다
@@ -39,11 +66,11 @@ export function FileList({ review, syncOk, onToggle, renderDiff }: { review: Rev
               <div className="file-head" onClick={(e) => {
                 if ((e.target as Element).closest('label, input, button, a, .path')) return;
                 if (window.getSelection()?.toString()) return;
-                flip();
+                flip(e.currentTarget);
               }}>
                 {/* 경로는 버튼 밖에 둬 드래그로 복사할 수 있게 */}
                 <button type="button" data-testid="file-expand" className="expand" aria-expanded={open} aria-label={t.toggleDiffOf(it.file.path)} title={t.toggleDiff}
-                  onClick={flip}>
+                  onClick={(e) => flip(e.currentTarget)}>
                   <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6" /></svg>
                 </button>
                 <span className="path">{it.file.path}</span>
@@ -57,6 +84,7 @@ export function FileList({ review, syncOk, onToggle, renderDiff }: { review: Rev
                   {/* 체크하면 접고 풀면 펼친다 — 머리로 고른 것은 덮는다. 판정이 비동기라 목표 상태를 바로 넣어야 옛 state 로 한 번 그려질 때 깜빡이지 않는다 */}
                   <input type="checkbox" data-testid="file-check" aria-label={t.viewedFile(it.file.path)} checked={it.state === 'viewed'} disabled={!!it.others} onChange={(e) => {
                     const v = e.target.checked;
+                    if (v && open) willCollapse(e.currentTarget);
                     setPicked((p) => ({ ...p, [it.key]: { open: !v, fp: it.fp } }));
                     onToggle(it, v);
                   }} />

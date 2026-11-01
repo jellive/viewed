@@ -121,7 +121,7 @@ button.primary:hover { background: var(--primary-hover); }
 
 /* 진행 — GitHub PR 의 "N / M files viewed" */
 .progress {
-  position: sticky; top: 0; z-index: 2;
+  position: sticky; top: 0; z-index: 3;   /* 붙은 파일 머리(2)보다 위 */
   display: flex; align-items: center; gap: 12px;
   padding: 8px 0; margin-bottom: 8px;
   background: var(--canvas);
@@ -133,8 +133,10 @@ button.primary:hover { background: var(--primary-hover); }
 
 /* 파일 카드 */
 .files { list-style: none; margin: 0; padding: 0; }
-.file { margin-bottom: 16px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+/* hidden 이면 카드가 스크롤 기준이 돼 안쪽 sticky 가 안 붙는다 — clip 은 둥근 모서리만 자른다 */
+.file { margin-bottom: 16px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; overflow: clip; }
 .file-head {
+  position: sticky; top: var(--progress-h, 0px); z-index: 2;   /* 줄 질문 버튼(1)보다 위 */
   display: flex; align-items: center; gap: 8px;
   padding: 8px 8px 8px 16px;
   background: var(--canvas-subtle);
@@ -263,7 +265,7 @@ button.primary:hover { background: var(--primary-hover); }
 .recent > summary:hover { border-color: var(--fg-muted); }
 .recent > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
 .recent-list {
-  position: absolute; z-index: 3; top: calc(100% + 4px); left: 0;
+  position: absolute; z-index: 4; top: calc(100% + 4px); left: 0;   /* 진행 막대(3)를 덮는다 */
   display: flex; flex-direction: column; min-width: 280px; max-width: min(480px, calc(100vw - 32px)); padding: 4px;
   background: var(--canvas); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 8px 24px rgba(31, 35, 40, 0.12);
 }
