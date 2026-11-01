@@ -8,6 +8,7 @@
     "start": "electron .",
     "test": "playwright test",
     "test:unit": "node --test test/",
+    "install-app": "bash ../../scripts/install-app.sh",
     "package": "pnpm --filter @viewed/web build && rm -rf web-dist && cp -R ../web/dist web-dist && electron-packager . viewed --overwrite --asar --out=out --no-prune --ignore='^/(node_modules|e2e|test|test-results|out)(/|$)' --ignore='^/playwright\\.config\\.ts$' --ignore='^/\\.'"
   },
   "devDependencies": {
