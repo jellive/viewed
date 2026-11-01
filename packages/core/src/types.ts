@@ -25,10 +25,13 @@ export interface ReviewItem {
   state: FileState; record?: ViewRecord; newBlocks?: number[]; carried?: 'same' | 'shrunk'; dropped?: number;
   carryPrev?: { base: string; fp: string; via?: 'branch' | 'target' };   // targetCarry 가 (b) 로 고른 item 에만: 이어받기 전 기록의 base·지문·출처
   others?: string[];   // 남의 커밋만 닿은 파일이라 확인한 것으로 친다 — 남 작성자 이름
-  elsewhere?: true;    // 기록이 없고 다른 브랜치에서 확인한 블록과 일부 겹친다 — newBlocks 만 보인다. 저장하지 않는다
+  elsewhere?: true;    // 기록이 없고 다른 브랜치에서 확인한 것과 겹친다 — newBlocks 나 seenBlob 이후 바뀐 줄만 보인다. 저장하지 않는다
+  seenBlob?: string;   // elsewhere 중 양쪽 다 새 파일일 때: 거기서 확인한 blob. 블록 하나짜리라 줄 단위로 비교한다
   auto?: true;         // 확인함인데 사람이 이 기록을 누른 게 아니다 — 남의 파일이거나 이어받은 기록
   carriedOver?: true;  // auto 중 이어받은 기록 쪽 — 남의 파일이면 오래된 기록이 있어도 아니다
 }
+// 다른 브랜치에서 확인한 것 — 변경 블록, 또는 양쪽 다 새 파일이면 그때의 blob
+export type NearMatch = { blocks: string[] } | { blob: string };
 export interface Review { items: ReviewItem[]; viewedCount: number; autoCount: number; total: number; incomplete: boolean; complete: boolean }
 // 기록의 옛 merge-base → to(지금 merge-base) 사이 트리에서 바뀐 경로. null = 못 쟀다(git 실패·시간 초과)
 export interface BaseMoves { to: string; from: ReadonlyMap<string, ReadonlySet<string> | null> }

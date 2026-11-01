@@ -206,3 +206,57 @@ test('a check carried over from another branch is marked, can be listed apart, a
   await expect(page.getByTestId('progress')).toHaveText('1 / 4');
   await expect(filter).toHaveCount(0);
 });
+
+// 새 파일이 브랜치 사이에 한 줄만 달라졌다. diff 전체가 블록 하나라 블록으로는 안 겹친다(2026-11-01 실사용 — 13개 파일 1,905줄이 다시 떴다)
+async function fakeNew(page: Page) {
+  await page.addInitScript(() => {
+    localStorage.setItem('viewed.settings', JSON.stringify({ accounts: [], gistAccount: '', gistId: '', secret: '', deviceId: 'mac', storage: 'device' }));
+    const w = window as any;
+    const oid = (c: string) => c.repeat(40);
+    const body = { [oid('f')]: ['l1', 'l2', 'l3', 'l4'], [oid('e')]: ['l1', 'l2', 'L3', 'l4'] } as Record<string, string[]>;
+    const blobOf: Record<string, string> = { [oid('f')]: oid('3'), [oid('e')]: oid('4') };
+    w.viewedDesktop = {
+      getSecret: async () => null, setSecret: async () => {},
+      git: {
+        pick: async () => null, list: async () => ['/r/a'],
+        info: async () => ({ refs: ['refs/heads/feat', 'refs/heads/feat2', 'refs/heads/main'], defaultBase: null, current: 'refs/heads/feat', remote: null, user: { name: 'alice', email: 'alice@example.test' } }),
+        run: async (_repo: string, op: string, a: string, b: string) => {
+          if (op === 'resolve') return a === 'refs/heads/feat' ? oid('f') : a === 'refs/heads/feat2' ? oid('e') : oid('1');
+          if (op === 'mergeBase') return oid('2');
+          if (op === 'rawDiff') return `:000000 100644 ${oid('0')} ${blobOf[b]} A\0n.ts\0`;
+          if (op === 'patchDiff') return `diff --git a/n.ts b/n.ts\nnew file mode 100644\n--- /dev/null\n+++ b/n.ts\n@@ -0,0 +1,4 @@\n${body[b].map((l) => `+${l}`).join('\n')}\n`;
+          if (op === 'blob') return (a === oid('3') ? body[oid('f')] : body[oid('e')]).join('\n') + '\n';
+          return null;
+        },
+      },
+    };
+  });
+}
+
+test('a new file viewed on another branch shows only the lines changed since, and checking it makes it direct', async ({ page }) => {
+  await fakeNew(page);
+  await page.goto('/');
+  await expect(page.getByTestId('local-branch-select')).toHaveValue('refs/heads/feat');
+  await page.getByTestId('open-btn').click();
+  await expect(page.getByTestId('progress')).toHaveText('0 / 1');
+  await row(page, 'n.ts').getByTestId('file-check').check();
+  await expect(page.getByTestId('progress')).toHaveText('1 / 1');
+
+  await page.getByTestId('local-branch-select').selectOption('refs/heads/feat2');
+  await page.getByTestId('open-btn').click();
+  await expect(page.getByTestId('progress')).toHaveText('0 / 1');
+  const n = row(page, 'n.ts');
+  await expect(n).toHaveAttribute('data-state', 'changed-since-viewed');
+  await expect(n.getByTestId('file-state')).toHaveText('Seen on another branch');
+  await expect(n.getByTestId('since-elsewhere-lines')).toContainText('changed since then');
+  await expect(n.getByTestId('since-diff').locator('.ln.add')).toHaveText(['+L3']);
+  await expect(n.getByTestId('since-diff').locator('.ln.del')).toHaveText(['-l3']);
+  await expect(page.getByTestId('auto-filter')).toHaveCount(0);   // 확인으로 안 쳤으니 자동도 아니다
+  // 파일 전체는 전체 diff 탭에 그대로 있다
+  await n.getByTestId('full-tab').click();
+  await expect(n.getByTestId('since-elsewhere-lines')).toHaveCount(0);
+  await expect(n.locator('.ln.add')).toHaveCount(4);
+  await n.getByTestId('file-check').check();
+  await expect(page.getByTestId('progress')).toHaveText('1 / 1');
+  await expect(page.getByTestId('auto-filter')).toHaveCount(0);
+});

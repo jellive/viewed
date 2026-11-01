@@ -28,7 +28,8 @@ export function SinceViewed({ readBlob, item, ask, others, readContext, contextK
   const [s, setS] = useState<S>({ kind: 'loading' });
   const byBlocks = blocksView(item);
   const blocked = byBlocks !== null;
-  const oldSha = item.record?.blob, newSha = item.file.blobSha, path = item.file.path;
+  // 이 브랜치 기록이 없는 새 파일은 다른 브랜치에서 확인한 blob 과 맞댄다
+  const oldSha = item.record?.blob ?? item.seenBlob, newSha = item.file.blobSha, path = item.file.path;
   useEffect(() => {
     if (blocked) return;
     let live = true;
@@ -57,6 +58,7 @@ export function SinceViewed({ readBlob, item, ask, others, readContext, contextK
   return (
     <div>
       {byBlocks !== null && tab === 'since' && <p data-testid="since-blocks" className="note">{item.elsewhere ? (item.newBlocks?.length ? t.sinceElsewhere : t.sinceElsewhereAll) : t.sinceBlocks}</p>}
+      {item.seenBlob && tab === 'since' && <p data-testid="since-elsewhere-lines" className="note">{t.sinceElsewhereLines}</p>}
       <div className="tabs">
         <button data-testid="since-tab" aria-pressed={tab === 'since'} onClick={() => setTab('since')}>{t.sinceTab}</button>
         <button data-testid="full-tab" aria-pressed={tab === 'full'} onClick={() => setTab('full')}>{t.fullTab}</button>

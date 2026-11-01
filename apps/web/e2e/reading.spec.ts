@@ -328,3 +328,87 @@ test.describe('a row leaving a filtered list', () => {
     expect(Math.abs(await top(page, 'g.ts') - await bar(page))).toBeLessThan(40);
   });
 });
+
+// 생성 SQL 같은 큰 diff 는 처음에 접어 둔다 — 2026-11-01 실사용에서 두 파일로 5만 5천 줄을 그려 체크 한 번에 0.5~0.8초 걸렸다
+test.describe('a large diff', () => {
+  const N = 2500;
+  async function fakeBig(page: Page) {
+    await page.addInitScript((N) => {
+      localStorage.setItem('viewed.settings', JSON.stringify({ accounts: [], gistAccount: '', gistId: '', secret: '', deviceId: 'mac', storage: 'device' }));
+      const w = window as any;
+      const oid = (c: string) => c.repeat(40);
+      const head = (p: string) => `diff --git a/${p} b/${p}\n--- a/${p}\n+++ b/${p}\n`;
+      const lines = (n: number, s: string) => Array.from({ length: n }, (_, i) => `+${s} ${i}`).join('\n');
+      w.__v = { head: oid('f'), tail: 'x' };
+      const raw = () => `:000000 100644 ${oid('0')} ${w.__v.tail === 'x' ? oid('3') : oid('6')} A\0big.sql\0:000000 100644 ${oid('0')} ${oid('4')} A\0edge.sql\0:100644 100644 ${oid('0').slice(1)}1 ${oid('5')} M\0s.ts\0`;
+      const patch = () => head('big.sql') + `@@ -0,0 +1,${N} @@\n${lines(N, w.__v.tail)}\n` +
+        head('edge.sql') + `@@ -0,0 +1,1999 @@\n${lines(1999, 'e')}\n` +
+        head('s.ts') + '@@ -1,2 +1,2 @@\n ctx\n-old\n+new\n';
+      w.viewedDesktop = {
+        getSecret: async () => null, setSecret: async () => {},
+        git: {
+          pick: async () => null, list: async () => ['/r/a'],
+          info: async () => ({ refs: ['refs/heads/feat', 'refs/heads/main'], defaultBase: null, current: 'refs/heads/feat', remote: null, user: { name: 'alice', email: 'a@example.test' } }),
+          run: async (_r: string, op: string, a: string) => {
+            if (op === 'resolve') return a === 'refs/heads/feat' ? w.__v.head : oid('1');
+            if (op === 'mergeBase') return oid('2');
+            if (op === 'rawDiff') return raw();
+            if (op === 'patchDiff') return patch();
+            return null;
+          },
+        },
+      };
+    }, N);
+  }
+  async function openBig(page: Page) {
+    await page.goto('/');
+    await expect(page.getByTestId('local-branch-select')).toHaveValue('refs/heads/feat');
+    await page.getByTestId('open-btn').click();
+    await expect(page.getByTestId('progress')).toHaveText('0 / 3');
+  }
+
+  test('starts collapsed and unread, says why, and opens on demand', async ({ page }) => {
+    await fakeBig(page);
+    await openBig(page);
+    const big = row(page, 'big.sql');
+    await expect(big).toHaveAttribute('data-state', 'unread');
+    await expect(big.locator('.file-body')).toHaveCount(0);
+    await expect(big.getByTestId('file-big')).toHaveText('Large diff, 2,501 lines');
+    await expect(row(page, 's.ts').locator('.file-body')).toHaveCount(1);
+    await big.getByTestId('file-expand').click();
+    await expect(big.locator('.ln.add')).toHaveCount(N);
+    await expect(big.getByTestId('file-big')).toHaveCount(0);
+    await big.getByTestId('file-expand').click();
+    await expect(big.locator('.file-body')).toHaveCount(0);
+  });
+
+  test('2,000 lines is not large yet', async ({ page }) => {
+    await fakeBig(page);
+    await openBig(page);
+    const edge = row(page, 'edge.sql');
+    await expect(edge.locator('.ln')).toHaveCount(2000);   // 머리 1 + 1999
+    await expect(edge.getByTestId('file-big')).toHaveCount(0);
+  });
+
+  test('can be checked while collapsed, and the note goes away', async ({ page }) => {
+    await fakeBig(page);
+    await openBig(page);
+    const big = row(page, 'big.sql');
+    await big.getByTestId('file-check').check();
+    await expect(page.getByTestId('progress')).toHaveText('1 / 3');
+    await expect(big.getByTestId('file-big')).toHaveCount(0);
+    await expect(big.locator('.file-body')).toHaveCount(0);
+  });
+
+  test('a new commit to an opened large file collapses it again, still not viewed', async ({ page }) => {
+    await fakeBig(page);
+    await openBig(page);
+    const big = row(page, 'big.sql');
+    await big.getByTestId('file-expand').click();
+    await expect(big.locator('.ln.add')).toHaveCount(N);
+    await page.evaluate(() => { const v = (window as any).__v; v.head = 'e'.repeat(40); v.tail = 'y'; });
+    await page.getByTestId('refresh-btn').click();
+    await expect(big.locator('.file-body')).toHaveCount(0);
+    await expect(big).toHaveAttribute('data-state', 'unread');
+  });
+});

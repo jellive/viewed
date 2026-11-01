@@ -1,7 +1,7 @@
 import { fingerprint } from './fingerprint';
 import { recordKey } from './keys';
 import { blockSigs, metaSig, unmatchedBlocks } from './blocks';
-import type { BaseMoves, ChangedFile, DeviceState, FileState, Review, ReviewItem, Snapshot, ViewRecord } from './types';
+import type { BaseMoves, ChangedFile, DeviceState, FileState, NearMatch, Review, ReviewItem, Snapshot, ViewRecord } from './types';
 
 // 서명은 patch 가 같으면 같다 — 지문(patch 포함)으로 기억해 체크할 때마다 다시 HMAC 하지 않는다
 const sigCache = new Map<string, string[]>();
@@ -22,9 +22,9 @@ function untouched(moves: BaseMoves | undefined, from: string, to: string, file:
   return !!s && !s.has(file.path) && !(file.previousPath !== undefined && s.has(file.previousPath));
 }
 
-// near: 경로 → 다른 브랜치에서 확인한 기록의 블록 서명(branchMatches). 이 브랜치에 기록이 아예 없는 파일에만 쓴다
+// near: 경로 → 다른 브랜치에서 확인한 기록의 블록 서명이나 blob(branchMatches). 이 브랜치에 기록이 아예 없는 파일에만 쓴다
 export async function buildReview(snap: Snapshot, state: DeviceState, secret: string,
-  others?: ReadonlyMap<string, string[]>, moves?: BaseMoves, near?: ReadonlyMap<string, string[]>): Promise<Review> {
+  others?: ReadonlyMap<string, string[]>, moves?: BaseMoves, near?: ReadonlyMap<string, NearMatch>): Promise<Review> {
   const items: ReviewItem[] = [];
   for (const file of snap.files) {
     const key = await recordKey(secret, snap.owner, snap.repo, snap.branch, file.path);
@@ -35,14 +35,15 @@ export async function buildReview(snap: Snapshot, state: DeviceState, secret: st
     const names = others?.get(file.path);
     let st: FileState;
     let newBlocks: number[] | undefined, carried: ReviewItem['carried'], dropped: number | undefined, elsewhere = false;
-    let via = record?.via;
+    let via = record?.via, seenBlob: string | undefined;
     if (names) st = 'viewed';   // 남의 표시가 기록보다 이긴다
     else if (!record) {
       // 다른 브랜치에서 본 블록과 겹치면 안 맞는 블록만 보인다. 전부 맞아도(newBlocks 빈 배열) 확인함으로 치지 않는다 —
       // 서명에 위치가 없어 같은 변경이 파일의 다른 곳에 있을 수 있다. 그때는 전부 흐리게 보인다
       const seen = near?.get(file.path);
-      const miss = seen && blocks ? unmatchedBlocks(seen, blocks) : undefined;
-      if (miss && blocks && miss.length < blocks.length) { st = 'changed-since-viewed'; newBlocks = miss; elsewhere = true; }
+      const miss = seen && 'blocks' in seen && blocks ? unmatchedBlocks(seen.blocks, blocks) : undefined;
+      if (seen && 'blob' in seen) { st = 'changed-since-viewed'; seenBlob = seen.blob; elsewhere = true; }
+      else if (miss && blocks && miss.length < blocks.length) { st = 'changed-since-viewed'; newBlocks = miss; elsewhere = true; }
       else st = 'unread';
     }
     else if (!record.viewed) st = 'unread';
@@ -67,7 +68,7 @@ export async function buildReview(snap: Snapshot, state: DeviceState, secret: st
     }
     items.push({ file, key, fp, meta, ...(blocks ? { blocks } : {}), ...(snap.mergeBase ? { base: snap.mergeBase } : {}),
       state: st, record, ...(names ? { others: names } : {}), ...(newBlocks ? { newBlocks } : {}), ...(carried ? { carried } : {}), ...(dropped ? { dropped } : {}),
-      ...(elsewhere ? { elsewhere: true as const } : {}), ...(st === 'viewed' && (names || via) ? { auto: true as const } : {}), ...(st === 'viewed' && !names && via ? { carriedOver: true as const } : {}) });
+      ...(elsewhere ? { elsewhere: true as const } : {}), ...(seenBlob ? { seenBlob } : {}), ...(st === 'viewed' && (names || via) ? { auto: true as const } : {}), ...(st === 'viewed' && !names && via ? { carriedOver: true as const } : {}) });
   }
   const viewedCount = items.filter((i) => i.state === 'viewed').length;
   return { items, viewedCount, autoCount: items.filter((i) => i.auto).length, total: items.length, incomplete: snap.truncated,

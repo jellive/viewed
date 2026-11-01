@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildReview, markRecord, movedBases } from '../src/review';
-import { branchMatches, carryBases } from '../src/carry';
+import { branchMatches, carryBases, targetCarry } from '../src/carry';
 import type { ChangedFile, DeviceState, Snapshot } from '../src/types';
 
 // 브랜치 이름이 바뀌어도(feat → feat2) 다른 브랜치에서 확인한 같은 경로의 기록을 찾는다
@@ -126,5 +126,83 @@ describe('buildReview with matches from another branch', () => {
     const r = await buildReview(s, state, S, undefined, undefined, m.near);
     expect(r.items[0].state).toBe('unread');
     expect(r.items[0].newBlocks).toBeUndefined();
+  });
+});
+
+// 새 파일은 diff 전체가 블록 하나라 한 줄만 달라도 블록이 안 겹친다. 양쪽 다 새 파일이면 base 쪽이 비어 blob 비교에 소음이 없다 — 줄 단위로 본다
+describe('a new file seen on another branch', () => {
+  const added = (path: string, body: string, blob = 'b-' + body): ChangedFile =>
+    ({ path, status: 'added', blobSha: blob, patch: `@@ -0,0 +1,2 @@\n+${body}\n+tail`, mode: '100644' });
+
+  it('is matched by the blob seen there, not by blocks', async () => {
+    const state = await viewedOn(FEAT, [added('n.ts', 'one', 'blob-one')], '2026-10-01T00:00:00Z', OLD_MB);
+    const { s, m } = await open([added('n.ts', 'two', 'blob-two')], state, [FEAT]);
+    expect(m.exact).toEqual([]);
+    expect(m.near.get('n.ts')).toEqual({ blob: 'blob-one' });
+    const r = await buildReview(s, state, S, undefined, undefined, m.near);
+    expect(r.items[0]).toMatchObject({ state: 'changed-since-viewed', elsewhere: true, seenBlob: 'blob-one' });
+    expect(r.items[0].newBlocks).toBeUndefined();
+    expect(r.items[0].record).toBeUndefined();
+    expect(r.viewedCount).toBe(0);
+  });
+
+  it('stays exact when the diff is the same', async () => {
+    const state = await viewedOn(FEAT, [added('n.ts', 'one')], '2026-10-01T00:00:00Z');
+    const { m } = await open([added('n.ts', 'one')], state, [FEAT]);
+    expect(m.exact.map((i) => i.file.path)).toEqual(['n.ts']);
+    expect(m.near.size).toBe(0);
+  });
+
+  it('a later uncheck elsewhere wins, and the newest check gives the blob', async () => {
+    let state = await viewedOn(FEAT, [added('n.ts', 'one', 'blob-one')], '2026-10-01T00:00:00Z');
+    const later = await buildReview(snap(OTHER, [added('n.ts', 'mid', 'blob-mid')]), {}, S);
+    state[later.items[0].key] = markRecord(later.items[0], 'a'.repeat(40), false, new Date('2026-10-05T00:00:00Z'));
+    expect((await open([added('n.ts', 'two')], state, [FEAT, OTHER])).m.near.size).toBe(0);
+    state = await viewedOn(OTHER, [added('n.ts', 'mid', 'blob-mid')], '2026-10-06T00:00:00Z', MB, state);
+    expect((await open([added('n.ts', 'two')], state, [FEAT, OTHER])).m.near.get('n.ts')).toEqual({ blob: 'blob-mid' });
+  });
+
+  it('a file that is not new on both sides keeps the block rules', async () => {
+    const state = await viewedOn(FEAT, [file('n.ts', [X])], '2026-10-01T00:00:00Z');
+    expect((await open([added('n.ts', 'two')], state, [FEAT])).m.near.size).toBe(0);
+    // 이름이 바뀐 새 파일·모드가 다른 새 파일도 같은 파일로 치지 않는다
+    const moded = await viewedOn(FEAT, [{ ...added('n.ts', 'one'), mode: '100755' }], '2026-10-01T00:00:00Z');
+    expect((await open([added('n.ts', 'two')], moded, [FEAT])).m.near.size).toBe(0);
+  });
+
+  it('a new binary file has no lines to compare', async () => {
+    const bin = (blob: string): ChangedFile => ({ path: 'p.png', status: 'added', blobSha: blob, mode: '100644' });
+    const state = await viewedOn(FEAT, [bin('a'.repeat(40))], '2026-10-01T00:00:00Z');
+    expect((await open([bin('c'.repeat(40))], state, [FEAT])).m.near.size).toBe(0);
+  });
+});
+
+describe('moving the target twice', () => {
+  // 대상을 P → N1 → N2 로 옮긴다. N1 은 P 의 조상이지만 N2 는 N1 의 조상이 아니다 — N1 에서 다시 쓴 기록의 base 로는 비교를 못 한다
+  const P = 'p'.repeat(40), N1 = 'd'.repeat(40), N2 = 'e'.repeat(40);
+  const onP = file('a.ts', [X]), onN1 = file('a.ts', [X, Y]), onN2 = file('a.ts', [X, Y, Z]);
+
+  it('still compares with the target it was first checked on', async () => {
+    const state = await viewedOn(FEAT, [onP], '2026-10-01T00:00:00Z', P);
+    // N1 로 옮기며 (b) 로 이어받아 다시 쓴다 — base=N1, prev={P, 지문}
+    const first = await buildReview(snap(FEAT, [onN1], N1), state, S);
+    const [carried] = await targetCarry(first, N1, [{ base: P, files: [onP] }]);
+    expect(carried.carryPrev?.base).toBe(P);
+    state[carried.key] = { ...markRecord(carried, 'h'.repeat(40), true), via: 'target' };
+    // N2 로 옮긴다. 조상인 건 P 뿐이다
+    const second = await buildReview(snap(FEAT, [onN2], N2), state, S);
+    expect(carryBases(second, N2).sort()).toEqual([N1, P].sort());
+    const [again] = await targetCarry(second, N2, [{ base: P, files: [onP] }]);
+    expect(again?.file.path).toBe('a.ts');
+    expect(again.carryPrev).toEqual(carried.carryPrev);
+  });
+
+  it('does not match when the file changed on that target since', async () => {
+    const state = await viewedOn(FEAT, [onP], '2026-10-01T00:00:00Z', P);
+    const first = await buildReview(snap(FEAT, [onN1], N1), state, S);
+    const [carried] = await targetCarry(first, N1, [{ base: P, files: [onP] }]);
+    state[carried.key] = { ...markRecord(carried, 'h'.repeat(40), true), via: 'target' };
+    const second = await buildReview(snap(FEAT, [onN2], N2), state, S);
+    expect(await targetCarry(second, N2, [{ base: P, files: [file('a.ts', [Y])] }])).toEqual([]);
   });
 });

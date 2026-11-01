@@ -663,3 +663,27 @@ test('S8: a changed file can be shown whole against the merge base, a renamed on
   await expect(f).toHaveAttribute('data-state', 'viewed');
   await app.close();
 });
+
+// 새 파일이 다른 브랜치에서 한 줄만 달라졌다 — 통째로 안 봄이 되던 것(2026-11-01 실사용). 그 줄만 보인다
+test('S9: a new file viewed on another branch shows only the lines that differ there', async () => {
+  const repo = lineRepo([{ 8: 'line 8 FEAT' }], 30);
+  writeFileSync(join(repo, 'n.ts'), lines({}, 40)); git(repo, 'add', 'n.ts'); git(repo, 'commit', '-q', '-m', 'new file');
+  git(repo, 'checkout', '-q', '-b', 'feat2');
+  writeFileSync(join(repo, 'n.ts'), lines({ 20: 'line 20 CHANGED' }, 40)); git(repo, 'commit', '-q', '-am', 'tweak');
+  git(repo, 'checkout', '-q', 'feat');
+  const { app, win } = await launch(repo);
+  await win.getByTestId('local-add').click();
+  await openLocal(win);
+  const n = win.getByTestId('file-row').filter({ hasText: 'n.ts' });
+  await n.getByTestId('file-check').check();
+  await expect(win.getByTestId('progress')).toHaveText('1 / 2');
+  await win.getByTestId('local-branch-select').selectOption('refs/heads/feat2');
+  await win.getByTestId('open-btn').click();
+  await expect(n).toHaveAttribute('data-state', 'changed-since-viewed');
+  await expect(n.getByTestId('file-state')).toHaveText('Seen on another branch');
+  await expect(n.getByTestId('since-diff').locator('.ln.add')).toHaveText(['+line 20 CHANGED']);
+  await expect(n.getByTestId('since-diff').locator('.ln.del')).toHaveText(['-line 20']);
+  await n.getByTestId('full-tab').click();
+  await expect(n.locator('.ln.add')).toHaveCount(40);
+  await app.close();
+});

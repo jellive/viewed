@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { branchMatches, buildReview, markRecord, mergeStates, movedBases, type BaseMoves, type DeviceState, type Review, type ReviewItem, type Snapshot } from '@viewed/core';
+import { branchMatches, buildReview, markRecord, mergeStates, movedBases, type BaseMoves, type DeviceState, type NearMatch, type Review, type ReviewItem, type Snapshot } from '@viewed/core';
 import type { SyncStore } from './syncStore';
 
 export type { SyncStatus } from './syncStore';
@@ -30,7 +30,7 @@ export function useReview(a: { snap: Snapshot; merged: DeviceState; secret: stri
   const displayed = useRef(false);
   // 다른 브랜치 기록 찾기도 첫 화면 전에 한 번만. near 는 저장하지 않으니 이 인스턴스가 들고 build 마다 넘긴다
   const branched = useRef(false);
-  const near = useRef<ReadonlyMap<string, string[]> | undefined>(undefined);
+  const near = useRef<ReadonlyMap<string, NearMatch> | undefined>(undefined);
   // base 이동 근거: 지금 merge-base → (옛 merge-base → 바뀐 경로, null = 못 쟀다). 쌍마다 처음 물을 때 마감을 걸어 한 번 정하고
   // 이 인스턴스 안에서는 다시 묻지 않는다 — 늦은 git 이 보이는 파일을 뒤집지 않게, 스냅숏이 계속 들어와도 다시 기다리지 않게. 못 잰 쌍은 리뷰를 다시 열면 다시 잰다
   const moved = useRef(new Map<string, Map<string, ReadonlySet<string> | null>>());
