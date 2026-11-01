@@ -6,6 +6,7 @@ const path = require('node:path');
 const BASE = ['-c', 'core.quotepath=off', '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false'];
 // --submodule=short: 레포 설정의 diff.submodule=diff|log 는 하위 git 을 따로 돌리는데, 그 하위 실행엔 위 차단 옵션이 안 넘어간다
 const DIFF = ['diff', '--no-color', '--no-ext-diff', '--no-textconv', '--submodule=short', '-M', '--no-abbrev'];
+const WHOLE_FILE = 1_000_000;   // git -U 값. 이보다 긴 파일은 화면이 어차피 거절한다
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const REF = /^refs\/(?:heads|remotes)\/[A-Za-z0-9._\/+-]+$/;
 
@@ -213,6 +214,9 @@ const ops = {
   mergeBase: (repo, a, b) => git(repo, ['merge-base', oid(a), oid(b)]).then((s) => s.trim()),
   rawDiff: (repo, a, b) => git(repo, [...DIFF, '--raw', '-z', oid(a), oid(b)]),
   patchDiff: (repo, a, b) => git(repo, [...DIFF, '-p', '-U3', '--diff-algorithm=myers', oid(a), oid(b)]),
+  // 파일 하나를 안 바뀐 줄까지 전부. 이름이 바뀌었으면 옛 경로도 줘야 -M 이 같은 파일로 잇는다. 화면 표시용 — 판정은 patchDiff 만 쓴다
+  fileDiff: (repo, a, b, p, prev) => git(repo, ['--literal-pathspecs', ...DIFF, '-p', `-U${WHOLE_FILE}`, '--diff-algorithm=myers', oid(a), oid(b), '--',
+    ...(prev === undefined || prev === null ? [] : [checkPath(prev)]), checkPath(p)]),
   // 없는 객체·blob 아닌 객체는 null(화면이 '이전 버전 없음'을 보인다). 그 밖의 실패는 그대로 던진다
   blob: async (repo, a) => {
     const type = await git(repo, ['cat-file', '-t', oid(a)]).then((s) => s.trim(), () => null);

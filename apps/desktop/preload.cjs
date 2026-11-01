@@ -6,7 +6,7 @@ contextBridge.exposeInMainWorld('viewedDesktop', {
     pick: () => ipcRenderer.invoke('repo:pick'),
     list: () => ipcRenderer.invoke('repo:list'),
     info: (repo) => ipcRenderer.invoke('repo:info', repo),
-    run: (repo, op, a, b, c) => ipcRenderer.invoke('repo:git', repo, op, a, b, c),
+    run: (repo, op, a, b, c, d) => ipcRenderer.invoke('repo:git', repo, op, a, b, c, d),
   },
   ask: {
     start: (req) => ipcRenderer.invoke('ask:start', req),

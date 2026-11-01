@@ -360,3 +360,53 @@ test('mailmap still applies to a huge co-author batch (stdin, no E2BIG)', async 
   assert.ok(files['big.ts'].some(([n, e]) => n === 'bob' && e === 'b@example.test'));
   assert.ok(!files['big.ts'].some(([, e]) => e === 'b2@example.test'), 'alias must be folded by mailmap');
 });
+
+// 파일 전체 문맥 보기: 그 파일만, 안 바뀐 줄까지 전부
+const numbered = (n, over = {}) => Array.from({ length: n }, (_, i) => over[i + 1] ?? `line ${i + 1}`).join('\n') + '\n';
+
+test('fileDiff returns one file with every line as context', async () => {
+  const d = makeRepo();
+  git(d, 'checkout', '-q', 'main');
+  fs.writeFileSync(path.join(d, 'long.ts'), numbered(30));
+  git(d, 'add', 'long.ts'); git(d, 'commit', '-q', '-m', 'long');
+  const base = rev(d, 'main');
+  git(d, 'checkout', '-q', '-b', 'more');
+  fs.writeFileSync(path.join(d, 'long.ts'), numbered(30, { 15: 'LINE 15' }));
+  fs.writeFileSync(path.join(d, 'a.ts'), 'other change\n');
+  git(d, 'commit', '-q', '-am', 'more');
+  const out = await ops.fileDiff(d, base, rev(d, 'more'), 'long.ts');
+  assert.equal((out.match(/^diff --git /gm) ?? []).length, 1);
+  assert.equal((out.match(/^@@ /gm) ?? []).length, 1);
+  assert.match(out, /^@@ -1,30 \+1,30 @@/m);
+  assert.match(out, /^ line 1$/m);
+  assert.match(out, /^ line 30$/m);
+  assert.match(out, /^-line 15$/m);
+  assert.match(out, /^\+LINE 15$/m);
+});
+
+test('fileDiff follows a rename when given both paths, and reads a path literally', async () => {
+  const d = makeRepo();
+  git(d, 'checkout', '-q', 'main');
+  fs.writeFileSync(path.join(d, 'old[1].ts'), numbered(30));
+  fs.writeFileSync(path.join(d, 'old1.ts'), 'decoy\n');
+  git(d, 'add', '-A'); git(d, 'commit', '-q', '-m', 'old');
+  const base = rev(d, 'main');
+  git(d, 'checkout', '-q', '-b', 'moved');
+  git(d, 'mv', 'old[1].ts', 'new.ts');
+  fs.writeFileSync(path.join(d, 'new.ts'), numbered(30, { 15: 'LINE 15' }));
+  fs.writeFileSync(path.join(d, 'old1.ts'), 'decoy changed\n');
+  git(d, 'add', '-A'); git(d, 'commit', '-q', '-m', 'move');
+  const out = await ops.fileDiff(d, base, rev(d, 'moved'), 'new.ts', 'old[1].ts');
+  assert.equal((out.match(/^diff --git /gm) ?? []).length, 1);
+  assert.match(out, /^rename from old\[1\]\.ts$/m);
+  assert.match(out, /^ line 30$/m);
+  assert.doesNotMatch(out, /decoy/);   // old[1].ts 가 글롭으로 풀려 old1.ts 를 끌어오면 안 된다
+});
+
+test('fileDiff refuses bad commits and paths before running git', async () => {
+  const d = makeRepo();
+  const head = rev(d, 'HEAD'), base = rev(d, 'main');
+  await assert.rejects(async () => ops.fileDiff(d, 'main', head, 'a.ts'), /bad object id/);
+  for (const p of ['../x', '/etc/passwd', '-x', 'a\nb', '', undefined]) await assert.rejects(async () => ops.fileDiff(d, base, head, p), /bad path/);
+  await assert.rejects(async () => ops.fileDiff(d, base, head, 'a.ts', '../x'), /bad path/);
+});

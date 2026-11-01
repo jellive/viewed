@@ -1,4 +1,4 @@
-import type { Author, LocalGit } from '@viewed/core';
+import { fileContextPatch, type Author, type ChangedFile, type LocalGit } from '@viewed/core';
 
 export const desktopGit = () => window.viewedDesktop?.git;
 
@@ -15,6 +15,13 @@ export function localGit(repo: string): LocalGit {
 }
 
 export const localBlob = (repo: string) => (sha: string) => desktopGit()!.run(repo, 'blob', sha);
+
+// 파일 하나를 안 바뀐 줄까지 전부 읽는다. 읽을 hunk 가 없으면 던진다 — 화면은 원래 diff 를 그대로 둔다
+export async function localFileContext(repo: string, mergeBase: string, head: string, file: ChangedFile): Promise<string> {
+  const patch = fileContextPatch((await desktopGit()!.run(repo, 'fileDiff', mergeBase, head, file.path, file.previousPath)) ?? '');
+  if (patch === undefined) throw new Error('no hunks');
+  return patch;
+}
 
 // refs/heads/feat → feat, refs/remotes/origin/main → origin/main
 export const shortRef = (r: string) => r.replace(/^refs\/(heads|remotes)\//, '');

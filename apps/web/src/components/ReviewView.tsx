@@ -5,8 +5,9 @@ import type { Author, DeviceState, Snapshot } from '@viewed/core';
 import { useReview } from '../useReview';
 import type { SyncStore } from '../syncStore';
 import { FileList } from './FileList';
-import { DiffView } from './DiffView';
+import { BaseDiff, type ReadContext } from './BaseDiff';
 import { SinceViewed } from './SinceViewed';
+import { localFileContext } from '../localSource';
 import { t } from '../i18n';
 import { useThreads } from '../ask';
 import { useOtherLines, type BlameSrc } from '../lineAuthors';
@@ -21,6 +22,10 @@ export function ReviewView(a: { snap: Snapshot; merged: DeviceState; secret: str
   // 스레드는 여기(FileList 위)에 둔다 — 접기·필터로 diff 가 사라져도 남게. 로컬로 연 리뷰(askRepo)에만 + 가 붙는다
   const { forFile } = useThreads({ repo: a.askRepo, snap: a.snap, bridge: window.viewedDesktop?.ask });
   if (!review) return <p data-testid="review-loading" className="hint">{t.loading}</p>;
+  // 파일 전체 보기는 보이는 리뷰의 merge-base·head 로 읽는다 — 새 커밋을 읽는 중에도 화면의 diff 와 맞게
+  const repo = a.askRepo, base = shownSnap?.mergeBase, head = shownSnap?.headSha;
+  const readContext: ReadContext | undefined = repo && base && head ? (f) => localFileContext(repo, base, head, f) : undefined;
+  const contextKey = `${base ?? ''}\n${head ?? ''}`;
   return (
     <>
       <div className="review-bar">
@@ -32,17 +37,17 @@ export function ReviewView(a: { snap: Snapshot; merged: DeviceState; secret: str
         <p data-testid="sync-status" className="sync" data-sync={sync}>{sync === 'error' ? t.syncFailed : sync === 'pending' ? t.saving : t.saved}</p>
       </div>
       <FileList review={review} syncOk={sync === 'idle'} onToggle={toggle} renderDiff={(it) => (
-        <FileDiff item={it} readBlob={a.readBlob} forFile={forFile} src={a.askRepo && a.isMe && shownSnap?.mergeBase ? { repo: a.askRepo, head: shownSnap.headSha, mergeBase: shownSnap.mergeBase, isMe: a.isMe } : undefined} />
+        <FileDiff item={it} readBlob={a.readBlob} forFile={forFile} readContext={readContext} contextKey={contextKey} src={a.askRepo && a.isMe && shownSnap?.mergeBase ? { repo: a.askRepo, head: shownSnap.headSha, mergeBase: shownSnap.mergeBase, isMe: a.isMe } : undefined} />
       )} />
     </>
   );
 }
 
 // 펼쳐진 파일 하나 — 렌더될 때만 blame 을 부른다(접힌 파일은 이 컴포넌트가 없다). 지울 파일·patch 없는 파일은 blame 할 줄이 없다
-function FileDiff({ item: it, readBlob, forFile, src }: { item: ReviewItem; readBlob: (sha: string) => Promise<string | null>; forFile: (it: ReviewItem, v: View) => DiffAsk | undefined; src?: BlameSrc }) {
+function FileDiff({ item: it, readBlob, forFile, src, readContext, contextKey }: { item: ReviewItem; readBlob: (sha: string) => Promise<string | null>; forFile: (it: ReviewItem, v: View) => DiffAsk | undefined; src?: BlameSrc; readContext?: ReadContext; contextKey: string }) {
   const has = it.file.patch !== undefined && it.file.status !== 'removed';
   const others = useOtherLines(has ? src : undefined, it.file.path);
   return it.file.patch === undefined || it.state !== 'changed-since-viewed'
-    ? <DiffView patch={it.file.patch} ask={forFile(it, 'full')} others={others} />
-    : <SinceViewed readBlob={readBlob} item={it} ask={(v) => forFile(it, v)} others={others} />;
+    ? <BaseDiff file={it.file} ask={forFile(it, 'full')} others={others} readContext={readContext} contextKey={contextKey} />
+    : <SinceViewed readBlob={readBlob} item={it} ask={(v) => forFile(it, v)} others={others} readContext={readContext} contextKey={contextKey} />;
 }

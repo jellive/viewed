@@ -635,3 +635,31 @@ test('a review opened against an older target keeps what was checked against the
   await expect(win.getByTestId('file-row').filter({ hasText: 'z.ts' })).toHaveAttribute('data-state', 'changed-since-viewed');
   await app.close();
 });
+
+// 앞뒤 3줄로는 바뀐 줄의 맥락이 안 보여 편집기를 열어야 했다 — 그 파일만 전체를 읽되, 확인 판정은 그대로다. 이름이 바뀐 파일도 같은 파일로 잇는다
+test('S8: a changed file can be shown whole against the merge base, a renamed one too, without changing whether it counts as viewed', async () => {
+  const repo = lineRepo([{ 15: 'line 15 FEAT' }], 30);
+  git(repo, 'checkout', '-q', 'main');
+  writeFileSync(join(repo, 'old.ts'), lines({}, 40)); git(repo, 'add', 'old.ts'); git(repo, 'commit', '-q', '-m', 'old');
+  git(repo, 'checkout', '-q', 'feat'); git(repo, 'merge', '-q', '--no-edit', 'main');
+  git(repo, 'mv', 'old.ts', 'new.ts');
+  writeFileSync(join(repo, 'new.ts'), lines({ 20: 'line 20 MOVED' }, 40)); git(repo, 'add', 'new.ts'); git(repo, 'commit', '-q', '-m', 'move');
+  const { app, win } = await launch(repo);
+  await win.getByTestId('local-add').click();
+  await openLocal(win);
+  const f = win.getByTestId('file-row').filter({ hasText: 'f.ts' }), n = win.getByTestId('file-row').filter({ hasText: 'new.ts' });
+  await expect(f.locator('.ln.ctx')).toHaveCount(6);
+  await f.getByTestId('context-toggle').click();
+  await expect(f.locator('.ln.ctx')).toHaveCount(29);
+  await expect(f.locator('.ln.ctx').last()).toHaveAttribute('data-n', '30');
+  await expect(f.locator('.ln.add')).toHaveText(['+line 15 FEAT']);
+  await n.getByTestId('context-toggle').click();
+  await expect(n.locator('.ln.ctx')).toHaveCount(39);
+  await expect(n.locator('.ln.add')).toHaveText(['+line 20 MOVED']);
+  await expect(n.getByTestId('context-note')).toHaveCount(0);
+  await f.getByTestId('file-check').check();
+  await expect(win.getByTestId('progress')).toHaveText('1 / 2');
+  await win.getByTestId('refresh-btn').click();
+  await expect(f).toHaveAttribute('data-state', 'viewed');
+  await app.close();
+});

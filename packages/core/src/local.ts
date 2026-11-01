@@ -51,6 +51,12 @@ function hunks(section: string[]): string | undefined {
   return body.join('\n');
 }
 
+// 파일 하나만 다시 읽은 diff → 화면에 그릴 hunk. 파일이 하나가 아니거나 hunk 가 없으면 undefined
+export function fileContextPatch(out: string): string | undefined {
+  const s = splitSections(out);
+  return s.length === 1 ? hunks(s[0]) : undefined;
+}
+
 // from..head 사이의 변경 파일. 둘 다 커밋 해시다
 export async function loadLocalRange(git: LocalGit, from: string, head: string): Promise<ChangedFile[]> {
   const [raw, patch] = await Promise.all([git.rawDiff(from, head), git.patchDiff(from, head)]);
