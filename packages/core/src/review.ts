@@ -35,6 +35,7 @@ export async function buildReview(snap: Snapshot, state: DeviceState, secret: st
     const names = others?.get(file.path);
     let st: FileState;
     let newBlocks: number[] | undefined, carried: ReviewItem['carried'], dropped: number | undefined, elsewhere = false;
+    let via = record?.via;
     if (names) st = 'viewed';   // 남의 표시가 기록보다 이긴다
     else if (!record) {
       // 다른 브랜치에서 본 블록과 겹치면 안 맞는 블록만 보인다. 전부 맞아도(newBlocks 빈 배열) 확인함으로 치지 않는다 —
@@ -47,7 +48,7 @@ export async function buildReview(snap: Snapshot, state: DeviceState, secret: st
     else if (!record.viewed) st = 'unread';
     else if (record.fp === fp) st = 'viewed';
     // 이어받기(b)로 새 대상에 옮겨 쓴 기록: 이전 대상으로 돌아가면 그때 확인한 그대로다
-    else if (record.prev && snap.mergeBase === record.prev.base && record.prev.fp === fp) st = 'viewed';
+    else if (record.prev && snap.mergeBase === record.prev.base && record.prev.fp === fp) { st = 'viewed'; via = record.prev.via; }
     // 옛 기록·patch 없는 파일·상태/mode 변경은 블록으로 판정하지 않는다(spec §5)
     else if (!record.blocks || !blocks || record.meta !== meta) st = 'changed-since-viewed';
     // base 가 그대로면 지문 변화는 전부 내 변경이다 — 블록으로 거를 소음이 없다(같은 블록을 다른 곳에 옮겨도 숨지 않게)
@@ -66,7 +67,7 @@ export async function buildReview(snap: Snapshot, state: DeviceState, secret: st
     }
     items.push({ file, key, fp, meta, ...(blocks ? { blocks } : {}), ...(snap.mergeBase ? { base: snap.mergeBase } : {}),
       state: st, record, ...(names ? { others: names } : {}), ...(newBlocks ? { newBlocks } : {}), ...(carried ? { carried } : {}), ...(dropped ? { dropped } : {}),
-      ...(elsewhere ? { elsewhere: true as const } : {}), ...(st === 'viewed' && (names || record?.via) ? { auto: true as const } : {}) });
+      ...(elsewhere ? { elsewhere: true as const } : {}), ...(st === 'viewed' && (names || via) ? { auto: true as const } : {}), ...(st === 'viewed' && !names && via ? { carriedOver: true as const } : {}) });
   }
   const viewedCount = items.filter((i) => i.state === 'viewed').length;
   return { items, viewedCount, autoCount: items.filter((i) => i.auto).length, total: items.length, incomplete: snap.truncated,

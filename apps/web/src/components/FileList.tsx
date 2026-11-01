@@ -38,7 +38,9 @@ export function FileList({ review, syncOk, onToggle, renderDiff }: { review: Rev
     if (li.isConnected) window.scrollBy(0, li.getBoundingClientRect().top - (bar.current?.offsetHeight ?? 0));
   });
   // 확인한 블록이 빠진 파일(shrunk)은 확인함이지만 경고가 붙은 것 — 숨기면 그 경고를 볼 곳이 없다
-  // 자동 처리만 보기와 확인한 파일 숨기기는 서로 반대라 하나를 켜면 다른 하나를 끈다. 자동 처리가 다 사라지면 저절로 풀린다
+  // 자동 처리만 보기와 확인한 파일 숨기기는 서로 반대라 하나를 켜면 다른 하나를 끈다
+  // 자동 처리가 다 사라지면 필터도 끈다 — 남겨 두면 다음 갱신에서 자동 처리가 다시 생길 때 보던 파일이 저절로 숨는다
+  if (onlyAuto && review.autoCount === 0) setOnlyAuto(false);
   const autoOn = onlyAuto && review.autoCount > 0;
   const byState = autoOn ? review.items.filter((it) => it.auto)
     : onlyUnviewed ? review.items.filter((it) => it.state !== 'viewed' || it.carried === 'shrunk') : review.items;
@@ -84,15 +86,16 @@ export function FileList({ review, syncOk, onToggle, renderDiff }: { review: Rev
                 <span className="path">{it.file.path}</span>
                 {/* carried: 리베이스·머지로 diff 는 바뀌었지만 지금 블록은 전부 본 것. 'same' 은 중립 배지,
                     'shrunk' 는 확인한 블록이 일부 빠진 것이라(base 흡수인지 유실인지 서명으로는 못 가름) 경고색 */}
-                <span data-testid="file-state" className={it.carried === 'same' || (it.auto && it.record?.via) ? 'badge muted' : 'badge'}>
-                  {it.carried === 'same' ? t.carried : it.carried === 'shrunk' ? t.carriedDropped(it.dropped ?? 0) : it.elsewhere ? t.elsewhere : it.auto && it.record?.via ? t.carriedOver : MARK[it.state]}
+                <span data-testid="file-state" className={it.carried === 'same' || it.carriedOver ? 'badge muted' : 'badge'}>
+                  {it.carried === 'same' ? t.carried : it.carried === 'shrunk' ? t.carriedDropped(it.dropped ?? 0) : it.elsewhere ? t.elsewhere : it.carriedOver ? t.carriedOver : MARK[it.state]}
                 </span>
                 {it.others && <span data-testid="file-others" className="badge others" title={it.others.join(', ')}>{t.othersBadge(it.others)}</span>}
                 <label className="viewed-toggle" title={it.others ? t.othersAuto : undefined}>
                   {/* 체크하면 접고 풀면 펼친다 — 머리로 고른 것은 덮는다. 판정이 비동기라 목표 상태를 바로 넣어야 옛 state 로 한 번 그려질 때 깜빡이지 않는다 */}
                   <input type="checkbox" data-testid="file-check" aria-label={t.viewedFile(it.file.path)} checked={it.state === 'viewed'} disabled={!!it.others} onChange={(e) => {
                     const v = e.target.checked;
-                    if (v && open) willCollapse(e.currentTarget);
+                    // 접히거나(체크) 자동 목록에서 빠지는(해제) 행 — 머리가 붙어 있으면 먼저 제자리로 되돌려 둔다. 그래야 행이 사라져도 다음 파일이 그 자리에 온다
+                    if ((v && open) || (!v && autoOn)) willCollapse(e.currentTarget);
                     setPicked((p) => ({ ...p, [it.key]: { open: !v, fp: it.fp } }));
                     onToggle(it, v);
                   }} />

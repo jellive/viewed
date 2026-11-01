@@ -105,3 +105,48 @@ test('an unknown option stops before anything happens', macOnly, () => {
   assert.equal(body(s), 'old\n');
   assert.equal(calls(s), '');
 });
+
+test('an app that fails to open puts the old one back', macOnly, () => {
+  const s = setup();
+  fs.appendFileSync(path.join(s.env.PATH.split(':')[0], 'open'), 'exit 1\n');
+  const r = run(s);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /could not open/);
+  assert.equal(body(s), 'old\n');
+  assert.deepEqual(entries(s), ['viewed.app']);
+});
+
+test('a first install that fails to open stays installed: there is nothing to go back to', macOnly, () => {
+  const s = setup();
+  fs.rmSync(path.join(s.install, 'viewed.app'), { recursive: true });
+  fs.appendFileSync(path.join(s.env.PATH.split(':')[0], 'open'), 'exit 1\n');
+  assert.notEqual(run(s).status, 0);
+  assert.equal(body(s), 'new\n');
+  assert.deepEqual(entries(s), ['viewed.app']);
+});
+
+test('not being able to tell whether the app is running stops before anything is replaced', macOnly, () => {
+  const s = setup();
+  fs.appendFileSync(path.join(s.env.PATH.split(':')[0], 'pgrep'), 'exit 2\n');
+  const r = run(s);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /could not check/);
+  assert.equal(body(s), 'old\n');
+  assert.deepEqual(entries(s), ['viewed.app']);
+  assert.doesNotMatch(calls(s), /open /);
+});
+
+test('a failed package stops before anything else, and a good one is what gets installed', macOnly, () => {
+  const s = setup({ running: 'quits' });
+  const stub = path.join(s.env.PATH.split(':')[0], 'pnpm');
+  fs.writeFileSync(stub, '#!/bin/bash\nexit 1\n', { mode: 0o755 });
+  const failed = spawnSync('bash', [SCRIPT], { env: s.env, encoding: 'utf8' });
+  assert.notEqual(failed.status, 0);
+  assert.equal(body(s), 'old\n');
+  assert.equal(calls(s), '');
+  fs.writeFileSync(stub, `#!/bin/bash\necho "pnpm $*" >> "${s.log}"\n`, { mode: 0o755 });
+  const ok = spawnSync('bash', [SCRIPT], { env: s.env, encoding: 'utf8' });
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(body(s), 'new\n');
+  assert.ok(calls(s).indexOf('pnpm --filter @viewed/desktop package') === 0);
+});

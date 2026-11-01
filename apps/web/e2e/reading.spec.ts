@@ -29,10 +29,10 @@ async function fakeLocal(page: Page) {
       getSecret: async () => null, setSecret: async () => {},
       git: {
         pick: async () => null, list: async () => ['/r/a'],
-        info: async () => ({ refs: ['refs/heads/feat', 'refs/heads/main'], defaultBase: null, current: 'refs/heads/feat', remote: null, user: { name: 'alice', email: 'a@example.test' } }),
+        info: async () => ({ refs: ['refs/heads/feat', 'refs/heads/feat2', 'refs/heads/main'], defaultBase: null, current: 'refs/heads/feat', remote: null, user: { name: 'alice', email: 'a@example.test' } }),
         run: async (_repo: string, op: string, a: string, b: string, c: string) => {
           const v = w.__v;
-          if (op === 'resolve') return a === 'refs/heads/feat' ? v.head : oid('1');
+          if (op === 'resolve') return a === 'refs/heads/feat' || a === 'refs/heads/feat2' ? v.head : oid('1');
           if (op === 'mergeBase') return oid('2');
           if (op === 'rawDiff') return entries();
           if (op === 'patchDiff') return patch();
@@ -268,4 +268,63 @@ test('the recent menu opens over the progress bar, not under it', async ({ page 
   });
   expect(covered.over).toBeGreaterThan(0);   // 겹치는 자리가 있어야 이 테스트가 뜻이 있다
   expect(covered.hitsItem).toBe(true);
+});
+
+test('a question being written survives turning the whole file on and off', async ({ page }) => {
+  await fakeLocal(page);
+  await open(page);
+  const f = row(page, 'f.ts');
+  await f.locator('.ln.add').hover();
+  await f.locator('.ln.add').getByTestId('ask-btn').click();
+  await page.getByTestId('thread-input').fill('why this line?');
+  await f.getByTestId('context-toggle').click();
+  await expect(f.locator('.ln.ctx')).toHaveCount(LINES - 1);
+  await expect(page.getByTestId('thread-input')).toHaveValue('why this line?');
+  await f.getByTestId('context-toggle').click();
+  await expect(f.locator('.ln.ctx')).toHaveCount(6);
+  await expect(page.getByTestId('thread-input')).toHaveValue('why this line?');
+});
+
+// 체크로 행이 목록에서 사라지는 두 경우 — 접기와 달리 행이 없어져도 화면이 몇 파일 뒤로 튀지 않는다
+test.describe('a row leaving a filtered list', () => {
+  const top = (page: Page, path: string) => row(page, path).evaluate((e) => e.getBoundingClientRect().top);
+  const bar = (page: Page) => page.locator('.progress').evaluate((e) => e.getBoundingClientRect().bottom);
+
+  test('checking from the middle of a long diff with viewed files hidden lands on the next file', async ({ page }) => {
+    await page.setViewportSize({ width: 1000, height: 600 });
+    await fakeLocal(page);
+    await open(page);
+    await page.getByTestId('filter-unviewed').check();
+    const f = row(page, 'f.ts');
+    await f.getByTestId('context-toggle').click();
+    await expect(f.locator('.ln.ctx')).toHaveCount(LINES - 1);
+    await f.locator('.ln.ctx[data-n="90"]').evaluate((e) => e.scrollIntoView({ block: 'center' }));
+    await f.getByTestId('file-check').click();
+    await expect(page.getByTestId('file-row').filter({ hasText: 'f.ts' })).toHaveCount(0);
+    await expect(row(page, 'g.ts').locator('.path')).toBeInViewport();
+    expect(Math.abs(await top(page, 'g.ts') - await bar(page))).toBeLessThan(40);
+  });
+
+  test('unchecking from the middle of a long diff in the automatic list lands on the next file', async ({ page }) => {
+    await page.setViewportSize({ width: 1000, height: 600 });
+    await fakeLocal(page);
+    await open(page);
+    for (const p of ['f.ts', 'g.ts', 'n.ts', 'p.png', 'z.ts']) await row(page, p).getByTestId('file-check').check();
+    await expect(page.getByTestId('progress')).toHaveText('5 / 5');
+    await page.getByTestId('local-branch-select').selectOption('refs/heads/feat2');
+    await page.getByTestId('open-btn').click();
+    await expect(page.getByTestId('auto-filter')).toHaveText('5 automatic');
+    await page.getByTestId('auto-filter').click();
+    // 아래에 펼친 긴 파일이 있어야 문서가 길게 남는다 — 짧으면 브라우저의 스크롤 끝 맞춤이 대신 맞춰 준다
+    await row(page, 'z.ts').getByTestId('file-expand').click();
+    const f = row(page, 'f.ts');
+    await f.getByTestId('file-expand').click();
+    await f.getByTestId('context-toggle').click();
+    await expect(f.locator('.ln.ctx')).toHaveCount(LINES - 1);
+    await f.locator('.ln.ctx[data-n="90"]').evaluate((e) => e.scrollIntoView({ block: 'center' }));
+    await f.getByTestId('file-check').click();
+    await expect(page.getByTestId('file-row').filter({ hasText: 'f.ts' })).toHaveCount(0);
+    await expect(row(page, 'g.ts').locator('.path')).toBeInViewport();
+    expect(Math.abs(await top(page, 'g.ts') - await bar(page))).toBeLessThan(40);
+  });
 });

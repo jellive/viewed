@@ -39,11 +39,11 @@ export async function targetCarry(review: Review, n: string, prev: { base: strin
   });
   const out: ReviewItem[] = [];
   for (const item of cands) {
-    let ok = false, prevOf: { base: string; fp: string } | undefined;
+    let ok = false, prevOf: ReviewItem['carryPrev'];
     for (const s of sets) {
       if (!s.touched.has(item.file.path) && !(item.file.previousPath !== undefined && s.touched.has(item.file.previousPath))) { ok = true; break; }
       const r = item.record, pf = s.byPath.get(item.file.path);
-      if (r?.viewed && r.base === s.base && pf && await fingerprint(pf) === r.fp) { ok = true; prevOf = { base: r.base, fp: r.fp }; break; }
+      if (r?.viewed && r.base === s.base && pf && await fingerprint(pf) === r.fp) { ok = true; prevOf = { base: r.base, fp: r.fp, ...(r.via ? { via: r.via } : {}) }; break; }
     }
     if (ok) out.push(prevOf ? { ...item, carryPrev: prevOf } : item);
   }

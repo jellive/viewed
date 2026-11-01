@@ -338,3 +338,21 @@ test("someone else's file counts as automatic and can be listed apart", async ({
   await expect(row(page, 'src/b.ts').getByTestId('file-others')).toHaveText('bob');
   await expect(row(page, 'src/b.ts').getByTestId('file-state')).toHaveText('');   // 작성자 배지가 이미 말해 준다
 });
+
+test('a filter that lost its files stays off when automatic files come back later', async ({ page }) => {
+  await fakeLocal(page);
+  await openLocal(page, '1 / 2');
+  await page.getByTestId('auto-filter').click();
+  await expect(page.getByTestId('file-row')).toHaveCount(1);
+  // b.ts 가 내 파일이 되어 자동 처리가 사라진다 — 목록은 전체로
+  await page.evaluate(() => { (window as any).__authors.files['src/b.ts'] = [['alice', 'a@example.test']]; });
+  await page.getByTestId('refresh-btn').click();
+  await expect(page.getByTestId('auto-filter')).toHaveCount(0);
+  await expect(page.getByTestId('file-row')).toHaveCount(2);
+  // 다음 갱신에서 자동 처리가 다시 생겨도 필터는 저절로 안 켜진다 — 보던 파일이 숨지 않는다
+  await page.evaluate(() => { (window as any).__authors.files['src/b.ts'] = [['bob', 'b@example.test']]; });
+  await page.getByTestId('refresh-btn').click();
+  await expect(page.getByTestId('auto-filter')).toHaveText('1 automatic');
+  await expect(page.getByTestId('auto-filter')).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByTestId('file-row')).toHaveCount(2);
+});

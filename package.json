@@ -4,6 +4,7 @@
   "packageManager": "pnpm@11.14.0",
   "scripts": {
     "test": "pnpm -r --if-present test",
-    "scan": "bash scripts/prepublish-scan.sh"
+    "scan": "bash scripts/prepublish-scan.sh",
+    "install-app": "pnpm --filter @viewed/desktop install-app"
   }
 }

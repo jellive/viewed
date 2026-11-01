@@ -39,7 +39,8 @@ export function DiffView({ patch, seen, ask, others }: { patch?: string; seen?: 
         const at = target(l, ask);
         const key = at && ask!.keyOf(at.side, at.line);
         return (
-          <Fragment key={i}>
+          // 키는 줄 좌표 — 파일 전체 보기를 켜고 꺼도 같은 줄의 스레드(쓰던 질문)가 그대로 남는다
+          <Fragment key={l.kind === 'hunk' || l.kind === 'meta' ? `${l.kind}${i}` : `${l.kind}:${l.o ?? ''}:${l.n ?? ''}`}>
             <div className={`ln ${l.kind}${seen?.has(i) ? ' seen' : ''}${l.kind === 'add' && l.n !== undefined && others?.has(l.n) ? ' other' : ''}`} data-o={l.o ?? ''} data-n={l.n ?? ''}>
               {l.kind === 'hunk' || l.kind === 'meta'
                 ? <span className="code">{l.text}</span>

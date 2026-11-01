@@ -7,8 +7,8 @@ Two sources:
 - **GitHub** (desktop and PWA): a pushed branch, read through the GitHub API with a read-only token.
 - **Local folder** (desktop only): a local clone, read with `git` on your Mac. Unpushed commits show up, and no GitHub token is needed. Use it for repositories you can't get a token for. **Recent** reopens one of the last ten local reviews (folder, branch, base) in one click. On a local review you can also ask about a diff line (needs Claude Code 2.1.248 or later; it reads Claude session logs read-only, and the question goes to whichever account is logged in to Claude Code at that moment).
   In a local review, files touched only by other people's commits (judged by your `git config user.name`/`user.email`, with `.mailmap` applied) are marked viewed automatically and collapsed, and lines other people added get a different background. If you commit under other names or emails too, list them (one per line) in the settings field "Names that are also you" — a file any of them touched is never treated as someone else's.
-  Next to the progress, **N automatic** counts the viewed files you didn't click yourself: other people's files and checks carried over from another branch or target. Click it to list only those. Checking one again by hand makes it yours, and checks made before this count existed read as yours.
-  A changed file can be shown whole with **Show whole file**, so the lines around a change are visible without opening an editor. Only that file is read again, and what counts as viewed doesn't change. Files over 20,000 lines stay as a diff.
+  Next to the progress, **N automatic** counts the viewed files you didn't click yourself: other people's files and checks carried over from another branch or target. Click it to list only those. To make one yours, uncheck it and check it again in the full list. Other people's files stay locked. Checks made before this count existed read as yours.
+  A changed file can be shown whole with **Show whole file**, so the lines around a change are visible without opening an editor. Only that file is read again, and what counts as viewed doesn't change. Very large files (a diff of about 20,000 lines with the whole file) stay as a diff.
   If you switch the PR target of a local review to a branch that is behind (for example from an integration branch to `main`), what you already checked carries over. Files that are identical to the previous (newer) target are counted as viewed even if you never checked them. Going back to the previous target keeps everything you had checked there.
 
 Status: in development
@@ -25,7 +25,7 @@ Check marks are kept either **on this device only** (no token, nothing leaves th
 
 - Web: `pnpm --filter @viewed/web dev`, or `pnpm --filter @viewed/web build` then `pnpm --filter @viewed/web preview`.
 - Desktop: `pnpm --filter @viewed/web build`, then `pnpm --filter @viewed/desktop start` (the window is blank without the web build).
-- Desktop app bundle (macOS, Apple silicon): `pnpm --filter @viewed/desktop package` writes `apps/desktop/out/viewed-darwin-arm64/viewed.app`. `pnpm --filter @viewed/desktop install-app` packages it, quits the running app, replaces `/Applications/viewed.app` and opens it; if a step fails, the installed app stays as it was. It is ad-hoc signed and not notarized, so it runs on the Mac that built it; a copy downloaded elsewhere is blocked by Gatekeeper.
+- Desktop app bundle (macOS, Apple silicon): `pnpm --filter @viewed/desktop package` writes `apps/desktop/out/viewed-darwin-arm64/viewed.app`. `pnpm install-app` packages it, quits the running app, replaces `/Applications/viewed.app` and opens it; if a step fails, the installed app stays as it was. It is ad-hoc signed and not notarized, so it runs on the Mac that built it; a copy downloaded elsewhere is blocked by Gatekeeper.
 
 ## Known limits
 

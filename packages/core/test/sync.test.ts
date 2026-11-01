@@ -107,6 +107,16 @@ describe('gist io', () => {
     expect((await loadAll(new GitHub('t', f), 'g1', 'mac')).merged.a.via).toBe('target');
   });
 
+  it('keeps a well-formed via inside prev and drops only that when it is not', async () => {
+    const prev = { base: 'c'.repeat(40), fp: 'd'.repeat(64) };
+    const { f } = gistFetch({ 'device-mac.json': { content: JSON.stringify({
+      a: { ...rec('2026-10-15T01:00:00Z'), prev: { ...prev, via: 'branch' } },
+      b: { ...rec('2026-10-15T01:00:00Z'), prev: { ...prev, via: 'later' } } }), truncated: false, raw_url: '' } });
+    const r = await loadAll(new GitHub('t', f), 'g1', 'mac');
+    expect(r.merged.a.prev).toEqual({ ...prev, via: 'branch' });
+    expect(r.merged.b.prev).toEqual(prev);
+  });
+
   // 나중 버전이 선택 필드의 형식을 바꿔도 기기 파일 전체를 거부하지 않는다 — 그 필드만 빠진 기록은 옛 기록처럼 판정된다
   it.each([
     ['blocks not an array', 'blocks', { blocks: 'x' }],

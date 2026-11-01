@@ -85,7 +85,7 @@ test('repo textconv and external diff config never run a program', async () => {
 });
 
 test('repo:git exposes only the known ops', () => {
-  assert.deepEqual(Object.keys(ops), ['resolve', 'mergeBase', 'rawDiff', 'patchDiff', 'blob', 'authors', 'blameAuthors']);
+  assert.deepEqual(Object.keys(ops), ['resolve', 'mergeBase', 'rawDiff', 'patchDiff', 'fileDiff', 'blob', 'authors', 'blameAuthors']);
 });
 
 test('log.showSignature and gpg.program never run for logLine and deletingCommit', async () => {

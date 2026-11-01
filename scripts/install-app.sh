@@ -27,7 +27,16 @@ if [ ! -x "$src/Contents/MacOS/viewed" ]; then echo "no packaged app at $src" >&
 trap 'rm -rf "$new"' EXIT
 ditto "$src" "$new"
 
-running() { pgrep -f "$dest/Contents/MacOS/viewed" > /dev/null; }
+# pgrep: 0 있음, 1 없음, 그 밖은 조회 실패 — 실패를 '없음'으로 치면 도는 앱을 바꿔 끼운다
+running() {
+  local rc=0
+  pgrep -f "$dest/Contents/MacOS/viewed" > /dev/null || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) return 1 ;;
+    *) echo "could not check whether viewed is running; nothing was replaced." >&2; exit 1 ;;
+  esac
+}
 if running; then
   osascript -e 'quit app "viewed"' > /dev/null || true
   waited=0
@@ -44,6 +53,11 @@ if ! mv "$new" "$dest"; then
   echo "could not put the new app at $dest; the old one was restored." >&2
   exit 1
 fi
+# 새 앱이 열린 뒤에야 옛 앱을 지운다
+if [ "$reopen" = 1 ] && ! open "$dest"; then
+  if [ -e "$old" ]; then rm -rf "$dest"; mv "$old" "$dest"; fi
+  echo "could not open the new app; the old one was restored if there was one." >&2
+  exit 1
+fi
 rm -rf "$old"
 echo "installed $dest"
-if [ "$reopen" = 1 ]; then open "$dest"; fi

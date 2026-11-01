@@ -205,3 +205,14 @@ test('files carried over from the old target count as automatic, and unchecking 
   await row(page, 'w.ts').getByTestId('file-check').uncheck();
   await expect(page.getByTestId('auto-filter')).toHaveText('1 automatic');
 });
+
+test('going back to the old target shows the checks made there as direct again', async ({ page }) => {
+  await fakeLocal(page);
+  await seed(page);
+  await openWith(page, 'test', '2 / 3');
+  await expect(page.getByTestId('auto-filter')).toHaveText('2 automatic');
+  await openWith(page, 'integ');
+  await expect(row(page, 'y.ts')).toHaveAttribute('data-state', 'viewed');
+  await expect(page.getByTestId('auto-filter')).toHaveCount(0);
+  await expect(row(page, 'y.ts').getByTestId('file-state')).toHaveText('');
+});

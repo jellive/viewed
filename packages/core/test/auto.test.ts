@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildReview, markRecord } from '../src/review';
+import { targetCarry } from '../src/carry';
 import type { ChangedFile, DeviceState, ReviewItem, Snapshot } from '../src/types';
 
 // 직접 체크와 자동 처리를 가른다. 자동 = 앱이 확인으로 친 것 — 남의 파일, 다른 기록에서 이어받은 것
@@ -67,5 +68,51 @@ describe('automatic and direct checks', () => {
     const again = await buildReview(snap(files), state, S);
     expect(again.items[0].state).toBe('viewed');
     expect(auto(again.items[0])).toBe(false);
+  });
+});
+
+describe('where an automatic mark comes from', () => {
+  it('going back to the old target restores what the check was there: a direct check is direct again', async () => {
+    const files = [file('a.ts', X)];
+    const state = await keep(files, undefined, OLD);
+    const onOld = await buildReview(snap(files, OLD), state, S);
+    expect(auto(onOld.items[0])).toBe(false);
+    // 뒤처진 대상으로 옮기며 이어받아 쓴 기록 — diff 는 그쪽 것이고 prev 가 옛 대상의 base·지문을 든다
+    const moved = [file('a.ts', Y)];
+    const onNew = await buildReview(snap(moved), state, S);
+    state[onNew.items[0].key] = { ...markRecord({ ...onNew.items[0], carryPrev: { base: OLD, fp: onOld.items[0].fp } }, 'h'.repeat(40), true), via: 'target' };
+    expect(auto((await buildReview(snap(moved), state, S)).items[0])).toBe(true);
+    const back = await buildReview(snap(files, OLD), state, S);
+    expect(back.items[0].state).toBe('viewed');
+    expect(auto(back.items[0])).toBe(false);
+    expect(back.items[0].carriedOver).toBeUndefined();
+  });
+
+  it('going back keeps an automatic mark that was already automatic there', async () => {
+    const files = [file('a.ts', X)];
+    const state = await keep(files, 'branch', OLD);
+    const onOld = await buildReview(snap(files, OLD), state, S);
+    const moved = [file('a.ts', Y)];
+    const onNew = await buildReview(snap(moved), state, S);
+    state[onNew.items[0].key] = { ...markRecord({ ...onNew.items[0], carryPrev: { base: OLD, fp: onOld.items[0].fp, via: 'branch' } }, 'h'.repeat(40), true), via: 'target' };
+    const back = await buildReview(snap(files, OLD), state, S);
+    expect(auto(back.items[0])).toBe(true);
+    expect(back.items[0].carriedOver).toBe(true);
+  });
+
+  it('a carry to a target behind remembers where the old check came from', async () => {
+    const onOld = [file('a.ts', X)], moved = [file('a.ts', Y)];
+    const carried = await buildReview(snap(moved), await keep(onOld, 'branch', OLD), S);
+    expect((await targetCarry(carried, MB, [{ base: OLD, files: onOld }]))[0].carryPrev?.via).toBe('branch');
+    const direct = await buildReview(snap(moved), await keep(onOld, undefined, OLD), S);
+    expect((await targetCarry(direct, MB, [{ base: OLD, files: onOld }]))[0].carryPrev?.via).toBeUndefined();
+  });
+
+  it("someone else's file is automatic for that reason alone, whatever an old record says", async () => {
+    const state = await keep([file('a.ts', X)], 'branch');
+    const r = await buildReview(snap([file('a.ts', Y)]), state, S, new Map([['a.ts', ['bob']]]));
+    expect(auto(r.items[0])).toBe(true);
+    expect(r.items[0].carriedOver).toBeUndefined();
+    expect(r.autoCount).toBe(1);
   });
 });
