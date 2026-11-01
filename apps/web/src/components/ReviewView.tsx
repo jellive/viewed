@@ -48,7 +48,16 @@ export function ReviewView(a: { snap: Snapshot; merged: DeviceState; secret: str
 function FileDiff({ item: it, readBlob, forFile, src, readContext, contextKey }: { item: ReviewItem; readBlob: (sha: string) => Promise<string | null>; forFile: (it: ReviewItem, v: View) => DiffAsk | undefined; src?: BlameSrc; readContext?: ReadContext; contextKey: string }) {
   const has = it.file.patch !== undefined && it.file.status !== 'removed';
   const others = useOtherLines(has ? src : undefined, it.file.path);
-  return it.file.patch === undefined || it.state !== 'changed-since-viewed'
-    ? <BaseDiff file={it.file} ask={forFile(it, 'full')} others={others} readContext={readContext} contextKey={contextKey} />
-    : <SinceViewed readBlob={readBlob} item={it} ask={(v) => forFile(it, v)} others={others} readContext={readContext} contextKey={contextKey} />;
+  // diff 줄에 안 나오는 변경 — 이름과 권한은 줄로 보이지 않아 따로 적는다
+  const { previousPath, status, oldMode, mode } = it.file;
+  const modeChanged = oldMode !== undefined && mode !== undefined && oldMode !== mode && status !== 'added' && status !== 'removed';
+  return (
+    <>
+      {previousPath !== undefined && <p data-testid="file-renamed" className="note">{t.renamedFrom(previousPath)}</p>}
+      {modeChanged && <p data-testid="file-mode" className="note">{t.modeChanged(oldMode, mode)}</p>}
+      {it.file.patch === undefined || it.state !== 'changed-since-viewed'
+        ? <BaseDiff file={it.file} ask={forFile(it, 'full')} others={others} readContext={readContext} contextKey={contextKey} />
+        : <SinceViewed readBlob={readBlob} item={it} ask={(v) => forFile(it, v)} others={others} readContext={readContext} contextKey={contextKey} />}
+    </>
+  );
 }

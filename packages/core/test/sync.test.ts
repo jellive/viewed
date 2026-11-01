@@ -128,8 +128,10 @@ describe('gist io', () => {
     ['prev not an object', 'prev', { prev: 'x' }],
     ['via of an unknown kind', 'via', { via: 'later' }],
     ['via not a string', 'via', { via: 1 }],
+    ['oldMode not a mode', 'oldMode', { oldMode: 'x' }],
+    ['oldMode not a string', 'oldMode', { oldMode: 644 }],
   ] as const)('drops only the field when a record has %s, and reads the rest', async (_, field, extra) => {
-    const full = { ...rec('2026-10-15T01:00:00Z'), blocks: ['0123456789abcdef'], base: 'a'.repeat(40), meta: 'fedcba9876543210', prev: { base: 'c'.repeat(40), fp: 'd'.repeat(64) }, via: 'branch' as const };
+    const full = { ...rec('2026-10-15T01:00:00Z'), blocks: ['0123456789abcdef'], base: 'a'.repeat(40), meta: 'fedcba9876543210', oldMode: '100755', prev: { base: 'c'.repeat(40), fp: 'd'.repeat(64) }, via: 'branch' as const };
     const bad = { a: { ...full, ...extra }, b: rec('2026-10-15T01:00:00Z') };
     const { f } = gistFetch({ 'device-mac.json': { content: JSON.stringify(bad), truncated: false, raw_url: '' } });
     const r = await loadAll(new GitHub('t', f), 'g1', 'mac');

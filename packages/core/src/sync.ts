@@ -34,6 +34,7 @@ function readState(name: string, v: unknown): DeviceState {
     if (x.prev !== undefined && !(typeof x.prev === 'object' && x.prev !== null && typeof (x.prev as { base?: unknown }).base === 'string' && OID.test((x.prev as { base: string }).base) &&
       typeof (x.prev as { fp?: unknown }).fp === 'string' && FP.test((x.prev as { fp: string }).fp))) delete out.prev;
     if (x.meta !== undefined && !(typeof x.meta === 'string' && HEX16.test(x.meta))) delete out.meta;
+    if (x.oldMode !== undefined && !(typeof x.oldMode === 'string' && /^[0-7]{6}$/.test(x.oldMode))) delete out.oldMode;
     const via = (v: unknown) => v === 'branch' || v === 'target';
     if (x.via !== undefined && !via(x.via)) delete out.via;
     if (out.prev?.via !== undefined && !via(out.prev.via)) delete out.prev.via;

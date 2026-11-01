@@ -87,6 +87,18 @@ test('same blob but a different base diff shows a notice and the full diff, no e
   await expect(row.getByTestId('since-diff')).toHaveCount(0);
 });
 
+test('bytes that changed but read the same are not hidden, and not called unchanged', async ({ page }) => {
+  // UTF-8 이 아닌 바이트는 전부 같은 글자로 뭉개져 diff 글자가 같다. base 는 그대로인데 blob 이 다르다
+  await seedSettings(page);
+  await mockGitHub(page, { head: 'h2', mergeBase: MB1, files: [{ filename: 'a.ts', status: 'modified', sha: 'a2', patch: P1 }], blobs: { a1: 'same\n', a2: 'same\n' }, gistFiles: await recordAt(P1, MB1) });
+  await open(page);
+  const row = page.getByTestId('file-row');
+  await expect(row).toHaveAttribute('data-state', 'changed-since-viewed');
+  await expect(row.getByTestId('since-bytes')).toBeVisible();
+  await expect(row.getByTestId('since-same-content')).toHaveCount(0);
+  await expect(row.getByTestId('diff')).toContainText('+line 8 FEAT');
+});
+
 test('a blob request that fails with 500 shows the error, not the force-push notice', async ({ page }) => {
   await seedSettings(page);
   const old = { path: 'a.ts', status: 'modified' as const, blobSha: 'a1', patch: '@@ -1 +1 @@\n-x\n+y' };

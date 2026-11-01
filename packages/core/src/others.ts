@@ -1,4 +1,4 @@
-import type { ChangedFile } from './types';
+import type { ChangedFile, Snapshot } from './types';
 
 export type Author = [name: string, email: string];
 
@@ -38,6 +38,18 @@ export function othersOf(files: ChangedFile[], authors: Record<string, Author[]>
     const people = all.filter((a) => !isClaude(a));
     if (people.length === 0) continue;
     out.set(file.path, [...new Set(people.map(([name]) => name))]);
+  }
+  return out;
+}
+
+// 다시 읽을 때 작성자를 못 받으면 쓰는 앞선 판정: diff 가 그대로인 파일만 남긴다 — 보이는 파일이 저절로 뒤집히지 않게.
+// 바뀐 파일은 뺀다. 새 커밋이 내 것일 수 있어 남의 파일로 숨기면 안 된다
+export function keepOthers(prev: ReadonlyMap<string, string[]>, from: Snapshot, to: Snapshot): Map<string, string[]> {
+  const was = new Map(from.files.map((f) => [f.path, f]));
+  const out = new Map<string, string[]>();
+  for (const f of to.files) {
+    const names = prev.get(f.path), g = was.get(f.path);
+    if (names && g && g.status === f.status && g.previousPath === f.previousPath && g.mode === f.mode && g.oldMode === f.oldMode && g.blobSha === f.blobSha && g.patch === f.patch) out.set(f.path, names);
   }
   return out;
 }

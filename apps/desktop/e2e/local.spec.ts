@@ -1,6 +1,6 @@
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, realpathSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, writeFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
@@ -665,6 +665,8 @@ test('S8: a changed file can be shown whole against the merge base, a renamed on
   await expect(f.locator('.ln.ctx')).toHaveCount(29);
   await expect(f.locator('.ln.ctx').last()).toHaveAttribute('data-n', '30');
   await expect(f.locator('.ln.add')).toHaveText(['+line 15 FEAT']);
+  await expect(n.getByTestId('file-renamed')).toHaveText('Renamed from old.ts');
+  await expect(f.getByTestId('file-renamed')).toHaveCount(0);
   await n.getByTestId('context-toggle').click();
   await expect(n.locator('.ln.ctx')).toHaveCount(39);
   await expect(n.locator('.ln.add')).toHaveText(['+line 20 MOVED']);
@@ -725,6 +727,25 @@ test('S10b: another branch with the same file content uses the same rule on anot
   await win.getByTestId('open-btn').click();
   await expect(row.getByTestId('file-state')).toHaveText('Carried over');
   await expect(row).toHaveAttribute('data-state', 'viewed');
+  await app.close();
+});
+
+test('S10c: moving the target shows a mode change nobody saw, on the file itself', async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'viewed-mode-')));
+  git(dir, 'init', '-q', '-b', 'main');
+  writeFileSync(join(dir, 'f.ts'), lines({}, 30)); git(dir, 'add', '-A'); git(dir, 'commit', '-q', '-m', 'base');
+  git(dir, 'checkout', '-q', '-b', 'test');
+  chmodSync(join(dir, 'f.ts'), '755'); git(dir, 'add', '-A'); git(dir, 'commit', '-q', '-m', 'target makes it executable');
+  git(dir, 'checkout', '-q', '-b', 'feat', 'main');
+  writeFileSync(join(dir, 'f.ts'), lines({ 20: 'NEW 20' }, 30)); git(dir, 'commit', '-q', '-am', 'feat');
+  git(dir, 'merge', '-q', '--no-commit', '-s', 'ours', 'test');
+  chmodSync(join(dir, 'f.ts'), '644'); git(dir, 'add', '-A'); git(dir, 'commit', '-q', '-m', 'merge target');
+  const { app, win, row } = await openAndCheck(dir);
+  await expect(row.getByTestId('file-mode')).toHaveCount(0);
+  await win.getByTestId('local-base-select').selectOption('refs/heads/test');
+  await win.getByTestId('open-btn').click();
+  await expect(row).toHaveAttribute('data-state', 'changed-since-viewed');
+  await expect(row.getByTestId('file-mode')).toHaveText('File mode 100755 → 100644');
   await app.close();
 });
 

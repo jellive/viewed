@@ -57,6 +57,18 @@ test('worktrees lists the repo itself, and isCommit checks the type', async () =
   assert.equal(await askGit.isCommit(d, 'HEAD'), false);
 });
 
+test('a blank context line keeps its leading space whatever the repo config says', async () => {
+  // diff.suppressBlankEmpty 가 켜진 레포에서 빈 문맥 줄이 '' 로 나오면 결과 파일 줄 번호를 못 센다
+  const d = makeRepo();
+  git(d, 'config', 'diff.suppressBlankEmpty', 'true');
+  fs.writeFileSync(path.join(d, 'blank.txt'), 'a\n\nb\n'); git(d, 'add', '.'); git(d, 'commit', '-q', '-m', 'blank');
+  const before = rev(d, 'HEAD');
+  fs.writeFileSync(path.join(d, 'blank.txt'), 'a\n\nB\n'); git(d, 'add', '.'); git(d, 'commit', '-q', '-m', 'edit');
+  const out = await ops.patchDiff(d, before, rev(d, 'HEAD'));
+  assert.ok(out.split('\n').includes(' '), out);
+  assert.ok(git(d, 'diff', before, 'HEAD').split('\n').includes(''), 'the repo setting itself must be in effect for this test to mean anything');
+});
+
 test('repo textconv and external diff config never run a program', async () => {
   const d = makeRepo();
   const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'viewed-mark-')));

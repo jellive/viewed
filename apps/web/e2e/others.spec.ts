@@ -20,7 +20,12 @@ async function fakeLocal(page: Page, o: { extraMe?: string[]; authorsFail?: bool
         list: async () => ['/r/a'],
         info: async () => ({ refs: ['refs/heads/feat', 'refs/heads/main'], defaultBase: null, current: 'refs/heads/feat', remote: null, user: w.__user ?? { name: 'alice', email: 'a@example.test' } }),
         run: async (_repo: string, op: string, ref: string) => {
-          if (op === 'authors') { if (w.__authorsFail) throw new Error('boom'); if (w.__authorsHang) return new Promise(() => {}); return w.__authorsRaw ?? JSON.stringify(w.__authors); }
+          if (op === 'authors') {
+            if (w.__authorsDelay) await new Promise((r) => setTimeout(r, w.__authorsDelay));
+            if (w.__authorsFail) throw new Error('boom');
+            if (w.__authorsHang) return new Promise(() => {});
+            return w.__authorsRaw ?? JSON.stringify(w.__authors);
+          }
           return op === 'resolve' ? (ref === 'refs/heads/feat' ? w.__git.head : oid('d'))
             : op === 'mergeBase' ? w.__git.mb : op === 'rawDiff' ? w.__git.raw : op === 'patchDiff' ? w.__git.patch : null;
         },
@@ -109,6 +114,94 @@ test('authors that never answer do not hold the list back', async ({ page }) => 
   await page.getByTestId('open-btn').click();
   await expect(page.getByTestId('progress')).toHaveText('0 / 2', { timeout: 5000 });
   await expect(page.getByTestId('file-others')).toHaveCount(0);
+});
+
+test('authors that take a few seconds on first open still mark other people\'s files', async ({ page }) => {
+  // 머지가 많은 대상에서는 조회만 1초 넘게 걸리고, 바쁜 기계에서는 몇 배가 된다. 늦었다고 남의 파일이 전부 안 본 것으로 뜨면 안 된다
+  await fakeLocal(page);
+  await page.goto('/');
+  await page.evaluate(() => { (window as any).__authorsDelay = 2500; });
+  await expect(page.getByTestId('local-branch-select')).toHaveValue('refs/heads/feat');
+  await page.getByTestId('open-btn').click();
+  await expect(page.getByTestId('progress')).toHaveText('1 / 2', { timeout: 6000 });
+  await expect(row(page, 'src/b.ts')).toHaveAttribute('data-others', '1');
+});
+
+for (const how of ['never answer', 'fail'] as const) {
+  test(`authors that ${how} on a refresh leave other people's files as they were`, async ({ page }) => {
+    await fakeLocal(page);
+    await openLocal(page, '1 / 2');
+    await page.evaluate((how) => { const w = window as any; if (how === 'fail') w.__authorsFail = true; else w.__authorsHang = true; }, how);
+    await page.getByTestId('refresh-btn').click();
+    await page.waitForTimeout(2000);   // 기다리는 시간을 넘긴다
+    await expect(page.getByTestId('progress')).toHaveText('1 / 2');
+    await expect(row(page, 'src/b.ts')).toHaveAttribute('data-others', '1');
+    await expect(row(page, 'src/b.ts')).toHaveAttribute('data-state', 'viewed');
+    // 작성자가 돌아오면 다시 판정한다
+    await page.evaluate(() => { const w = window as any; w.__authorsFail = false; w.__authorsHang = false; w.__authors.files['src/b.ts'].push(['alice', 'a@example.test']); });
+    await page.getByTestId('refresh-btn').click();
+    await expect(page.getByTestId('progress')).toHaveText('0 / 2');
+  });
+}
+
+test('a new commit while authors are late: an unchanged file stays other people\'s, a changed one is treated as mine', async ({ page }) => {
+  await fakeLocal(page);
+  await openLocal(page, '1 / 2');
+  await page.evaluate(() => {
+    const w = window as any, oid = (c: string) => c.repeat(40);
+    const one = (p: string, to: string) => `diff --git a/${p} b/${p}\n--- a/${p}\n+++ b/${p}\n@@ -1,2 +1,2 @@\n ctx\n-old\n+${to}\n`;
+    w.__authorsHang = true;
+    w.__git.head = oid('9');
+    w.__git.raw = `:100644 100644 ${oid('a')} ${oid('7')} M\0src/a.ts\0:100644 100644 ${oid('c')} ${oid('d')} M\0src/b.ts\0`;
+    w.__git.patch = one('src/a.ts', 'mine') + one('src/b.ts', 'new');
+  });
+  await page.getByTestId('refresh-btn').click();
+  await expect(row(page, 'src/a.ts').locator('.ln.add').filter({ hasText: 'mine' })).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('progress')).toHaveText('1 / 2');
+  await expect(row(page, 'src/b.ts')).toHaveAttribute('data-others', '1');
+  // 이번에는 남의 파일을 고친 커밋 — 내 변경일 수 있으니 숨기지 않는다
+  await page.evaluate(() => {
+    const w = window as any, oid = (c: string) => c.repeat(40);
+    const one = (p: string, to: string) => `diff --git a/${p} b/${p}\n--- a/${p}\n+++ b/${p}\n@@ -1,2 +1,2 @@\n ctx\n-old\n+${to}\n`;
+    w.__git.head = oid('8');
+    w.__git.raw = `:100644 100644 ${oid('a')} ${oid('7')} M\0src/a.ts\0:100644 100644 ${oid('c')} ${oid('6')} M\0src/b.ts\0`;
+    w.__git.patch = one('src/a.ts', 'mine') + one('src/b.ts', 'touched');
+  });
+  await page.getByTestId('refresh-btn').click();
+  await expect(page.getByTestId('progress')).toHaveText('0 / 2', { timeout: 5000 });
+  await expect(row(page, 'src/b.ts')).toHaveAttribute('data-state', 'unread');
+  await expect(page.getByTestId('file-others')).toHaveCount(0);
+});
+
+test('adding my name while authors are late does not keep the old verdict', async ({ page }) => {
+  await fakeLocal(page);
+  await openLocal(page, '1 / 2');
+  await page.evaluate(() => { (window as any).__authorsHang = true; });
+  await page.getByTestId('settings-open').click();
+  await page.getByTestId('extra-me').fill('bob');
+  await page.getByTestId('settings-save').click();
+  await expect(page.getByTestId('progress')).toHaveText('0 / 2', { timeout: 5000 });
+  await expect(page.getByTestId('file-others')).toHaveCount(0);
+});
+
+test('a check I undid while the file looked like mine is not undone by authors arriving later', async ({ page }) => {
+  await fakeLocal(page, { authorsFail: true });
+  await openLocal(page, '0 / 2');
+  const b = row(page, 'src/b.ts');
+  await b.getByTestId('file-check').check();
+  await b.getByTestId('file-check').uncheck();
+  await expect(b).toHaveAttribute('data-state', 'unread');
+  await page.evaluate(() => { (window as any).__authorsFail = false; });
+  await page.getByTestId('refresh-btn').click();
+  await page.waitForTimeout(300);
+  await expect(b).toHaveAttribute('data-state', 'unread');
+  await expect(b.getByTestId('file-check')).toBeEnabled();   // 잠기면 다시 체크할 길이 없다
+  await expect(b.getByTestId('file-others')).toHaveCount(0);
+  await expect(page.getByTestId('progress')).toHaveText('0 / 2');
+  // 다시 체크하면 평소처럼 남의 파일로 돌아간다
+  await b.getByTestId('file-check').check();
+  await expect(b).toHaveAttribute('data-others', '1');
+  await expect(page.getByTestId('progress')).toHaveText('1 / 2');
 });
 
 test('malformed authors drop the others map instead of failing the load', async ({ page }) => {

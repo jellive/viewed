@@ -15,8 +15,9 @@ export interface Snapshot {
 }
 // blocks·base·meta: 확인할 때의 변경 블록 서명·merge-base·meta (spec §4). 이 기능 전 기록에는 없다
 export interface ViewRecord { fp: string; blob: string | null; head: string; at: string; viewed: boolean; blocks?: string[]; base?: string; meta?: string;
-  prev?: { base: string; fp: string; via?: 'branch' | 'target' };   // 대상 전환 이어받기(b)로 쓴 기록만: 이전 대상 P 에서 확인했던 base·지문·출처. P 로 돌아가면 그때 그대로다
-  via?: 'branch' | 'target' }            // 사람이 안 누르고 앱이 이어받아 쓴 기록 — 다른 브랜치·이전 대상에서. 이 필드 전 기록은 직접 체크로 읽힌다
+  prev?: { base: string; fp: string; via?: 'branch' | 'target' };   // via:'target' 기록만: 사람이 실제로 본 diff 의 base·지문·출처. 대상을 몇 번 옮겨도 덮지 않는다. P 로 돌아가면 그때 그대로다
+  via?: 'branch' | 'target';             // 사람이 안 누르고 앱이 이어받아 쓴 기록 — 다른 브랜치·이전 대상에서. 이 필드 전 기록은 직접 체크로 읽힌다
+  oldMode?: string }                     // 확인할 때 base 쪽 mode(로컬 모드만). 이 필드 전 기록에는 없다
 export type DeviceState = Record<string, ViewRecord>;   // 키 = HMAC hex
 export type FileState = 'viewed' | 'unread' | 'changed-since-viewed';
 // newBlocks: 확인한 블록과 안 맞는 지금 블록 번호 / carried: 지문은 바뀌었지만 블록이 전부 확인한 것이라 확인함
@@ -25,6 +26,7 @@ export interface ReviewItem {
   file: ChangedFile; key: string; fp: string; meta: string; blocks?: string[]; base?: string;
   state: FileState; record?: ViewRecord; newBlocks?: number[]; carried?: 'same' | 'shrunk'; dropped?: number;
   carryPrev?: { base: string; fp: string; via?: 'branch' | 'target' };   // 대상 전환 이어받기 중 옛 대상에서 본 diff 가 확인된 item 에만(targetCarry (b)·sameResultCarry): 이어받기 전 기록의 base·지문·출처
+  carryVia?: 'target'; // 다른 브랜치에서 이어받을 때 그쪽 기록도 이어받은 것이었다 — 사람이 본 근거로 승격하지 않게 출처를 넘긴다
   others?: string[];   // 남의 커밋만 닿은 파일이라 확인한 것으로 친다 — 남 작성자 이름
   elsewhere?: true;    // 기록이 없고 다른 브랜치에서 확인한 것과 겹친다 — newBlocks 나 seenBlob 이후 바뀐 줄만 보인다. 저장하지 않는다
   seenBlob?: string;   // elsewhere 중 양쪽 다 새 파일일 때: 거기서 확인한 blob. 블록 하나짜리라 줄 단위로 비교한다

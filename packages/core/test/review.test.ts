@@ -330,3 +330,43 @@ describe('buildReview others', () => {
     expect(r.items[0].state).toBe('unread');
   });
 });
+
+describe('a check undone by hand beats the others mark', () => {
+  const at = new Date('2026-10-15T00:00:00Z');
+  const s = snap([{ path: 'a.ts', status: 'modified', blobSha: 'b', patch: '@@ -1 +1 @@\n-x\n+y', mode: '100644' }]);
+  const others = new Map([['a.ts', ['bob']]]);
+  async function undone() {
+    const first = await buildReview(s, {}, S);
+    return { [first.items[0].key]: markRecord(first.items[0], 'h1', false, at) };
+  }
+  it('stays unread and is not locked as someone else\'s', async () => {
+    const it0 = (await buildReview(s, await undone(), S, others)).items[0];
+    expect([it0.state, it0.others, it0.auto]).toEqual(['unread', undefined, undefined]);
+  });
+  it('checked again it is someone else\'s file as before', async () => {
+    const first = await buildReview(s, {}, S);
+    const st = { [first.items[0].key]: markRecord(first.items[0], 'h1', true, at) };
+    const it0 = (await buildReview(s, st, S, others)).items[0];
+    expect([it0.state, it0.others, it0.auto]).toEqual(['viewed', ['bob'], true]);
+  });
+});
+
+describe('markRecord time', () => {
+  const s = snap([{ path: 'a.ts', status: 'modified', blobSha: 'b', patch: '@@ -1 +1 @@\n-x\n+y', mode: '100644' }]);
+  it('is later than the record it replaces, even if the clock went back', async () => {
+    const first = await buildReview(s, {}, S);
+    const future = markRecord(first.items[0], 'h', true, new Date('2030-01-01T00:00:00Z'));
+    const again = (await buildReview(s, { [first.items[0].key]: future }, S)).items[0];
+    const undone = markRecord(again, 'h', false, new Date('2026-10-15T00:00:00Z'));
+    expect(Date.parse(undone.at)).toBeGreaterThan(Date.parse(future.at));
+  });
+  it('is simply now otherwise', async () => {
+    const first = await buildReview(s, {}, S);
+    const now = new Date('2026-10-15T00:00:00Z');
+    expect(markRecord(first.items[0], 'h', true, now).at).toBe(now.toISOString());
+  });
+  it('keeps the old mode', async () => {
+    const m = snap([{ path: 'a.ts', status: 'modified', blobSha: 'b', patch: '@@ -1 +1 @@\n-x\n+y', mode: '100644', oldMode: '100755' }]);
+    expect(markRecord((await buildReview(m, {}, S)).items[0], 'h', true).oldMode).toBe('100755');
+  });
+});

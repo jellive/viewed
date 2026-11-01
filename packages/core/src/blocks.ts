@@ -69,7 +69,7 @@ export function markedLines(patch: string, want: readonly number[]): { patch: st
   const out: string[] = [], seen: number[] = [];
   let hunk: string[] = [], marks: number[] = [], hit = false, prevSeen = false;
   const flush = () => {
-    if (hit) { for (const k of marks) seen.push(out.length + k); out.push(...hunk); }
+    if (hit) { for (const k of marks) seen.push(out.length + k); for (const l of hunk) out.push(l); }
     hunk = []; marks = []; hit = false;
   };
   for (const [i, line] of patch.split('\n').entries()) {

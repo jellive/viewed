@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { meMatcher, othersOf, type Author } from '../src/others';
-import type { ChangedFile } from '../src/types';
+import { keepOthers, meMatcher, othersOf, type Author } from '../src/others';
+import type { ChangedFile, Snapshot } from '../src/types';
 
 const f = (path: string, previousPath?: string): ChangedFile =>
   ({ path, ...(previousPath ? { previousPath } : {}), status: 'modified', blobSha: 'x' });
@@ -77,5 +77,32 @@ describe('othersOf renames', () => {
   it('prototype-named rename paths are safe', () => {
     const m = othersOf([f('constructor')], {}, isMe, [['__proto__', 'constructor']]);
     expect(m.has('constructor')).toBe(false);
+  });
+});
+
+describe('keepOthers', () => {
+  const snap = (files: ChangedFile[]): Snapshot => ({ owner: 'local', repo: 'r', base: 'b', branch: 'f', headSha: 'h', files, truncated: false });
+  const file = (path: string, extra: Partial<ChangedFile> = {}): ChangedFile => ({ path, status: 'modified', blobSha: 'x', patch: '@@ -1 +1 @@\n-a\n+b', mode: '100644', ...extra });
+  const prev = new Map([['a.ts', ['bob']]]);
+  const kept = (now: ChangedFile) => [...keepOthers(prev, snap([file('a.ts')]), snap([now])).keys()];
+
+  it('keeps the verdict of a file whose diff is the same', () => {
+    expect(keepOthers(prev, snap([file('a.ts'), file('b.ts')]), snap([file('a.ts'), file('b.ts')]))).toEqual(prev);
+  });
+  it.each([
+    ['its content', { blobSha: 'y' }], ['its diff', { patch: '@@ -1 +1 @@\n-a\n+c' }], ['its mode', { mode: '100755' }],
+    ['its status', { status: 'added' as const }], ['where it came from', { status: 'renamed' as const, previousPath: 'old.ts' }],
+  ])('drops a file when %s changed — a new commit may be mine', (_n, extra) => {
+    expect(kept(file('a.ts', extra))).toEqual([]);
+  });
+  it('drops a file when only the mode on the old side changed', () => {
+    const before = file('a.ts', { oldMode: '100644' });
+    expect([...keepOthers(prev, snap([before]), snap([file('a.ts', { oldMode: '100755' })])).keys()]).toEqual([]);
+  });
+  it('drops a file gone from the list and does not invent one', () => {
+    expect([...keepOthers(prev, snap([file('a.ts')]), snap([file('b.ts')])).keys()]).toEqual([]);
+  });
+  it('a file that was mine stays mine', () => {
+    expect([...keepOthers(new Map(), snap([file('a.ts')]), snap([file('a.ts')])).keys()]).toEqual([]);
   });
 });

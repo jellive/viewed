@@ -78,7 +78,7 @@ export function useReview(a: { snap: Snapshot; merged: DeviceState; secret: stri
         if (!live) return;
         for (const i of fresh) searched.current.add(i.file.path);
         if (m?.near.size) near.current = new Map([...(near.current ?? []), ...m.near]);
-        const recs = (m?.exact ?? []).map((it) => [it.key, { ...markRecord(it, snap.headSha, true), via: 'branch' as const }] as const);
+        const recs = (m?.exact ?? []).map((it) => [it.key, { ...markRecord(it, snap.headSha, true), via: it.carryVia ?? ('branch' as const) }] as const);
         if (recs.length) { store.setMany(recs); state = mergeStates([state, Object.fromEntries(recs)]); }
         r = await build(state);
         if (!live) return;

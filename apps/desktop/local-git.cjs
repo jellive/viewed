@@ -3,7 +3,8 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 
 // 읽기 전용 git 실행. 셸 없이, 정해진 인자만. 레포 설정이 외부 프로그램을 부르지 못하게 끈다
-const BASE = ['-c', 'core.quotepath=off', '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false'];
+// diff.suppressBlankEmpty: 빈 문맥 줄이 ' ' 없이 나오면 줄 번호를 못 센다 — 처음 보는 줄을 본 줄로 맞대게 된다
+const BASE = ['-c', 'core.quotepath=off', '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', '-c', 'diff.suppressBlankEmpty=false'];
 // --submodule=short: 레포 설정의 diff.submodule=diff|log 는 하위 git 을 따로 돌리는데, 그 하위 실행엔 위 차단 옵션이 안 넘어간다
 const DIFF = ['diff', '--no-color', '--no-ext-diff', '--no-textconv', '--submodule=short', '-M', '--no-abbrev'];
 const WHOLE_FILE = 1_000_000;   // git -U 값. 이보다 긴 파일은 화면이 어차피 거절한다

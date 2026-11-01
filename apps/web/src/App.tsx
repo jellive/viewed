@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { GitHub, loadLocalSnapshot, loadSnapshot, loadAll, mergeStates, meMatcher, othersOf, repoIdFromRemote, type Author, type DeviceState, type Snapshot } from '@viewed/core';
+import { GitHub, keepOthers, loadLocalSnapshot, loadSnapshot, loadAll, mergeStates, meMatcher, othersOf, repoIdFromRemote, type Author, type DeviceState, type Snapshot } from '@viewed/core';
 import { loadSettings, type Settings as S } from './settings';
 import { Settings } from './components/Settings';
 import { ReviewView } from './components/ReviewView';
@@ -19,7 +19,9 @@ type Made = { snap: Snapshot; readBlob: ReadBlob; head?: () => Promise<string>; 
   branches?: readonly string[] };
 type Make = () => Promise<Made>;
 const LIVE_MS = 3000;
-const AUTHORS_GRACE_MS = 1500;
+// 스냅숏이 끝난 뒤 작성자를 더 기다리는 시간. 처음 열 때는 늦으면 남의 파일까지 전부 안 본 것으로 뜬다(머지가 많은 대상에서 조회 자체가 1초 넘게 걸린다).
+// 다시 읽을 때는 앞선 판정을 그대로 두면 되니(keepOthers) 오래 안 기다린다
+const AUTHORS_GRACE_MS = 4000, AUTHORS_REFRESH_MS = 1500;
 // 이 폴더에서 연 브랜치(최근 순) 다음 로컬 브랜치. 파일마다 후보 수만큼 키를 만든다 — 첫 화면 마감 안에 들게 상한을 둔다
 const MAX_BRANCHES = 30;
 // 작성자 판정이 무엇으로든 던지면 맵만 버린다 — 목록 읽기는 실패시키지 않는다
@@ -61,6 +63,8 @@ export function App() {
     return () => clearInterval(timer);
   }, [loaded]);
   const pendingRefresh = useRef(false);
+  // '나' 이름이 바뀌었다 — 앞선 남 판정을 다시 쓰면 안 된다. 다음 로드가 이어 쓰지 않게 표시한다
+  const meChanged = useRef(false);
   // 읽는 중인 로드가 있는지 — 그동안 저장된 '나' 이름은 그 로드가 못 봤을 수 있어, 도착한 뒤 한 번 더 읽는다
   const loading = useRef(false);
   useEffect(() => {
@@ -80,7 +84,7 @@ export function App() {
     // gist 나 기기가 바뀌면 옛 저장소에 묶인 화면은 버린다 — 다시 열면 새 저장소를 쓴다
     // '나' 이름이 바뀌면 열린 리뷰를 다시 판정한다(설정이 반영된 다음 렌더에서 — 아래 effect)
     const norm = (x?: string[]) => (x ?? []).map((v) => v.trim().toLowerCase()).join('\n');
-    if ((loaded || loading.current) && norm(s.extraMe) !== norm(settings?.extraMe)) pendingRefresh.current = true;
+    if ((loaded || loading.current) && norm(s.extraMe) !== norm(settings?.extraMe)) { pendingRefresh.current = true; meChanged.current = true; }
     if (settings && (s.gistId !== settings.gistId || s.deviceId !== settings.deviceId || s.storage !== settings.storage)) { seq.current++; loading.current = false; setLoaded(null); }
     setSettings(s); setEditing(false);
   }} />;
@@ -95,7 +99,11 @@ export function App() {
     setError(''); if (!refresh) setLoaded(null);
     const keep = (id: number) => (refresh && loaded ? loaded.id : id);
     try {
-      const { snap, readBlob, head, repo, others, isMe, branches } = await make();
+      const reuse = refresh && !meChanged.current;
+      meChanged.current = false;
+      const { snap, readBlob, head, repo, others: read, isMe, branches } = await make();
+      // 다시 읽는데 작성자가 늦거나 실패했다 — diff 가 그대로인 파일의 남 판정은 그대로 둔다
+      const others = read ?? (reuse && loaded?.others ? keepOthers(loaded.others, loaded.snap, snap) : undefined);
       if (settings!.storage === 'device') {
         const store = getDeviceStore(settings!.deviceId);
         if (mine !== seq.current) return;
@@ -160,8 +168,8 @@ export function App() {
             try { head = await git.resolve(branch); const baseSha = await git.resolve(base); mb = head && baseSha ? await git.mergeBase(baseSha, head) : ''; } catch { /* 위 */ }
             const pending = mb ? localAuthors(repo, mb, head) : Promise.resolve(null);
             const snap = await loadLocalSnapshot(git, repoIdFromRemote(info.remote, repo), branch, base);
-            // 스냅숏이 끝난 뒤 작성자를 최대 1.5초만 더 기다린다 — 늦으면 전부 내 것으로 그리고 넘어간다
-            const authors = await Promise.race([pending, new Promise<null>((r) => setTimeout(() => r(null), AUTHORS_GRACE_MS))]);
+            // 스냅숏이 끝난 뒤 작성자를 기다린다 — 처음 열 때 늦으면 전부 내 것으로 그리고 넘어간다
+            const authors = await Promise.race([pending, new Promise<null>((r) => setTimeout(() => r(null), firstRun ? AUTHORS_GRACE_MS : AUTHORS_REFRESH_MS))]);
             // '나' = git 사용자(이름·이메일) + 설정의 추가분. 첫 읽기는 방금 읽은 info 를 쓰고, 다시 읽을 때마다 git 사용자를 새로 읽는다(실패하면 열 때 잡은 info 로)
             const user = (firstRun ? info : await desktopGit()!.info(repo).catch(() => info)).user;
             firstRun = false;

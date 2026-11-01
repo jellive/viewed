@@ -181,4 +181,11 @@ describe('markedLines', () => {
   it('keeps nothing when nothing is wanted', () => {
     expect(markedLines(P, [])).toEqual({ patch: '', seen: [] });
   });
+  it('handles a hunk far longer than the call-argument limit', () => {
+    const body = Array.from({ length: 300_000 }, (_, i) => `+l${i}`);
+    const big = ['@@ -0,0 +1,300000 @@', ...body].join('\n');
+    const out = markedLines(big, [1]);
+    expect(out.patch.length).toBe(big.length);
+    expect(out.seen.length).toBe(299_999);
+  });
 });

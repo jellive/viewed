@@ -1,4 +1,5 @@
 import { fingerprint } from './fingerprint';
+import { seenBasis, unseenMode } from './review';
 import { recordKey } from './keys';
 import { unmatchedBlocks } from './blocks';
 import type { ChangedFile, DeviceState, NearMatch, NewLines, Review, ReviewItem, Snapshot, ViewRecord } from './types';
@@ -92,19 +93,23 @@ async function compareWithViewed<T extends { item: ReviewItem; rec: ViewRecord }
   return { seen, lines };
 }
 
-// 대상을 옮겨 diff 만 달라진 파일: 결과 파일이 확인 때 그대로이고 지금 변경이 전부 그때 본 변경이면 새로 볼 것이 없다. 처음 보는 줄이 있으면 그 줄을 알려 준다
+// 대상을 옮겨 diff 만 달라진 파일: 결과 파일이 확인 때 그대로이고 지금 변경이 전부 사람이 본 변경이면 새로 볼 것이 없다. 처음 보는 줄이 있으면 그 줄을 알려 준다.
+// 블록으로 확인함이 된 파일도 맞댄다 — 서명에는 자리가 없어 앞뒤 줄이 같은 다른 곳의 변경도 맞는다. 처음 보는 줄이 있을 때만 알려 buildReview 가 내린다
 export async function sameResultCarry(review: Review, n: string, load: (base: string) => Promise<ChangedFile[] | null>): Promise<{ carried: ReviewItem[]; lines: NewLines }> {
-  const cands = review.items.flatMap((item) => (item.state !== 'viewed' && item.file.patch !== undefined && item.record?.viewed
-    && item.record.base && item.record.base !== n && item.record.blob === item.file.blobSha ? [{ item, rec: item.record }] : []));
+  const cands = review.items.flatMap((item) => {
+    const r = item.record, basis = r?.viewed ? seenBasis(r) : undefined;
+    if (!r || !basis || r.base === n || r.blob !== item.file.blobSha || item.file.patch === undefined) return [];
+    return item.state !== 'viewed' || item.carried ? [{ item, rec: { ...r, base: basis.base, fp: basis.fp }, basis }] : [];
+  });
   const { seen, lines } = await compareWithViewed(cands, load);
-  return { carried: seen.map(({ item, rec }) => ({ ...item, carryPrev: { base: rec.base!, fp: rec.fp, ...(rec.via ? { via: rec.via } : {}) } })), lines };
+  return { carried: seen.filter(({ item }) => item.state !== 'viewed').map(({ item, basis }) => ({ ...item, carryPrev: basis })), lines };
 }
 
 // 같은 규칙을 다른 브랜치 기록에: 이 브랜치에 기록이 아예 없는 파일(체크를 푼 기록이 있으면 그것이 이긴다)만, 결과 파일이 같은 기록 중 가장 최근 것이 확인일 때.
-// 결과 파일이 다른 기록의 체크 풀기는 이 내용에 대한 판단이 아니라 보지 않는다
+// 결과 파일이 다른 기록의 체크 풀기는 이 내용에 대한 판단이 아니라 보지 않는다. 사람이 본 diff 가 지금 base 의 이 diff 이면 맞대 볼 것도 없다
 export async function otherBranchCarry(review: Review, snap: Snapshot, state: DeviceState, secret: string, branches: readonly string[], load: (base: string) => Promise<ChangedFile[] | null>): Promise<{ carried: ReviewItem[]; lines: NewLines }> {
   const names = [...new Set(branches)].filter((b) => b !== snap.branch);
-  const cands: { item: ReviewItem; rec: ViewRecord }[] = [];
+  const cands: { item: ReviewItem; rec: ViewRecord }[] = [], same: ReviewItem[] = [];
   for (const item of review.items) {
     if (item.record || item.state === 'viewed' || item.file.patch === undefined) continue;
     let best: ViewRecord | undefined;
@@ -112,10 +117,13 @@ export async function otherBranchCarry(review: Review, snap: Snapshot, state: De
       const r = state[await recordKey(secret, snap.owner, snap.repo, b, item.file.path)];
       if (r && r.blob === item.file.blobSha && (!best || Date.parse(r.at) > Date.parse(best.at))) best = r;
     }
-    if (best?.viewed && best.base && best.base !== snap.mergeBase) cands.push({ item, rec: best });
+    const basis = best?.viewed ? seenBasis(best) : undefined;
+    if (!best || !basis) continue;
+    if (basis.base !== snap.mergeBase) cands.push({ item, rec: { ...best, base: basis.base, fp: basis.fp } });
+    else if (basis.fp === item.fp) same.push(item);
   }
   const { seen, lines } = await compareWithViewed(cands, load);
-  return { carried: seen.map(({ item }) => item), lines };
+  return { carried: [...same, ...seen.map(({ item }) => item)], lines };
 }
 
 // 후보 중 N 의 후손인 것만 기록 수 순으로 최대 3개. 조상 검사가 던지면 그 P 는 건너뛴다
@@ -147,7 +155,8 @@ export async function targetCarry(review: Review, n: string, prev: { base: strin
       if (!s.touched.has(item.file.path) && !(item.file.previousPath !== undefined && s.touched.has(item.file.previousPath))) { ok = true; break; }
       const r = item.record, pf = s.byPath.get(item.file.path);
       if (!r?.viewed || !pf) continue;
-      if (r.base === s.base && await fingerprint(pf) === r.fp) { ok = true; prevOf = { base: r.base, fp: r.fp, ...(r.via ? { via: r.via } : {}) }; break; }
+      // 사람이 본 diff 를 잇는다 — 앞서 이어받은 기록이면 그 기록의 diff 가 아니라 처음 본 것을 그대로 넘긴다
+      if (r.base === s.base && await fingerprint(pf) === r.fp) { ok = true; prevOf = seenBasis(r); break; }
       // 앞서 이어받아 다시 쓴 기록 — 처음 확인한 대상은 prev 에 있다. 대상을 두 번 건너면 다시 쓴 base 는 조상이 아닐 수 있다
       if (r.prev?.base === s.base && await fingerprint(pf) === r.prev.fp) { ok = true; prevOf = r.prev; break; }
     }
@@ -174,11 +183,17 @@ export async function branchMatches(review: Review, snap: Snapshot, state: Devic
     const overlaps = (r: ViewRecord) => !!r.blocks && !!item.blocks && unmatchedBlocks(r.blocks, item.blocks).length < item.blocks.length;
     for (const b of names) {
       const r = state[await recordKey(secret, snap.owner, snap.repo, b, item.file.path)];
-      if (!r) continue;
-      if (r.fp === item.fp && (item.file.patch !== undefined || r.base === snap.mergeBase)) { if (newer(r, same)) same = r; }
+      // 이어받아 쓴 기록의 diff 는 사람이 본 것이 아니다 — 근거로는 사람이 본 diff 와 otherBranchCarry 가 맞댄다.
+      // 같은 대상의 글자까지 같은 diff 만은 그 브랜치 화면과 같은 판정이라 잇는다(출처를 그대로 두어 옆 대상에서 근거가 안 되게)
+      if (!r || (r.via === 'target' && !(r.base === snap.mergeBase && r.fp === item.fp))) continue;
+      // 지문이 같아도 같은 base 에서 blob 이 다르면 글자로 못 읽는 바이트가 바뀐 것이고, 처음 보는 mode 변경은 지문이 모른다
+      const sameDiff = r.fp === item.fp && (item.file.patch !== undefined || r.base === snap.mergeBase)
+        && !(r.base === snap.mergeBase && r.blob !== item.file.blobSha) && !unseenMode(item.file, r, snap.mergeBase);
+      if (sameDiff) { if (newer(r, same)) same = r; }
+      else if (r.fp === item.fp) continue;   // 글자가 같아 블록도 맞는다 — 흐리게 그리면 달라진 것을 본 것처럼 보인다
       else if (newer(r, best) && (bothNew(r) || overlaps(r))) best = r;
     }
-    if (same) { if (same.viewed) exact.push(item); }
+    if (same) { if (same.viewed) exact.push(same.via === 'target' ? { ...item, carryVia: 'target', ...(same.prev ? { carryPrev: same.prev } : {}) } : item); }
     else if (best?.viewed) near.set(item.file.path, bothNew(best) ? { blob: best.blob! } : { blocks: best.blocks! });
   }
   return { exact, near };
