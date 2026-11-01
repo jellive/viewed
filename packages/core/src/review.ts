@@ -66,10 +66,10 @@ export async function buildReview(snap: Snapshot, state: DeviceState, secret: st
     }
     items.push({ file, key, fp, meta, ...(blocks ? { blocks } : {}), ...(snap.mergeBase ? { base: snap.mergeBase } : {}),
       state: st, record, ...(names ? { others: names } : {}), ...(newBlocks ? { newBlocks } : {}), ...(carried ? { carried } : {}), ...(dropped ? { dropped } : {}),
-      ...(elsewhere ? { elsewhere: true as const } : {}) });
+      ...(elsewhere ? { elsewhere: true as const } : {}), ...(st === 'viewed' && (names || record?.via) ? { auto: true as const } : {}) });
   }
   const viewedCount = items.filter((i) => i.state === 'viewed').length;
-  return { items, viewedCount, total: items.length, incomplete: snap.truncated,
+  return { items, viewedCount, autoCount: items.filter((i) => i.auto).length, total: items.length, incomplete: snap.truncated,
     complete: !snap.truncated && items.length > 0 && viewedCount === items.length };
 }
 

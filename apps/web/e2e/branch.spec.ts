@@ -154,3 +154,55 @@ test('a slow search of other branches does not starve the base-move check of the
   await expect(row(page, 'f.ts')).toHaveAttribute('data-state', 'changed-since-viewed');
   await expect(row(page, 'f.ts').getByTestId('since-blocks')).toHaveCount(0);   // 블록 판정이 아니라 줄 단위
 });
+
+// 직접 누른 것과 앱이 이어받은 것을 가른다 — 진행률 하나로 합치면 "다 확인했다"의 근거가 흐려진다
+test('a check carried over from another branch is marked, can be listed apart, and becomes direct when checked by hand', async ({ page }) => {
+  await fakeLocal(page);
+  await page.goto('/');
+  await expect(page.getByTestId('local-branch-select')).toHaveValue('refs/heads/feat');
+  await page.getByTestId('open-btn').click();
+  await expect(page.getByTestId('progress')).toHaveText('0 / 4');
+  for (const p of ['a.ts', 'b.ts', 'c.ts', 'e.ts']) await row(page, p).getByTestId('file-check').check();
+  await expect(page.getByTestId('progress')).toHaveText('4 / 4');
+  await expect(page.getByTestId('auto-filter')).toHaveCount(0);   // 전부 직접 눌렀다
+
+  await page.getByTestId('local-branch-select').selectOption('refs/heads/feat2');
+  await page.getByTestId('open-btn').click();
+  await expect(page.getByTestId('progress')).toHaveText('1 / 4');
+  const filter = page.getByTestId('auto-filter');
+  await expect(filter).toHaveText('1 automatic');
+  await expect(row(page, 'a.ts').getByTestId('file-state')).toHaveText('Carried over');
+  await expect(page.getByTestId('file-row')).toHaveCount(4);
+
+  // 다시 열어도 이어받은 기록으로 남는다
+  await page.getByTestId('open-btn').click();
+  await expect(filter).toHaveText('1 automatic');
+
+  await filter.click();
+  await expect(filter).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('file-row')).toHaveCount(1);
+  await expect(row(page, 'a.ts')).toBeVisible();
+  await filter.click();
+  await expect(page.getByTestId('file-row')).toHaveCount(4);
+
+  // '확인한 파일 숨기기'와는 서로 반대라 하나를 켜면 다른 하나가 꺼진다
+  await filter.click();
+  await page.getByTestId('filter-unviewed').check();
+  await expect(filter).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByTestId('file-row')).toHaveCount(3);
+  await filter.click();
+  await expect(page.getByTestId('filter-unviewed')).not.toBeChecked();
+  await expect(page.getByTestId('file-row')).toHaveCount(1);
+
+  // 필터가 켜진 채 직접 풀면 자동 처리가 사라지고 목록은 전체로 돌아간다. 다시 눌러도 직접 체크다
+  await row(page, 'a.ts').getByTestId('file-check').uncheck();
+  await expect(filter).toHaveCount(0);
+  await expect(page.getByTestId('file-row')).toHaveCount(4);
+  await row(page, 'a.ts').getByTestId('file-check').check();
+  await expect(page.getByTestId('progress')).toHaveText('1 / 4');
+  await expect(filter).toHaveCount(0);
+  await expect(row(page, 'a.ts').getByTestId('file-state')).toHaveText('');
+  await page.getByTestId('open-btn').click();
+  await expect(page.getByTestId('progress')).toHaveText('1 / 4');
+  await expect(filter).toHaveCount(0);
+});

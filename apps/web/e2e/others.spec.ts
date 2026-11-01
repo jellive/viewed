@@ -328,3 +328,13 @@ test('the same head, base and path in another folder is blamed again', async ({ 
   await page.getByTestId('open-btn').click();
   await expect(lnOf(page, 2)).toHaveClass(/\bother\b/);
 });
+
+test("someone else's file counts as automatic and can be listed apart", async ({ page }) => {
+  await fakeLocal(page);
+  await openLocal(page, '1 / 2');
+  await expect(page.getByTestId('auto-filter')).toHaveText('1 automatic');
+  await page.getByTestId('auto-filter').click();
+  await expect(page.getByTestId('file-row')).toHaveCount(1);
+  await expect(row(page, 'src/b.ts').getByTestId('file-others')).toHaveText('bob');
+  await expect(row(page, 'src/b.ts').getByTestId('file-state')).toHaveText('');   // 작성자 배지가 이미 말해 준다
+});

@@ -8,6 +8,7 @@ const MARK = { viewed: '', unread: '', 'changed-since-viewed': t.changedSinceVie
 export function FileList({ review, syncOk, onToggle, renderDiff }: { review: Review; syncOk: boolean; onToggle: (i: ReviewItem, v: boolean) => void; renderDiff: (i: ReviewItem) => ReactNode }) {
   const pct = review.total ? (review.viewedCount / review.total) * 100 : 0;
   const [onlyUnviewed, setOnlyUnviewed] = useState(false);
+  const [onlyAuto, setOnlyAuto] = useState(false);
   const [query, setQuery] = useState('');
   // 머리를 눌러 펼치고 접은 것. 그때의 지문이 지금과 같을 때만 따른다 — 새 커밋이 바꾼 파일은 기본값(펼침)으로 돌아가 바뀐 줄이 숨지 않는다
   const [picked, setPicked] = useState<Record<string, { open: boolean; fp: string }>>({});
@@ -37,7 +38,10 @@ export function FileList({ review, syncOk, onToggle, renderDiff }: { review: Rev
     if (li.isConnected) window.scrollBy(0, li.getBoundingClientRect().top - (bar.current?.offsetHeight ?? 0));
   });
   // 확인한 블록이 빠진 파일(shrunk)은 확인함이지만 경고가 붙은 것 — 숨기면 그 경고를 볼 곳이 없다
-  const byState = onlyUnviewed ? review.items.filter((it) => it.state !== 'viewed' || it.carried === 'shrunk') : review.items;
+  // 자동 처리만 보기와 확인한 파일 숨기기는 서로 반대라 하나를 켜면 다른 하나를 끈다. 자동 처리가 다 사라지면 저절로 풀린다
+  const autoOn = onlyAuto && review.autoCount > 0;
+  const byState = autoOn ? review.items.filter((it) => it.auto)
+    : onlyUnviewed ? review.items.filter((it) => it.state !== 'viewed' || it.carried === 'shrunk') : review.items;
   // 검색은 보이는 목록만 좁힌다 — 진행률·완료는 review 전체 기준 그대로. 경로에 글자가 그대로 들어간 것만(퍼지 아님), 대소문자·앞뒤 공백 무시
   const needle = query.trim().toLowerCase();
   const shown = needle ? byState.filter((it) => it.file.path.toLowerCase().includes(needle)) : byState;
@@ -45,9 +49,13 @@ export function FileList({ review, syncOk, onToggle, renderDiff }: { review: Rev
     <section className="review" ref={root}>
       <div className="progress" ref={bar}>
         <span><b data-testid="progress">{review.viewedCount} / {review.total}</b> {t.filesViewed}</span>
+        {review.autoCount > 0 && (
+          <button type="button" data-testid="auto-filter" className="auto-filter" aria-pressed={autoOn} title={t.autoHint}
+            onClick={() => { setOnlyAuto(!autoOn); if (!autoOn) setOnlyUnviewed(false); }}>{t.autoCount(review.autoCount)}</button>
+        )}
         <span className="meter" aria-hidden="true"><span style={{ width: `${pct}%` }} /></span>
         <input type="search" className="search" data-testid="file-search" aria-label={t.aria.searchFiles} placeholder={t.searchFiles} value={query} onChange={(e) => setQuery(e.target.value)} />
-        <label className="filter"><input type="checkbox" data-testid="filter-unviewed" checked={onlyUnviewed} onChange={(e) => setOnlyUnviewed(e.target.checked)} /> {t.onlyUnviewed}</label>
+        <label className="filter"><input type="checkbox" data-testid="filter-unviewed" checked={onlyUnviewed} onChange={(e) => { setOnlyUnviewed(e.target.checked); if (e.target.checked) setOnlyAuto(false); }} /> {t.onlyUnviewed}</label>
       </div>
       {review.incomplete && <p data-testid="banner-incomplete" role="alert" className="flash warn">{t.incomplete}</p>}
       {review.complete && syncOk && <p data-testid="complete" className="flash ok">{t.allViewed}</p>}
@@ -76,8 +84,8 @@ export function FileList({ review, syncOk, onToggle, renderDiff }: { review: Rev
                 <span className="path">{it.file.path}</span>
                 {/* carried: 리베이스·머지로 diff 는 바뀌었지만 지금 블록은 전부 본 것. 'same' 은 중립 배지,
                     'shrunk' 는 확인한 블록이 일부 빠진 것이라(base 흡수인지 유실인지 서명으로는 못 가름) 경고색 */}
-                <span data-testid="file-state" className={it.carried === 'same' ? 'badge muted' : 'badge'}>
-                  {it.carried === 'same' ? t.carried : it.carried === 'shrunk' ? t.carriedDropped(it.dropped ?? 0) : it.elsewhere ? t.elsewhere : MARK[it.state]}
+                <span data-testid="file-state" className={it.carried === 'same' || (it.auto && it.record?.via) ? 'badge muted' : 'badge'}>
+                  {it.carried === 'same' ? t.carried : it.carried === 'shrunk' ? t.carriedDropped(it.dropped ?? 0) : it.elsewhere ? t.elsewhere : it.auto && it.record?.via ? t.carriedOver : MARK[it.state]}
                 </span>
                 {it.others && <span data-testid="file-others" className="badge others" title={it.others.join(', ')}>{t.othersBadge(it.others)}</span>}
                 <label className="viewed-toggle" title={it.others ? t.othersAuto : undefined}>

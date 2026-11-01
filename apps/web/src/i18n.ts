@@ -15,6 +15,9 @@ const en = {
     : status === 403 || status === 404 ? "No access to this repository with this token, or it doesn't exist."
     : status === 0 ? 'Network error or timeout.' : 'GitHub request failed.',
   filesViewed: 'files viewed',
+  autoCount: (n: number) => `${n} automatic`,
+  autoHint: "Marked viewed by the app, not by your click: other people's files and checks carried over from another branch or target. Click to list only these.",
+  carriedOver: 'Carried over',
   incomplete: "GitHub returned 300 files — the list may be cut off. This branch can't be marked complete here.",
   allViewed: 'All files viewed.',
   changedSinceViewed: 'Changed since viewed',
@@ -130,6 +133,9 @@ const ko: Messages = {
     : status === 403 || status === 404 ? '이 토큰으로 접근할 수 없는 레포이거나, 레포가 없습니다.'
     : status === 0 ? '네트워크 오류 또는 시간 초과입니다.' : 'GitHub 요청이 실패했습니다.',
   filesViewed: '파일 확인함',
+  autoCount: (n) => `자동 ${n}`,
+  autoHint: '직접 누르지 않고 앱이 확인으로 친 파일입니다. 남의 파일과, 다른 브랜치나 이전 대상에서 이어받은 확인이 여기 듭니다. 누르면 이것만 보입니다.',
+  carriedOver: '이어받음',
   incomplete: 'GitHub 가 파일 300개를 돌려줬습니다. 목록이 잘렸을 수 있어서 이 브랜치는 여기서 완료로 표시할 수 없습니다.',
   allViewed: '모든 파일을 확인했습니다.',
   changedSinceViewed: '확인 후 바뀜',

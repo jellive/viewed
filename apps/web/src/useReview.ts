@@ -73,7 +73,7 @@ export function useReview(a: { snap: Snapshot; merged: DeviceState; secret: stri
         if (!live) return;
         branched.current = true;
         near.current = m?.near;
-        const recs = (m?.exact ?? []).map((it) => [it.key, markRecord(it, snap.headSha, true)] as const);
+        const recs = (m?.exact ?? []).map((it) => [it.key, { ...markRecord(it, snap.headSha, true), via: 'branch' as const }] as const);
         if (recs.length) { store.setMany(recs); state = mergeStates([state, Object.fromEntries(recs)]); }
         r = await build(state);
         if (!live) return;
@@ -89,7 +89,7 @@ export function useReview(a: { snap: Snapshot; merged: DeviceState; secret: stri
         if (!live) return;
         judged.current = true;
         if (items.length) {
-          const recs = items.map((it) => [it.key, markRecord(it, snap.headSha, true)] as const);
+          const recs = items.map((it) => [it.key, { ...markRecord(it, snap.headSha, true), via: 'target' as const }] as const);
           store.setMany(recs);
           r = await build(mergeStates([state, Object.fromEntries(recs)]));
           if (!live) return;   // 기록은 이미 써졌다 — 바뀐 merged 로 다시 도는 효과가 화면을 낸다

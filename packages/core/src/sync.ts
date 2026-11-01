@@ -18,7 +18,7 @@ export function mergeStates(states: DeviceState[]): DeviceState {
 
 const HEX16 = /^[0-9a-f]{16}$/, OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/, FP = /^[0-9a-f]{64}$/;
 
-// 필수 필드가 틀리면 던진다. 선택 필드(blocks·base·meta·prev)는 옛 앱이 쓴 기록에는 없고, 형식이 틀리면 그 필드만 뺀 사본을 쓴다 —
+// 필수 필드가 틀리면 던진다. 선택 필드(blocks·base·meta·prev·via)는 옛 앱이 쓴 기록에는 없고, 형식이 틀리면 그 필드만 뺀 사본을 쓴다 —
 // 나중 버전이 형식을 바꿔도 이 버전이 기기 파일 전체를 거부하지 않게. 빠진 필드는 옛 기록처럼 보수적으로 판정된다(spec §4)
 function readState(name: string, v: unknown): DeviceState {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new Error(`${name}: not an object`);
@@ -34,6 +34,7 @@ function readState(name: string, v: unknown): DeviceState {
     if (x.prev !== undefined && !(typeof x.prev === 'object' && x.prev !== null && typeof (x.prev as { base?: unknown }).base === 'string' && OID.test((x.prev as { base: string }).base) &&
       typeof (x.prev as { fp?: unknown }).fp === 'string' && FP.test((x.prev as { fp: string }).fp))) delete out.prev;
     if (x.meta !== undefined && !(typeof x.meta === 'string' && HEX16.test(x.meta))) delete out.meta;
+    if (x.via !== undefined && x.via !== 'branch' && x.via !== 'target') delete out.via;
     return [k, out];
   }));
 }
