@@ -341,7 +341,7 @@ test.describe('a large diff', () => {
       const lines = (n: number, s: string) => Array.from({ length: n }, (_, i) => `+${s} ${i}`).join('\n');
       w.__v = { head: oid('f'), tail: 'x' };
       const raw = () => `:000000 100644 ${oid('0')} ${w.__v.tail === 'x' ? oid('3') : oid('6')} A\0big.sql\0:000000 100644 ${oid('0')} ${oid('4')} A\0edge.sql\0:100644 100644 ${oid('0').slice(1)}1 ${oid('5')} M\0s.ts\0`;
-      const patch = () => head('big.sql') + `@@ -0,0 +1,${N} @@\n${lines(N, w.__v.tail)}\n` +
+      const patch = () => head('big.sql') + `@@ -0,0 +1,${N} @@\n${lines(N - 1, 'b')}\n+${w.__v.tail}\n` +
         head('edge.sql') + `@@ -0,0 +1,1999 @@\n${lines(1999, 'e')}\n` +
         head('s.ts') + '@@ -1,2 +1,2 @@\n ctx\n-old\n+new\n';
       w.viewedDesktop = {
@@ -354,6 +354,7 @@ test.describe('a large diff', () => {
             if (op === 'mergeBase') return oid('2');
             if (op === 'rawDiff') return raw();
             if (op === 'patchDiff') return patch();
+            if (op === 'blob') return lines(N - 1, 'b').replace(/^\+/gm, '') + `\n${a === oid('3') ? 'x' : 'y'}\n`;
             return null;
           },
         },
@@ -398,6 +399,20 @@ test.describe('a large diff', () => {
     await expect(page.getByTestId('progress')).toHaveText('1 / 3');
     await expect(big.getByTestId('file-big')).toHaveCount(0);
     await expect(big.locator('.file-body')).toHaveCount(0);
+  });
+
+  test('a large file changed since viewed opens on what changed, so the few lines are not missed', async ({ page }) => {
+    await fakeBig(page);
+    await openBig(page);
+    const big = row(page, 'big.sql');
+    await big.getByTestId('file-check').check();
+    await expect(big).toHaveAttribute('data-state', 'viewed');
+    await page.evaluate(() => { const v = (window as any).__v; v.head = 'e'.repeat(40); v.tail = 'y'; });
+    await page.getByTestId('refresh-btn').click();
+    await expect(big).toHaveAttribute('data-state', 'changed-since-viewed');
+    await expect(big.getByTestId('since-diff').locator('.ln.add')).toHaveText(['+y']);
+    await expect(big.getByTestId('since-diff').locator('.ln.del')).toHaveText(['-x']);
+    await expect(big.getByTestId('file-big')).toHaveCount(0);
   });
 
   test('a new commit to an opened large file collapses it again, still not viewed', async ({ page }) => {

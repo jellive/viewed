@@ -3,7 +3,8 @@ import type { Review, ReviewItem } from '@viewed/core';
 import { t } from '../i18n';
 
 const MARK = { viewed: '', unread: '', 'changed-since-viewed': t.changedSinceViewed } as const;
-// 생성 SQL 같은 큰 diff 는 처음에 접어 둔다 — 줄마다 DOM 을 만들어 체크·스크롤이 통째로 느려진다
+// 생성 SQL 같은 큰 diff 는 안 본 동안 접어 둔다 — 줄마다 DOM 을 만들어 체크·스크롤이 통째로 느려진다.
+// 확인 후 바뀐 파일은 펼친다: 바뀐 곳만 보여 작고, 접으면 그 몇 줄을 놓치기 쉽다
 const BIG_DIFF = 2000;
 const patchLines = (p: string) => { let n = 1; for (let i = p.indexOf('\n'); i >= 0; i = p.indexOf('\n', i + 1)) n++; return n; };
 
@@ -16,7 +17,7 @@ export function FileList({ review, syncOk, onToggle, renderDiff }: { review: Rev
   // 머리를 눌러 펼치고 접은 것. 그때의 지문이 지금과 같을 때만 따른다 — 새 커밋이 바꾼 파일은 기본값(펼침)으로 돌아가 바뀐 줄이 숨지 않는다
   const [picked, setPicked] = useState<Record<string, { open: boolean; fp: string }>>({});
   const big = useMemo(() => new Map(review.items.flatMap((it) => { const n = it.file.patch ? patchLines(it.file.patch) : 0; return n > BIG_DIFF ? [[it.key, n] as const] : []; })), [review.items]);
-  const isOpen = (it: ReviewItem) => (picked[it.key]?.fp === it.fp ? picked[it.key].open : it.state !== 'viewed' && !big.has(it.key));
+  const isOpen = (it: ReviewItem) => (picked[it.key]?.fp === it.fp ? picked[it.key].open : it.state === 'changed-since-viewed' || (it.state === 'unread' && !big.has(it.key)));
   // 파일 머리는 진행 막대 바로 아래에 붙는다 — 막대 높이는 창 폭에 따라 줄바꿈으로 달라져서 재서 넘긴다
   const root = useRef<HTMLElement>(null), bar = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -93,7 +94,7 @@ export function FileList({ review, syncOk, onToggle, renderDiff }: { review: Rev
                 <span data-testid="file-state" className={it.carried === 'same' || it.carriedOver ? 'badge muted' : 'badge'}>
                   {it.carried === 'same' ? t.carried : it.carried === 'shrunk' ? t.carriedDropped(it.dropped ?? 0) : it.elsewhere ? t.elsewhere : it.carriedOver ? t.carriedOver : MARK[it.state]}
                 </span>
-                {!open && it.state !== 'viewed' && big.has(it.key) && <span data-testid="file-big" className="badge muted">{t.bigDiff(big.get(it.key)!)}</span>}
+                {!open && it.state === 'unread' && big.has(it.key) && <span data-testid="file-big" className="badge muted">{t.bigDiff(big.get(it.key)!)}</span>}
                 {it.others && <span data-testid="file-others" className="badge others" title={it.others.join(', ')}>{t.othersBadge(it.others)}</span>}
                 <label className="viewed-toggle" title={it.others ? t.othersAuto : undefined}>
                   {/* 체크하면 접고 풀면 펼친다 — 머리로 고른 것은 덮는다. 판정이 비동기라 목표 상태를 바로 넣어야 옛 state 로 한 번 그려질 때 깜빡이지 않는다 */}
