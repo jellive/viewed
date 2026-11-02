@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# push 하려는 커밋(파일·경로·커밋 메시지)과 원격 ref 이름만 공개 금지 패턴으로 검사한다. 걸리거나 비공개 이름 목록이 없으면 push 를 거부한다.
+# 공개 범위는 push 대상 remote 로 좁힌다(다른 remote 에서 받은 커밋은 공개가 아니다). 이미 공개된 내용은 force-push 로도 지워지지 않아 나가기 전에 막는다.
+set -euo pipefail
+remote=$1
+scan="$(cd "$(dirname "$0")" && pwd)/../prepublish-scan.sh"
+
+while read -r _lref lsha rref rsha; do
+  case "$lsha" in *[!0]*) ;; *) continue ;; esac   # 전부 0: 원격 브랜치 지우기, 검사할 것이 없다
+  bash "$scan" --require-list --text "$rref" </dev/null   # 로컬 ref 이름은 안 나가므로 원격 ref 이름만 본다
+  extra=()
+  if case "$rsha" in *[!0]*) true ;; *) false ;; esac && git cat-file -e "$rsha^{commit}" 2>/dev/null; then
+    extra=("$rsha")
+  fi
+  bash "$scan" --require-list --revs "$lsha" --not "--remotes=$remote" ${extra[@]+"${extra[@]}"} </dev/null
+done
