@@ -50,4 +50,4 @@ Check marks are kept either **on this device only** (no token, nothing leaves th
 CI (GitHub Actions, ubuntu) runs the prepublish scan, the core tests, the desktop unit tests and the web E2E.
 The desktop E2E (`apps/desktop`) is not run in CI because Linux runners have no keychain; run it locally on a Mac with `pnpm --filter @viewed/desktop test`.
 
-`pnpm install` turns on a pre-push hook. It scans the outgoing commits (files, paths and messages) with the generic patterns and the private name list in `.prepublish-extra`, which is not tracked and matched case-insensitively, and refuses the push if a name is found or the list is missing.
+`pnpm install` on a fresh clone turns on a pre-push hook; in a checkout that is already installed, run `pnpm run prepare`. It scans the outgoing commits (files, paths, messages and the remote ref name) with the generic patterns and the private name list in `.prepublish-extra`, which is not tracked and matched case-insensitively, and refuses the push if a name is found or the list is missing.
